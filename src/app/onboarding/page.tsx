@@ -2,7 +2,8 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Sparkles, ArrowRight, Loader2, Check } from "lucide-react";
+import { ArrowRight, Loader2, Check } from "lucide-react";
+import { TriadLogo } from "@/components/triad-logo";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -158,7 +159,7 @@ export default function OnboardingPage() {
       <div className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6 sm:py-14">
         <div className="mb-8 flex items-center gap-3">
           <div className="grid h-10 w-10 place-items-center rounded-md bg-primary/15 text-primary">
-            <Sparkles className="h-5 w-5" />
+            <TriadLogo className="h-6 w-6" />
           </div>
           <div>
             <p className="text-xs uppercase tracking-wider text-muted-foreground">

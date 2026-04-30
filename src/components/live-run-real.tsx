@@ -22,8 +22,10 @@ import {
   AlertTriangle,
   Loader2,
   Pause,
+  Trash2,
   X,
 } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { PhaseStepper, type PhaseState } from "@/components/phase-stepper";
 import type { Template, ReviewerLineage } from "@/lib/types";
@@ -51,6 +53,10 @@ interface Props {
   template: Template | null;
   work: string;
   projectName?: string;
+  /** PR URL when ship phase succeeded (chat status=merged). */
+  initialPrUrl?: string;
+  /** Ship phase failure detail when status=blocked. */
+  initialShipError?: string;
 }
 
 const LINEAGE_DOT: Record<string, string> = {
@@ -73,6 +79,8 @@ const STATUS_LABEL: Record<string, { text: string; color: string }> = {
   drafting: { text: "DRAFTING · doer working", color: "primary" },
   reviewing: { text: "REVIEWING · cross-lineage check", color: "primary" },
   approved: { text: "APPROVED", color: "emerald" },
+  merged: { text: "MERGED · PR opened", color: "emerald" },
+  blocked: { text: "BLOCKED · ship error", color: "amber" },
   no_review: { text: "NO REVIEW · reviewers unavailable", color: "amber" },
   failed: { text: "FAILED", color: "destructive" },
   cancelled: { text: "CANCELLED", color: "muted" },
@@ -121,12 +129,18 @@ export function LiveRunReal({
   template,
   work,
   projectName,
+  initialPrUrl,
+  initialShipError,
 }: Props) {
   const [status, setStatus] = useState(initialStatus);
   const [rounds, setRounds] = useState<RoundSnapshot[]>(initialRounds);
   const [activeParticipants, setActiveParticipants] = useState<Set<string>>(
     new Set(),
   );
+  const [prUrl, setPrUrl] = useState<string | undefined>(initialPrUrl);
+  const [shipError, setShipError] = useState<string | undefined>(initialShipError);
+  const [deleting, setDeleting] = useState(false);
+  const router = useRouter();
 
   // Live tail per participant (role:lineage → most recent ~500 chars). When
   // headless transport is in use, runner emits phase_progress events with
@@ -135,7 +149,14 @@ export function LiveRunReal({
   // when the SSE event hasn't arrived yet.
   const [liveTails, setLiveTails] = useState<Record<string, string>>({});
 
-  const isTerminal = ["approved", "failed", "cancelled"].includes(status);
+  const isTerminal = [
+    "approved",
+    "merged",
+    "blocked",
+    "failed",
+    "cancelled",
+    "no_review",
+  ].includes(status);
 
   // Periodic refresh of artifacts from disk (cheap server fetch). The SSE
   // stream tells us *when* something changed; this fetches the new content.
@@ -201,11 +222,27 @@ export function LiveRunReal({
         }
 
         if (e.type === "chat_done") {
-          const verdict = e.payload.verdict as string | undefined;
-          if (verdict === "approved") setStatus("approved");
-          else if (verdict === "failed") setStatus("failed");
-          else if (verdict === "cancelled") setStatus("cancelled");
+          // The runner emits chat_done with payload.status as the canonical
+          // terminal state ('completed' / 'merged' / 'blocked' / 'no_review').
+          // Prefer that over verdict for the UI.
+          const finalStatus = e.payload.status as string | undefined;
+          if (finalStatus === "merged") setStatus("merged");
+          else if (finalStatus === "blocked") setStatus("blocked");
+          else if (finalStatus === "no_review") setStatus("no_review");
+          else if (finalStatus === "failed") setStatus("failed");
+          else if (finalStatus === "cancelled") setStatus("cancelled");
           else setStatus("approved");
+
+          // Capture ship-phase outcome for the result banner.
+          const payloadPrUrl = e.payload.prUrl as string | undefined;
+          if (typeof payloadPrUrl === "string" && payloadPrUrl.length > 0) {
+            setPrUrl(payloadPrUrl);
+          }
+          const payloadShipError = e.payload.shipError as string | undefined;
+          if (typeof payloadShipError === "string" && payloadShipError.length > 0) {
+            setShipError(payloadShipError);
+          }
+
           es.close();
           // Final refresh of artifacts.
           fetch(`/api/run-artifacts/${chatId}`)
@@ -309,8 +346,80 @@ export function LiveRunReal({
                 <X className="h-3.5 w-3.5" />
                 Cancel
               </button>
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={async () => {
+                  if (
+                    !window.confirm(
+                      "Delete this chat? Removes the row, phase events, and the on-disk artifacts directory. Cannot be undone.",
+                    )
+                  ) {
+                    return;
+                  }
+                  setDeleting(true);
+                  try {
+                    const res = await fetch(`/api/daemon/chats/${chatId}`, {
+                      method: "DELETE",
+                    });
+                    if (res.ok) {
+                      router.push("/runs");
+                      router.refresh();
+                    } else {
+                      window.alert("Delete failed. Daemon may be down.");
+                      setDeleting(false);
+                    }
+                  } catch {
+                    window.alert("Delete failed. Network error.");
+                    setDeleting(false);
+                  }
+                }}
+                className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:border-destructive/40 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                {deleting ? "Deleting…" : "Delete"}
+              </button>
             </div>
           </div>
+
+          {/* Ship-phase outcome banner — green PR link when merged, amber
+              error context when blocked. Only renders on terminal states. */}
+          {prUrl && (
+            <div className="rounded-md border border-emerald-500/40 bg-emerald-500/5 px-4 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-sm font-medium text-emerald-300">
+                  <CheckCircle2 className="h-4 w-4" />
+                  Pull request opened
+                </div>
+                <a
+                  href={prUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-300 transition hover:bg-emerald-500/20"
+                >
+                  View PR →
+                </a>
+              </div>
+              <p className="mt-1 break-all font-mono text-[11px] text-emerald-200/70">
+                {prUrl}
+              </p>
+            </div>
+          )}
+          {shipError && !prUrl && (
+            <div className="rounded-md border border-amber-500/40 bg-amber-500/5 px-4 py-3">
+              <div className="flex items-center gap-2 text-sm font-medium text-amber-300">
+                <AlertTriangle className="h-4 w-4" />
+                Ship phase blocked
+              </div>
+              <p className="mt-1 break-words font-mono text-[11px] text-amber-200/80">
+                {shipError}
+              </p>
+              <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+                The reviewers approved the doer&apos;s output, but chorus
+                couldn&apos;t open a PR. Resolve the issue above and re-run.
+              </p>
+            </div>
+          )}
 
           {/* Progress strip */}
           <div className="flex items-center gap-4">

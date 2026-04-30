@@ -75,6 +75,35 @@ export const TemplateSchema = z.object({
 
   // The workflow phases
   phases: z.array(PhaseSchema).min(1),
+
+  /**
+   * Optional Ship phase — runs after all phases pass + reviewers agree.
+   *
+   * When `enabled: true` AND the chat was created with `repoPath`:
+   *   1. Verify git context (gh CLI installed/authed, repoPath is a repo
+   *      with a remote, base branch resolvable)
+   *   2. Stage + commit doer's diff with a message from the chat
+   *   3. Push the chorus branch
+   *   4. `gh pr create` against baseBranch
+   *   5. Stop. No auto-merge in v0.5 — human clicks Merge in GitHub UI.
+   *
+   * When `enabled: false` OR chat has no repoPath: phase is skipped,
+   * chat ends with status=approved as before. No noise.
+   *
+   * On any failure (gh missing, push reject, dirty working tree, etc.):
+   * chat ends with status=blocked and the failure mode in the meta.
+   */
+  ship: z
+    .object({
+      enabled: z.boolean().default(false),
+      /** Base branch to PR against. If unset, ship.ts detects default branch. */
+      baseBranch: z.string().optional(),
+      /** Branch name pattern. {chatId} is substituted. */
+      branchPattern: z.string().default('chorus/{chatId}'),
+      /** PR title template. {template} {chatId} substituted. */
+      titleTemplate: z.string().default('chorus: {template} via #{chatId}'),
+    })
+    .optional(),
 });
 
 export type Template = z.infer<typeof TemplateSchema>;

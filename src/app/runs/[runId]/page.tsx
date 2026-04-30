@@ -110,6 +110,8 @@ export default async function RunPage({ params }: RunPageProps) {
         initialRounds={initialRounds}
         template={template}
         work={chat.work}
+        initialPrUrl={chat.prUrl}
+        initialShipError={chat.shipError}
       />
     </AppShell>
   );

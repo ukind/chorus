@@ -120,20 +120,34 @@ async function main() {
 
   // Create chat
   fastify.post<{
-    Body: { work: string; templateId: string; files?: string[] };
+    Body: { work: string; templateId: string; files?: string[]; repoPath?: string };
     Reply: ApiResponse<object>;
   }>('/chats', async (request) => {
     try {
-      const { work, templateId, files } = request.body;
+      const { work, templateId, files, repoPath } = request.body;
 
       if (!work || !templateId) {
         return errorResponse('validation', 'work and templateId are required');
+      }
+
+      // Validate repoPath if supplied — must be an absolute path to an
+      // existing directory. Stricter checks (is-a-repo, gh-authed) happen
+      // when the ship phase runs, not at chat creation time.
+      if (repoPath !== undefined) {
+        if (typeof repoPath !== 'string' || !repoPath.startsWith('/')) {
+          return errorResponse('validation', 'repoPath must be an absolute path');
+        }
+        const fsModule = await import('fs');
+        if (!fsModule.existsSync(repoPath)) {
+          return errorResponse('validation', `repoPath does not exist: ${repoPath}`);
+        }
       }
 
       const chat = chats.create({
         work,
         template_id: templateId,
         attached_files: files ? JSON.stringify(files) : undefined,
+        repo_path: repoPath,
       });
 
       // Note: tmux sessions are created on-demand via tmuxMgr.acquire() when phases run.
@@ -179,6 +193,69 @@ async function main() {
       }
 
       return successResponse(chat);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return errorResponse('db_error', message);
+    }
+  });
+
+  // Delete chat (hard delete: row + phase_events + filesystem artifacts).
+  // Cancels any active session first to avoid orphaned subprocesses writing
+  // to the dir we're about to nuke. Idempotent: returns 200 even if the
+  // chat is already gone (allows the cockpit to retry without distinguishing
+  // races).
+  fastify.delete<{
+    Params: { id: string };
+    Reply: ApiResponse<object>;
+  }>('/chats/:id', async (request) => {
+    try {
+      const id = request.params.id;
+      const existing = chats.getById(id);
+      if (!existing) {
+        return successResponse({ id, deleted: false, reason: 'not_found' });
+      }
+
+      // 1. Cancel first if still active — flips status, signals abort.
+      if (
+        existing.status === 'drafting' ||
+        existing.status === 'reviewing'
+      ) {
+        try {
+          chats.cancel(id);
+        } catch {
+          /* best-effort */
+        }
+      }
+
+      // 2. Kill any tmux sessions tied to this chat.
+      try {
+        const allSessions = tmuxMgr.list();
+        for (const session of allSessions) {
+          if (session.chatId === id) tmuxMgr.kill(session.name);
+        }
+      } catch {
+        /* tmuxMgr may not be ready in test paths */
+      }
+
+      // 3. Drop DB row + phase events.
+      chats.delete(id);
+
+      // 4. Nuke chat artifacts directory.
+      const fsModule = await import('fs');
+      const pathModule = await import('path');
+      const osModule = await import('os');
+      const chatDir = pathModule.join(osModule.homedir(), '.chorus', 'chats', id);
+      if (fsModule.existsSync(chatDir)) {
+        try {
+          fsModule.rmSync(chatDir, { recursive: true, force: true });
+        } catch (err) {
+          // Don't fail the request — DB row is already gone, dir is just
+          // disk-space cleanup.
+          console.warn(`[chorus] failed to remove ${chatDir}:`, err);
+        }
+      }
+
+      return successResponse({ id, deleted: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return errorResponse('db_error', message);
@@ -257,6 +334,7 @@ async function main() {
         chatId,
         template,
         work: chat.work,
+        repoPath: chat.repo_path ?? undefined,
         abortSignal: ac.signal,
         tmuxMgr,
         errorDetector,
@@ -300,7 +378,9 @@ async function main() {
             });
           }
 
-          // Update chat status on completion
+          // Update chat status on completion. Persist ship-phase results
+          // (prUrl on merged success, shipError on blocked failure) so the
+          // run page can render a "View PR →" link or the failure reason.
           if (event.type === 'chat_done') {
             const payload = event.payload as Record<string, unknown>;
             const status = (payload.status as string) ?? 'completed';
@@ -314,6 +394,12 @@ async function main() {
                 | 'cancelled'
                 | 'failed'
                 | 'no_review',
+              ...(typeof payload.prUrl === 'string' && payload.prUrl.length > 0
+                ? { pr_url: payload.prUrl }
+                : {}),
+              ...(typeof payload.shipError === 'string' && payload.shipError.length > 0
+                ? { ship_error: payload.shipError }
+                : {}),
               finished_at: Date.now(),
             });
           }

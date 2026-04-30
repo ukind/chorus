@@ -17,6 +17,7 @@ import { getPermissions } from '../lib/settings/permissions.js';
 import { getTransport } from '../lib/settings/transport.js';
 import { recordHealth, kindToStatus, type CliLineage } from '../lib/cli-health.js';
 import type { AgentShim } from './agents/types.js';
+import { detectGitContext, runShipPhase } from './ship.js';
 
 export interface RunnerEvent {
   chatId: string;
@@ -36,6 +37,14 @@ export interface PhaseRunnerOptions {
   chatId: string;
   template: Template;
   work: string;
+  /**
+   * Optional absolute path to the user's repo. When set:
+   *  - Doer cwd becomes this path (real edits land in the working tree)
+   *  - Reviewers stay in scratch dirs (read-only, no writes to user's repo)
+   *  - Ship phase (if template.ship.enabled) runs after consensus
+   * When unset: doer cwd is scratch dir as before; ship phase auto-skips.
+   */
+  repoPath?: string;
   onEvent: (e: RunnerEvent) => void;
   abortSignal: AbortSignal;
   tmuxMgr: TmuxManager;
@@ -54,7 +63,7 @@ interface ChatMeta {
  * checks consensus, and emits events.
  */
 export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
-  const { chatId, template, work, onEvent, abortSignal, tmuxMgr, errorDetector } = opts;
+  const { chatId, template, work, repoPath, onEvent, abortSignal, tmuxMgr, errorDetector } = opts;
   const chatDir = path.join(os.homedir(), '.chorus', 'chats', chatId);
 
   // Ensure chat directory
@@ -130,6 +139,7 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
           errorDetector,
           onEvent,
           abortSignal,
+          repoPath,
         );
 
         if (!doerAnswer) {
@@ -229,15 +239,109 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
       });
     }
 
-    onEvent({
-      chatId,
-      type: 'chat_done',
-      payload: {
-        status: anyPhaseAllReviewersFailed ? 'no_review' : 'completed',
-        verdict: anyPhaseAllReviewersFailed ? 'no_review' : 'approved',
-      },
-      ts: Date.now(),
-    });
+    // ─── Ship phase ───────────────────────────────────────────────────
+    // Runs after all phases pass + reviewers agree, AND chat targets a real
+    // repo, AND template opted in. Failures are surfaced as status=blocked
+    // (chat ran fine, ship couldn't complete) rather than failed (chat broke).
+    let shipOutcome:
+      | { kind: 'skipped'; reason?: string }
+      | { kind: 'merged'; prUrl: string }
+      | { kind: 'blocked'; error: string }
+      = { kind: 'skipped' };
+
+    if (!anyPhaseAllReviewersFailed && template.ship?.enabled && repoPath) {
+      const ctx = detectGitContext(repoPath, template.ship.baseBranch);
+      if (!ctx.ok) {
+        // Surface as a skip with reason — chat still ends approved (we
+        // didn't ship, but the review was real).
+        shipOutcome = { kind: 'skipped', reason: `${ctx.reason}: ${ctx.detail}` };
+        onEvent({
+          chatId,
+          type: 'phase_progress',
+          payload: { phaseId: 'ship', skipped: true, reason: ctx.reason, detail: ctx.detail },
+          ts: Date.now(),
+        });
+      } else {
+        // Read the most recent doer's output for the PR body. Fall back to
+        // the chat's `work` if we can't find it (shouldn't happen in
+        // practice — ship phase only runs after a successful doer).
+        const lastDoerOutput = readLastDoerAnswer(chatDir) ?? work;
+        onEvent({
+          chatId,
+          type: 'phase_start',
+          payload: { phaseId: 'ship', kind: 'ship' },
+          ts: Date.now(),
+        });
+        const result = runShipPhase({
+          context: ctx.context,
+          chatId,
+          templateId: template.id,
+          branchPattern: template.ship.branchPattern ?? 'chorus/{chatId}',
+          titleTemplate: template.ship.titleTemplate ?? 'chorus: {template} via #{chatId}',
+          summary: work,
+          doerOutput: lastDoerOutput,
+        });
+        if (result.ok) {
+          shipOutcome = { kind: 'merged', prUrl: result.prUrl };
+          onEvent({
+            chatId,
+            type: 'phase_done',
+            payload: { phaseId: 'ship', prUrl: result.prUrl, branch: result.branch },
+            ts: Date.now(),
+          });
+        } else {
+          shipOutcome = { kind: 'blocked', error: `${result.stage}: ${result.detail}` };
+          onEvent({
+            chatId,
+            type: 'phase_failed',
+            payload: { phaseId: 'ship', stage: result.stage, detail: result.detail },
+            ts: Date.now(),
+          });
+        }
+      }
+    }
+
+    // Final chat_done — encodes terminal status and ship-phase outcome.
+    if (anyPhaseAllReviewersFailed) {
+      onEvent({
+        chatId,
+        type: 'chat_done',
+        payload: { status: 'no_review', verdict: 'no_review' },
+        ts: Date.now(),
+      });
+    } else if (shipOutcome.kind === 'merged') {
+      onEvent({
+        chatId,
+        type: 'chat_done',
+        payload: {
+          status: 'merged',
+          verdict: 'approved',
+          prUrl: shipOutcome.prUrl,
+        },
+        ts: Date.now(),
+      });
+    } else if (shipOutcome.kind === 'blocked') {
+      onEvent({
+        chatId,
+        type: 'chat_done',
+        payload: { status: 'blocked', verdict: 'approved', shipError: shipOutcome.error },
+        ts: Date.now(),
+      });
+    } else {
+      // Either no ship phase or ship was skipped — chat ends approved.
+      onEvent({
+        chatId,
+        type: 'chat_done',
+        payload: {
+          status: 'completed',
+          verdict: 'approved',
+          ...(shipOutcome.kind === 'skipped' && shipOutcome.reason
+            ? { shipSkipped: shipOutcome.reason }
+            : {}),
+        },
+        ts: Date.now(),
+      });
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     onEvent({
@@ -267,11 +371,12 @@ async function runDoerHeadless(args: {
   agentName: string;
   askContent: string;
   answerFile: string;
-  doerDir: string;
+  /** Doer's working dir — repoPath when chat targets a real repo, else scratch. */
+  doerCwd: string;
   abortSignal: AbortSignal;
   onEvent: (e: RunnerEvent) => void;
 }): Promise<{ content: string; full: boolean } | null> {
-  const { shim, chatId, phase, round, agentName, askContent, answerFile, doerDir, abortSignal, onEvent } =
+  const { shim, chatId, phase, round, agentName, askContent, answerFile, doerCwd, abortSignal, onEvent } =
     args;
 
   if (!shim.runHeadless) {
@@ -288,7 +393,7 @@ async function runDoerHeadless(args: {
   fs.writeFileSync(answerFile, '');
 
   const stream = shim.runHeadless({
-    cwd: doerDir,
+    cwd: doerCwd,
     promptText: askContent,
     model: phase.doer.models?.[0],
     sandbox: perms.sandboxProfile,
@@ -416,6 +521,7 @@ async function runDoer(
   errorDetector: ErrorDetector,
   onEvent: (e: RunnerEvent) => void,
   abortSignal: AbortSignal,
+  repoPath?: string,
 ): Promise<{ content: string; full: boolean } | null> {
   const shim = registry.pickShim(phase.doer.lineage);
   const agentName = shim.name;
@@ -433,6 +539,13 @@ async function runDoer(
   const ask = buildAsk(phase, phaseIdx, round, work, phase.inputs);
   fs.writeFileSync(askFile, ask);
 
+  // When the chat was created with a repoPath, the doer's working tree
+  // becomes the user's repo (so it can read files + make real edits the
+  // ship phase will commit). Reviewers always stay in scratch — they're
+  // not allowed to write to the user's repo. ask.md/answer.md still live
+  // in the chat dir for artifact viewing.
+  const doerCwd = repoPath ?? doerDir;
+
   // Transport branch: headless when settings + shim support it; otherwise
   // fall through to the tmux flow below. Mixed-mode in a single chat is OK
   // — Claude can run headless while Gemini reviewer falls back to tmux.
@@ -446,7 +559,7 @@ async function runDoer(
       agentName,
       askContent: ask,
       answerFile,
-      doerDir,
+      doerCwd,
       abortSignal,
       onEvent,
     });
@@ -466,7 +579,7 @@ async function runDoer(
     shim,
     spawnOpts: {
       sessionName,
-      cwd: doerDir,
+      cwd: doerCwd,
       model: phase.doer.models?.[0],
       sandbox: perms.sandboxProfile,
       autoApprove: perms.autoApprovePrompts,
@@ -558,6 +671,36 @@ async function runDoer(
   } finally {
     clearInterval(pollHandle);
   }
+}
+
+/**
+ * Find and read the most recent doer's answer.md from the chat dir. Used by
+ * the ship phase to embed doer output in the PR body. Returns undefined
+ * if no doer output exists (shouldn't happen since ship runs after success).
+ */
+function readLastDoerAnswer(chatDir: string): string | undefined {
+  if (!fs.existsSync(chatDir)) return undefined;
+  // Walk rounds in reverse (highest first). Within each round pick the
+  // doer-* dir's answer.md. There's at most one doer per round.
+  const rounds = fs
+    .readdirSync(chatDir)
+    .filter((n) => /^round-\d+$/.test(n))
+    .map((n) => ({ name: n, num: parseInt(n.replace('round-', ''), 10) }))
+    .sort((a, b) => b.num - a.num);
+
+  for (const r of rounds) {
+    const roundDir = path.join(chatDir, r.name);
+    const doerSubdir = fs
+      .readdirSync(roundDir)
+      .find((n) => n.startsWith('doer-'));
+    if (!doerSubdir) continue;
+    const answerFile = path.join(roundDir, doerSubdir, 'answer.md');
+    if (fs.existsSync(answerFile)) {
+      const content = fs.readFileSync(answerFile, 'utf-8');
+      if (content.trim().length > 0) return content;
+    }
+  }
+  return undefined;
 }
 
 function sanitizeName(name: string): string {

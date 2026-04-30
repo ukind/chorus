@@ -7,6 +7,16 @@ onThresholdMet: ask
 maxRounds: 3
 yoloDefault: false
 
+# Ship phase: when chat is created with `repoPath`, after reviewers agree
+# chorus branches off main, commits the doer's diff, pushes, and opens a PR
+# via `gh pr create`. No auto-merge — human clicks Merge in GitHub.
+# Skip behavior: when chat has no repoPath, ship is auto-skipped and chat
+# ends `approved`.
+ship:
+  enabled: true
+  branchPattern: "chorus/{chatId}"
+  titleTemplate: "chorus: code-review via #{chatId}"
+
 phases:
   - id: review
     kind: review

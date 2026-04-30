@@ -10,6 +10,9 @@ interface RawChatRow {
   current_phase_idx?: number;
   yolo?: number | boolean;
   attached_files?: string | null;
+  repo_path?: string | null;
+  pr_url?: string | null;
+  ship_error?: string | null;
   created_at: number;
   updated_at: number;
   finished_at?: number | null;
@@ -37,6 +40,9 @@ function fromRow(row: RawChatRow): Chat {
     currentPhaseIdx: row.current_phase_idx ?? 0,
     yolo: Boolean(row.yolo),
     attachedFiles: attached,
+    repoPath: row.repo_path ?? undefined,
+    prUrl: row.pr_url ?? undefined,
+    shipError: row.ship_error ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     finishedAt: row.finished_at ?? undefined,
@@ -69,8 +75,9 @@ export async function createChat(options: {
   work: string;
   templateId: string;
   files?: string[];
+  /** Optional absolute path to user's repo. Enables Ship phase. */
+  repoPath?: string;
 }): Promise<Chat> {
-  // Daemon expects { work, templateId, files? } per the spec — keep as-is.
   const row = await fetchFromDaemon<RawChatRow>("/chats", {
     method: "POST",
     body: JSON.stringify(options),
@@ -80,6 +87,15 @@ export async function createChat(options: {
 
 export async function cancelChat(id: string): Promise<void> {
   await fetchFromDaemon<void>(`/chats/${id}/cancel`, { method: "POST" });
+}
+
+/**
+ * Hard-delete a chat. Cancels any active session, drops DB row + phase
+ * events, removes ~/.chorus/chats/<id>/ from disk. Idempotent: succeeds
+ * even if the chat was already gone.
+ */
+export async function deleteChat(id: string): Promise<void> {
+  await fetchFromDaemon<void>(`/chats/${id}`, { method: "DELETE" });
 }
 
 export async function resumeChat(id: string, answer: unknown): Promise<Chat> {

@@ -25,6 +25,16 @@ export function getDb(): Database.Database {
       const schemaPath = path.join(__dirname, '..', 'db', 'schema.sql');
       const schema = readFileSync(schemaPath, 'utf-8');
       dbInstance.exec(schema);
+    } else {
+      // Idempotent migrations for existing DBs. SQLite's ADD COLUMN is
+      // safe; the column-existence check via PRAGMA keeps this idempotent
+      // across daemon restarts. New columns added in v0.5: repo_path, pr_url,
+      // ship_error (Ship phase support).
+      const cols = dbInstance.prepare(`PRAGMA table_info(chats)`).all() as { name: string }[];
+      const has = (n: string): boolean => cols.some((c) => c.name === n);
+      if (!has('repo_path')) dbInstance.exec(`ALTER TABLE chats ADD COLUMN repo_path TEXT`);
+      if (!has('pr_url')) dbInstance.exec(`ALTER TABLE chats ADD COLUMN pr_url TEXT`);
+      if (!has('ship_error')) dbInstance.exec(`ALTER TABLE chats ADD COLUMN ship_error TEXT`);
     }
   }
   return dbInstance;
@@ -39,6 +49,9 @@ const ChatRowSchema = z.object({
   current_phase_idx: z.number().int(),
   yolo: z.coerce.boolean().default(false),
   attached_files: z.string().nullable(),
+  repo_path: z.string().nullable().default(null),
+  pr_url: z.string().nullable().default(null),
+  ship_error: z.string().nullable().default(null),
   created_at: z.number().int(),
   updated_at: z.number().int(),
   finished_at: z.number().int().nullable(),
@@ -50,6 +63,8 @@ const CreateChatSchema = z.object({
   work: z.string(),
   template_id: z.string(),
   attached_files: z.string().optional(),
+  /** Absolute path to user's repo for Ship phase. Optional. */
+  repo_path: z.string().optional(),
 });
 
 export type CreateChatInput = z.infer<typeof CreateChatSchema>;
@@ -110,8 +125,8 @@ export const chats = {
     const now = Date.now();
 
     const stmt = db.prepare(`
-      INSERT INTO chats (id, work, template_id, status, current_phase_idx, yolo, attached_files, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO chats (id, work, template_id, status, current_phase_idx, yolo, attached_files, repo_path, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     stmt.run(
@@ -122,6 +137,7 @@ export const chats = {
       0,
       0,
       validated.attached_files || null,
+      validated.repo_path || null,
       now,
       now
     );
@@ -184,7 +200,7 @@ export const chats = {
 
     const stmt = db.prepare(`
       UPDATE chats
-      SET work = ?, template_id = ?, status = ?, current_phase_idx = ?, yolo = ?, attached_files = ?, updated_at = ?, finished_at = ?
+      SET work = ?, template_id = ?, status = ?, current_phase_idx = ?, yolo = ?, attached_files = ?, repo_path = ?, pr_url = ?, ship_error = ?, updated_at = ?, finished_at = ?
       WHERE id = ?
     `);
 
@@ -195,6 +211,9 @@ export const chats = {
       updated.current_phase_idx,
       updated.yolo ? 1 : 0,
       updated.attached_files,
+      updated.repo_path,
+      updated.pr_url,
+      updated.ship_error,
       updated.updated_at,
       updated.finished_at,
       id
@@ -205,6 +224,20 @@ export const chats = {
 
   cancel(id: string): ChatRow {
     return chats.update(id, { status: 'cancelled', finished_at: Date.now() });
+  },
+
+  /**
+   * Hard-delete a chat. Removes the row + cascades to phase_events. Caller
+   * is responsible for filesystem cleanup (chat artifacts in
+   * ~/.chorus/chats/<id>) and for ensuring no active session is running for
+   * this chat (cancel first if needed).
+   */
+  delete(id: string): void {
+    const db = getDb();
+    // Phase events first to avoid FK-style orphans (no actual FK, but
+    // semantically the chat owns its events).
+    db.prepare('DELETE FROM phase_events WHERE chat_id = ?').run(id);
+    db.prepare('DELETE FROM chats WHERE id = ?').run(id);
   },
 };
 

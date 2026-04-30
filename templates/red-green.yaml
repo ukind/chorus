@@ -7,6 +7,15 @@ onThresholdMet: ask
 maxRounds: 3
 yoloDefault: false
 
+# Ship phase: same shape as code-review. Auto-skipped when chat has no
+# repoPath (e.g. a paste-a-snippet quick check). v0.5 stops at `gh pr create`
+# — no auto-merge regardless of how comprehensive red-green's verification
+# was. Human gate at the merge button is intentional.
+ship:
+  enabled: true
+  branchPattern: "chorus/{chatId}"
+  titleTemplate: "chorus: red-green via #{chatId}"
+
 phases:
   - id: plan
     kind: plan

@@ -109,6 +109,7 @@ function NewChatPageInner() {
   );
 
   const [yoloMode, setYoloMode] = useState(false);
+  const [repoPath, setRepoPath] = useState("");
 
   async function handleStartRun() {
     if (!template || !prompt) return;
@@ -116,10 +117,12 @@ function NewChatPageInner() {
     setCreateError(null);
     startTransition(async () => {
       try {
+        const trimmedRepo = repoPath.trim();
         const chat = await createChat({
           work: prompt,
           templateId: template.id,
           files: attachments.length > 0 ? attachments.map((a) => a.name) : undefined,
+          ...(trimmedRepo.length > 0 ? { repoPath: trimmedRepo } : {}),
         });
         router.push(`/runs/${chat.id}`);
       } catch (err) {
@@ -348,6 +351,37 @@ function NewChatPageInner() {
             </span>
           </div>
         )}
+
+        {/* Optional Target repo for the Ship phase. When set, the doer's
+            cwd is this path and on success chorus opens a PR. Skip to run
+            chorus on the prompt alone (no PR, just a verdict). */}
+        <div className="mb-4 rounded-lg border border-dashed border-border bg-card/30 p-4">
+          <div className="mb-2 flex items-center gap-2">
+            <span className="text-sm font-medium text-foreground">
+              Target repo <span className="text-muted-foreground">(optional)</span>
+            </span>
+            <Badge
+              variant="outline"
+              className="border-emerald-500/30 bg-emerald-500/10 font-mono text-[10px] uppercase text-emerald-300"
+            >
+              opens PR
+            </Badge>
+          </div>
+          <input
+            type="text"
+            value={repoPath}
+            onChange={(e) => setRepoPath(e.target.value)}
+            placeholder="/absolute/path/to/repo"
+            className="w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary"
+            spellCheck={false}
+          />
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            When set: doer makes real edits in this repo. After reviewers agree,
+            chorus opens a PR via <code className="rounded bg-muted px-1">gh pr create</code>{" "}
+            (no auto-merge — you review + click Merge in GitHub).
+            Leave blank to skip the Ship phase.
+          </p>
+        </div>
 
         {/* Yolo mode toggle */}
         <button

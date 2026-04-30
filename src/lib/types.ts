@@ -55,6 +55,7 @@ export interface Chat {
     | "drafting"
     | "reviewing"
     | "approved"
+    | "no_review"
     | "merged"
     | "blocked"
     | "cancelled"
@@ -62,6 +63,12 @@ export interface Chat {
   currentPhaseIdx: number;
   yolo: boolean;
   attachedFiles?: string[];
+  /** Optional absolute path to user's repo. Set at chat creation. */
+  repoPath?: string;
+  /** GitHub PR URL written by the Ship phase on success (status=merged). */
+  prUrl?: string;
+  /** Failure context written when Ship blocks (status=blocked). */
+  shipError?: string;
   createdAt: number;
   updatedAt: number;
   finishedAt?: number;

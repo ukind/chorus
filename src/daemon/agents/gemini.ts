@@ -60,12 +60,26 @@ export const geminiShim: AgentShim = {
    * Headless mode (`gemini -p "<prompt>" --output-format stream-json`).
    *
    * Gemini takes the prompt on argv (not stdin) — we pass it as the -p value.
-   * Approval mode + --skip-trust replaces tmux's preflight workspace-trust
-   * dance. Format verified 2026-04-30 against gemini-cli with model
-   * gemini-3.1-pro-preview; see parseGemini for shape.
+   *
+   * **Multi-line prompt bug:** Gemini's -p mode hangs indefinitely when the
+   * prompt contains newlines (verified 2026-04-30 with gemini-3.1-pro-preview
+   * — process spawns, holds the API call, but never emits any stream-json
+   * event). Mirrors the interactive-mode bug captured in
+   * feedback_gemini_multiline_prompts.md. Workaround: flatten the prompt to
+   * a single line before passing.
+   *
+   * Format verified 2026-04-30; see parseGemini for shape.
    */
   runHeadless(opts: HeadlessSpawnOptions): AsyncIterable<AgentEvent> {
-    const args = ['-p', opts.promptText, '--output-format', 'stream-json', '--skip-trust'];
+    // Flatten newlines to spaces to dodge the multi-line hang. We also collapse
+    // runs of whitespace so the resulting single-line prompt stays readable
+    // for Gemini and doesn't blow past argv limits with redundant spaces.
+    const flatPrompt = opts.promptText
+      .replace(/\r?\n/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const args = ['-p', flatPrompt, '--output-format', 'stream-json', '--skip-trust'];
 
     // Sandbox profile → approval-mode mapping. Never use yolo
     // (see feedback_gemini_yolo_dangerous.md — empty-content overwrites).

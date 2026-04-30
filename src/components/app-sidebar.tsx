@@ -7,11 +7,11 @@ import {
   LayoutDashboard,
   Layers,
   Plug,
-  Sparkles,
   Settings,
   Plus,
   ListChecks,
 } from "lucide-react";
+import { TriadLogo } from "@/components/triad-logo";
 import { listChats, DaemonError } from "@/lib/api";
 import type { Chat } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -37,6 +37,7 @@ const STATUS_DOT: Record<Chat["status"], string> = {
   drafting: "bg-amber-400",
   reviewing: "bg-primary animate-pulse-soft",
   approved: "bg-emerald-400",
+  no_review: "bg-amber-400",
   merged: "bg-emerald-500",
   blocked: "bg-amber-500 animate-pulse-soft",
   cancelled: "bg-muted-foreground",
@@ -60,7 +61,8 @@ export function SidebarBody({ onNavigate }: SidebarBodyProps) {
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+
+    const fetchChats = async () => {
       try {
         const list = await listChats({ limit: 12 });
         if (cancelled) return;
@@ -70,9 +72,48 @@ export function SidebarBody({ onNavigate }: SidebarBodyProps) {
         if (cancelled) return;
         setChatsState(err instanceof DaemonError ? "error" : "error");
       }
-    })();
+    };
+
+    // Initial fetch on mount + every pathname change.
+    fetchChats();
+
+    // Poll every 5s while the tab is visible. Pause when hidden so we
+    // don't burn requests on a backgrounded tab. Resume + immediate
+    // refresh on visibility-change so the sidebar reflects status updates
+    // (drafting → reviewing → approved/merged) the user expects without a
+    // manual page reload. Daemon list endpoint is cheap (single SQLite read).
+    let interval: ReturnType<typeof setInterval> | null = null;
+    const start = () => {
+      if (interval) return;
+      interval = setInterval(fetchChats, 5000);
+    };
+    const stop = () => {
+      if (interval) {
+        clearInterval(interval);
+        interval = null;
+      }
+    };
+    const onVisibility = () => {
+      if (document.hidden) {
+        stop();
+      } else {
+        fetchChats();
+        start();
+      }
+    };
+    if (typeof document !== "undefined" && !document.hidden) {
+      start();
+    }
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVisibility);
+    }
+
     return () => {
       cancelled = true;
+      stop();
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibility);
+      }
     };
   }, [pathname]);
 
@@ -84,7 +125,7 @@ export function SidebarBody({ onNavigate }: SidebarBodyProps) {
       {/* Brand */}
       <div className="flex h-14 items-center gap-2 border-b border-border px-4">
         <div className="grid h-7 w-7 place-items-center rounded-md bg-primary/15 text-primary">
-          <Sparkles className="h-4 w-4" />
+          <TriadLogo className="h-[18px] w-[18px]" />
         </div>
         <span className="text-sm font-semibold tracking-tight">Chorus</span>
         <span className="ml-auto rounded-md border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">

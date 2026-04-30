@@ -6,6 +6,14 @@ CREATE TABLE IF NOT EXISTS chats (
   current_phase_idx INTEGER DEFAULT 0,
   yolo BOOLEAN DEFAULT 0,
   attached_files TEXT,
+  -- Optional absolute path to the user's repo for the Ship phase. When set,
+  -- doer cwd is this path (real edits land in the user's working tree).
+  -- When unset, ship phase auto-skips and chat ends `approved`.
+  repo_path TEXT,
+  -- PR URL written by the Ship phase on success (status=merged).
+  pr_url TEXT,
+  -- Failure context written when ship fails (status=blocked).
+  ship_error TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   finished_at INTEGER

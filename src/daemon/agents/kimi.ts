@@ -14,8 +14,16 @@
  * server (that would be circular). It just reads ask.md, writes answer.md.
  */
 
-import type { AgentShim, AgentSpawnOptions, AgentNudgeOptions } from './types.js';
+import type {
+  AgentShim,
+  AgentSpawnOptions,
+  AgentNudgeOptions,
+  HeadlessSpawnOptions,
+  AgentEvent,
+} from './types.js';
 import { quoteValue, quotePath, validateValue } from './quote.js';
+import { spawnHeadless } from '../headless.js';
+import { parseKimi } from './parsers.js';
 
 export const kimiShim: AgentShim = {
   lineage: 'moonshot',
@@ -41,6 +49,13 @@ export const kimiShim: AgentShim = {
     return cmd;
   },
 
+  // Defense-in-depth recovery if --afk is dropped or a future kimi rev shows
+  // a different prompt shape. Default highlight is "Allow once"; Right + Enter
+  // navigates to "Always allow" and confirms (same UX convention as opencode).
+  recoverKeys: {
+    permission_prompt: ['Right', 'Enter'] as const,
+  },
+
   formatPrompt(opts: AgentNudgeOptions): string {
     const sentinel = opts.expectDoneSentinel
       ? '\n\nWhen finished, end your response with: ## DONE'
@@ -51,6 +66,34 @@ export const kimiShim: AgentShim = {
       `Read the prompt at: ${opts.promptFile}\n\n` +
       `Write your full answer to: ${opts.answerFile}${sentinel}`
     );
+  },
+
+  /**
+   * Headless mode (`kimi --print --output-format stream-json`).
+   *
+   * Kimi is intentionally Claude-Code-compatible (Moonshot designed it that
+   * way) so we reuse parseClaude via parseKimi. Phase B verification:
+   * capture real kimi --print output to confirm the format hasn't drifted.
+   * The watcher + recoverKeys we shipped in PR 1 are belt-and-suspenders
+   * for the case where it has.
+   */
+  runHeadless(opts: HeadlessSpawnOptions): AsyncIterable<AgentEvent> {
+    const args = ['--print', '--output-format', 'stream-json'];
+    if (opts.model) args.push('-m', opts.model);
+
+    const run = spawnHeadless({
+      command: 'kimi',
+      args,
+      cwd: opts.cwd,
+      stdinPayload: opts.promptText,
+      parseLine: parseKimi,
+      cli: 'kimi',
+      timeoutMs: opts.timeoutMs,
+      abortSignal: opts.abortSignal,
+      heartbeat: false,
+    });
+
+    return run.events;
   },
 
   estimateCostUsd(): number {

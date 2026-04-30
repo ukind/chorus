@@ -60,6 +60,54 @@ profile into the correct flag (`gemini --approval-mode default`,
 `codex -c sandbox_mode=read-only`, `claude --dangerously-skip-permissions`,
 `kimi --afk`).
 
+### Headless transport (new in v0.5)
+
+Default transport for every CLI is now subprocess + stream-json instead of
+tmux + send-keys. Each shim spawns the CLI in `--print`/`exec`/`run` mode,
+pipes the prompt via stdin or argv, parses stream-json events from stdout.
+
+- **~80% lower RAM:** no resident TUI process between rounds (~200-500MB
+  per CLI saved). 3 reviewers in parallel went from 1-1.5GB tmux overhead
+  to near-zero.
+- **Permission dialogs disappear:** all 5 CLIs auto-approve in headless mode
+  (Claude `--permission-mode bypassPermissions`, Gemini `--approval-mode
+  auto_edit`, Kimi `--print`, Codex `exec` honors sandbox config, OpenCode
+  `run` is non-interactive).
+- **Stream-json parsers verified:** Claude (Anthropic format) and Gemini
+  (Google format) tested against real fixtures. Kimi reuses Claude's parser
+  (Moonshot intentionally Claude-Code-compatible). OpenCode + Codex are
+  one-shot; UI shows a heartbeat every 5s during the silent run.
+- **Live streaming UI:** run page subscribes to `phase_progress` SSE events
+  and renders text deltas instantly, no 4s polling lag.
+- **Stuck-process safety:** every spawn gets a 10-min hard timeout +
+  AbortSignal hook, SIGTERM-then-SIGKILL grace, on-disk PID registry,
+  daemon-startup orphan reaper. Hung CLIs can't burn API tokens forever.
+- **Tmux is still a first-class option:** Settings → Transport toggle, or
+  `CHORUS_TRANSPORT=tmux` env override. No deprecation timeline. Use it when
+  you want to attach (`tmux attach -t <name>`) and watch agents work
+  step-by-step.
+
+Mixed-mode chats are supported: a chat can run Claude doer in headless and
+Gemini reviewer in tmux fallback if a shim's `runHeadless` is missing for
+the lineage.
+
+### Permission-prompt auto-recovery
+
+Defense-in-depth for the rare cases where Layer 1 (config pre-approval
+written by `chorus init`) misses something:
+
+- Error detector watches every CLI pane for "Always allow" / "Allow once"
+  dialogs (lineage-agnostic — same regex catches OpenCode bash dialogs,
+  Kimi tool prompts, subagent-spawn dialogs).
+- Each shim declares `recoverKeys.permission_prompt` (e.g. OpenCode + Kimi
+  both use `['Right', 'Enter']` — Right arrow to "Always allow", Enter to
+  confirm).
+- Runner sends those keys via tmux on detection, emits `cli_warning`
+  (not `cli_error`), skips health degradation.
+- Plus `connectOpencode` now writes a `permission.bash` allowlist to
+  `~/.config/opencode/opencode.json` covering safe read-only ops (`git diff`,
+  `cat`, `ls`, `find`, `rg`, etc.) so the dialog never appears for those.
+
 ### Status taxonomy
 
 Chat statuses: `drafting | reviewing | approved | no_review | failed | cancelled | merged | blocked`.
@@ -95,9 +143,19 @@ just declares "I want a moonshot reviewer."
 
 ### Direct API-key reviewers
 
-v0.5 ships CLI-spawn only. v0.6 adds an alternate spawn path that calls the
-vendor SDK directly when the user has provided an API key, bypassing the
-tmux session entirely. Faster cold start, no per-CLI quirks.
+v0.5 ships CLI-spawn only (headless or tmux). v0.6 adds an alternate spawn
+path that calls the vendor SDK directly when the user has provided an API
+key, bypassing the CLI subprocess entirely. Faster cold start, no per-CLI
+quirks.
+
+### Real-output verification of Gemini/Kimi/OpenCode/Codex headless
+
+Claude's stream-json was verified against a real `claude --print` capture
+2026-04-30 with 8 inline tests. Gemini was verified the same way. Kimi
+reuses Claude's parser (per Moonshot's stated compatibility) but a captured
+fixture lands in v0.6. OpenCode + Codex emit one-shot `message_done` from
+full stdout — sufficient for v0.5 but a streaming variant for OpenCode
+(`opencode serve`?) is on the v0.6 list.
 
 ### Live verdict synthesis
 

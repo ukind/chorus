@@ -14,7 +14,9 @@ import type { TmuxManager } from './tmux-types.js';
 import { registry } from './agents/index.js';
 import { ErrorDetector } from './error-detector.js';
 import { getPermissions } from '../lib/settings/permissions.js';
+import { getTransport } from '../lib/settings/transport.js';
 import { recordHealth, kindToStatus, type CliLineage } from '../lib/cli-health.js';
+import type { AgentShim } from './agents/types.js';
 
 export interface RunnerEvent {
   chatId: string;
@@ -24,6 +26,7 @@ export interface RunnerEvent {
     | 'phase_done'
     | 'phase_failed'
     | 'cli_error'
+    | 'cli_warning'
     | 'chat_done';
   payload: Record<string, unknown>;
   ts: number;
@@ -126,6 +129,7 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
           tmuxMgr,
           errorDetector,
           onEvent,
+          abortSignal,
         );
 
         if (!doerAnswer) {
@@ -166,6 +170,7 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
             tmuxMgr,
             errorDetector,
             onEvent,
+            abortSignal,
           );
 
           if (consensus.allFailed) {
@@ -246,6 +251,160 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
   }
 }
 
+/**
+ * Headless transport doer: spawn the CLI in --print mode, consume the
+ * AgentEvent stream, persist incrementally to answer.md so the existing
+ * artifacts API + run page (which polls answer.md every 4s) sees live
+ * progress without UI changes.
+ *
+ * Returns the same shape as runDoer for drop-in consumption by the phase loop.
+ */
+async function runDoerHeadless(args: {
+  shim: AgentShim;
+  chatId: string;
+  phase: Phase;
+  round: number;
+  agentName: string;
+  askContent: string;
+  answerFile: string;
+  doerDir: string;
+  abortSignal: AbortSignal;
+  onEvent: (e: RunnerEvent) => void;
+}): Promise<{ content: string; full: boolean } | null> {
+  const { shim, chatId, phase, round, agentName, askContent, answerFile, doerDir, abortSignal, onEvent } =
+    args;
+
+  if (!shim.runHeadless) {
+    // Defensive — caller should have checked. Fail closed.
+    return null;
+  }
+
+  const perms = getPermissions();
+  let accumulated = '';
+  let finalText: string | undefined;
+  let errored = false;
+
+  // Initialize answer.md so the artifacts endpoint sees the file mid-stream.
+  fs.writeFileSync(answerFile, '');
+
+  const stream = shim.runHeadless({
+    cwd: doerDir,
+    promptText: askContent,
+    model: phase.doer.models?.[0],
+    sandbox: perms.sandboxProfile,
+    autoApprove: perms.autoApprovePrompts,
+    networkAccess: perms.networkAccess,
+    abortSignal,
+    timeoutMs: 10 * 60 * 1000,
+  });
+
+  try {
+    for await (const event of stream) {
+      if (event.type === 'text_delta') {
+        accumulated += event.text;
+        // Append-write so the file grows monotonically — run page polling
+        // sees progress without races. Sync write is fine; deltas are small.
+        fs.appendFileSync(answerFile, event.text);
+        onEvent({
+          chatId,
+          type: 'phase_progress',
+          payload: {
+            phaseId: phase.id,
+            round,
+            role: 'doer',
+            agent: agentName,
+            output: accumulated.slice(-500),
+          },
+          ts: Date.now(),
+        });
+      } else if (event.type === 'tool_call_start') {
+        onEvent({
+          chatId,
+          type: 'phase_progress',
+          payload: {
+            phaseId: phase.id,
+            round,
+            role: 'doer',
+            agent: agentName,
+            tool: event.tool,
+          },
+          ts: Date.now(),
+        });
+      } else if (event.type === 'progress') {
+        // Heartbeat from non-streaming CLIs — surface so UI knows we're alive.
+        onEvent({
+          chatId,
+          type: 'phase_progress',
+          payload: {
+            phaseId: phase.id,
+            round,
+            role: 'doer',
+            agent: agentName,
+            elapsedMs: event.elapsedMs,
+          },
+          ts: Date.now(),
+        });
+      } else if (event.type === 'message_done') {
+        finalText = event.finalText;
+        // Authoritative final write. Only append the ## DONE sentinel if the
+        // model didn't already write one (some models include it in their
+        // response when the prompt asks for it — duplicate sentinels look
+        // sloppy in the artifact viewer).
+        const needsSentinel = !/\n##\s*DONE\s*\n?$/i.test(event.finalText.trimEnd());
+        const finalContent = needsSentinel
+          ? `${event.finalText}\n\n## DONE\n`
+          : event.finalText.endsWith('\n')
+            ? event.finalText
+            : `${event.finalText}\n`;
+        fs.writeFileSync(answerFile, finalContent);
+      } else if (event.type === 'error') {
+        errored = true;
+        onEvent({
+          chatId,
+          type: 'cli_error',
+          payload: {
+            phaseId: phase.id,
+            round,
+            role: 'doer',
+            agent: agentName,
+            error: { kind: event.kind, message: event.message, lineage: phase.doer.lineage },
+          },
+          ts: Date.now(),
+        });
+      }
+    }
+  } catch (err) {
+    errored = true;
+    onEvent({
+      chatId,
+      type: 'cli_error',
+      payload: {
+        phaseId: phase.id,
+        round,
+        role: 'doer',
+        agent: agentName,
+        error: {
+          kind: 'stream_failure',
+          message: err instanceof Error ? err.message : String(err),
+          lineage: phase.doer.lineage,
+        },
+      },
+      ts: Date.now(),
+    });
+  }
+
+  if (errored && finalText === undefined && accumulated.length === 0) {
+    return null;
+  }
+
+  // Prefer the authoritative finalText from message_done when non-empty
+  // (Claude carries the full result there). Fall back to accumulated
+  // deltas when message_done was empty (Gemini's result line is stats-only)
+  // or absent (CLI exited unexpectedly).
+  const content = finalText && finalText.length > 0 ? finalText : accumulated;
+  return { content, full: finalText !== undefined || accumulated.length > 0 };
+}
+
 async function runDoer(
   chatDir: string,
   chatId: string,
@@ -256,6 +415,7 @@ async function runDoer(
   tmuxMgr: TmuxManager,
   errorDetector: ErrorDetector,
   onEvent: (e: RunnerEvent) => void,
+  abortSignal: AbortSignal,
 ): Promise<{ content: string; full: boolean } | null> {
   const shim = registry.pickShim(phase.doer.lineage);
   const agentName = shim.name;
@@ -272,6 +432,25 @@ async function runDoer(
   // Write ask.md (the prompt body the CLI reads).
   const ask = buildAsk(phase, phaseIdx, round, work, phase.inputs);
   fs.writeFileSync(askFile, ask);
+
+  // Transport branch: headless when settings + shim support it; otherwise
+  // fall through to the tmux flow below. Mixed-mode in a single chat is OK
+  // — Claude can run headless while Gemini reviewer falls back to tmux.
+  const transport = getTransport();
+  if (transport === 'headless' && shim.runHeadless) {
+    return runDoerHeadless({
+      shim,
+      chatId,
+      phase,
+      round,
+      agentName,
+      askContent: ask,
+      answerFile,
+      doerDir,
+      abortSignal,
+      onEvent,
+    });
+  }
 
   // Acquire session — fresh per chat by default; reuses across rounds when
   // template policy says so (shareSessionAcrossRounds, default true).
@@ -329,18 +508,40 @@ async function runDoer(
       const pane = tmuxMgr.capturePane(session.name);
       const err = errorDetector.inspect(session.name, phase.doer.lineage, pane);
       if (err) {
-        recordHealth({
-          lineage: phase.doer.lineage as CliLineage,
-          status: kindToStatus(err.kind),
-          message: err.message,
-          resetAt: err.resetAt,
-        });
-        onEvent({
-          chatId,
-          type: 'cli_error',
-          payload: { phaseId: phase.id, round, role: 'doer', agent: agentName, error: err },
-          ts: Date.now(),
-        });
+        const recoveryKeys =
+          err.kind === 'permission_prompt' ? shim.recoverKeys?.permission_prompt : undefined;
+        if (recoveryKeys && recoveryKeys.length > 0) {
+          // Layer 2 recovery: navigate the dialog, emit a warning (not error),
+          // skip health recording — we recovered, no degradation.
+          tmuxMgr.sendKeys(session.name, [...recoveryKeys]);
+          onEvent({
+            chatId,
+            type: 'cli_warning',
+            payload: {
+              phaseId: phase.id,
+              round,
+              role: 'doer',
+              agent: agentName,
+              recovered: err.kind,
+              keys: [...recoveryKeys],
+              detail: err.detail,
+            },
+            ts: Date.now(),
+          });
+        } else {
+          recordHealth({
+            lineage: phase.doer.lineage as CliLineage,
+            status: kindToStatus(err.kind),
+            message: err.message,
+            resetAt: err.resetAt,
+          });
+          onEvent({
+            chatId,
+            type: 'cli_error',
+            payload: { phaseId: phase.id, round, role: 'doer', agent: agentName, error: err },
+            ts: Date.now(),
+          });
+        }
       }
     } catch {
       // ignore — the watcher will time out independently
@@ -375,6 +576,7 @@ async function runReviewers(
   tmuxMgr: TmuxManager,
   errorDetector: ErrorDetector,
   onEvent: (e: RunnerEvent) => void,
+  abortSignal: AbortSignal,
 ): Promise<{ agreed: boolean; summary: string; allFailed: boolean }> {
   if (!phase.reviewer || phase.reviewer.candidates.length === 0) {
     return { agreed: true, summary: '', allFailed: false };
@@ -407,6 +609,7 @@ async function runReviewers(
       tmuxMgr,
       errorDetector,
       onEvent,
+      abortSignal,
     )
       .then((res) => {
         reviews.push({
@@ -439,6 +642,155 @@ async function runReviewers(
   return { agreed, summary, allFailed };
 }
 
+/**
+ * Headless transport reviewer. Mirrors runDoerHeadless but returns the
+ * boolean | null verdict shape that runReviewers expects:
+ *   true  = reviewer approved (answer text contains "approve" / "good")
+ *   false = reviewer disagreed
+ *   null  = reviewer never produced a valid answer
+ */
+async function runReviewerHeadless(args: {
+  shim: AgentShim;
+  chatId: string;
+  phase: Phase;
+  round: number;
+  reviewerIdx: number;
+  candidateLineage: string;
+  candidateModel?: string;
+  agentName: string;
+  askContent: string;
+  answerFile: string;
+  reviewerDir: string;
+  abortSignal: AbortSignal;
+  onEvent: (e: RunnerEvent) => void;
+}): Promise<boolean | null> {
+  const {
+    shim,
+    chatId,
+    phase,
+    round,
+    reviewerIdx,
+    candidateLineage,
+    candidateModel,
+    agentName,
+    askContent,
+    answerFile,
+    reviewerDir,
+    abortSignal,
+    onEvent,
+  } = args;
+
+  if (!shim.runHeadless) return null;
+
+  const perms = getPermissions();
+  let accumulated = '';
+  let finalText: string | undefined;
+  let errored = false;
+
+  fs.writeFileSync(answerFile, '');
+
+  const stream = shim.runHeadless({
+    cwd: reviewerDir,
+    promptText: askContent,
+    model: candidateModel,
+    sandbox: perms.sandboxProfile,
+    autoApprove: perms.autoApprovePrompts,
+    networkAccess: perms.networkAccess,
+    abortSignal,
+    timeoutMs: 10 * 60 * 1000,
+  });
+
+  try {
+    for await (const event of stream) {
+      if (event.type === 'text_delta') {
+        accumulated += event.text;
+        fs.appendFileSync(answerFile, event.text);
+        onEvent({
+          chatId,
+          type: 'phase_progress',
+          payload: {
+            phaseId: phase.id,
+            round,
+            role: 'reviewer',
+            agent: `${agentName}-${reviewerIdx}`,
+            output: accumulated.slice(-500),
+          },
+          ts: Date.now(),
+        });
+      } else if (event.type === 'tool_call_start') {
+        onEvent({
+          chatId,
+          type: 'phase_progress',
+          payload: {
+            phaseId: phase.id,
+            round,
+            role: 'reviewer',
+            agent: `${agentName}-${reviewerIdx}`,
+            tool: event.tool,
+          },
+          ts: Date.now(),
+        });
+      } else if (event.type === 'progress') {
+        onEvent({
+          chatId,
+          type: 'phase_progress',
+          payload: {
+            phaseId: phase.id,
+            round,
+            role: 'reviewer',
+            agent: `${agentName}-${reviewerIdx}`,
+            elapsedMs: event.elapsedMs,
+          },
+          ts: Date.now(),
+        });
+      } else if (event.type === 'message_done') {
+        finalText = event.finalText;
+        fs.writeFileSync(answerFile, `${event.finalText}\n\n## DONE\n`);
+      } else if (event.type === 'error') {
+        errored = true;
+        onEvent({
+          chatId,
+          type: 'cli_error',
+          payload: {
+            phaseId: phase.id,
+            round,
+            role: 'reviewer',
+            agent: `${agentName}-${reviewerIdx}`,
+            error: { kind: event.kind, message: event.message, lineage: candidateLineage },
+          },
+          ts: Date.now(),
+        });
+      }
+    }
+  } catch (err) {
+    errored = true;
+    onEvent({
+      chatId,
+      type: 'cli_error',
+      payload: {
+        phaseId: phase.id,
+        round,
+        role: 'reviewer',
+        agent: `${agentName}-${reviewerIdx}`,
+        error: {
+          kind: 'stream_failure',
+          message: err instanceof Error ? err.message : String(err),
+          lineage: candidateLineage,
+        },
+      },
+      ts: Date.now(),
+    });
+  }
+
+  const content = finalText && finalText.length > 0 ? finalText : accumulated;
+  if (errored && content.trim().length === 0) return null;
+  if (content.trim().length === 0) return null;
+
+  // Same verdict heuristic as the tmux reviewer path.
+  const lower = content.toLowerCase();
+  return lower.includes('approve') || lower.includes('good');
+}
+
 async function runReviewer(
   chatDir: string,
   chatId: string,
@@ -451,6 +803,7 @@ async function runReviewer(
   tmuxMgr: TmuxManager,
   errorDetector: ErrorDetector,
   onEvent: (e: RunnerEvent) => void,
+  abortSignal: AbortSignal,
 ): Promise<boolean | null> {
   // Returns:
   //   true  = reviewer ran and approved
@@ -474,6 +827,27 @@ async function runReviewer(
 
   const ask = buildReviewerAsk(phase, phaseIdx, round, work, doerOutput);
   fs.writeFileSync(askFile, ask);
+
+  // Headless branch — same pattern as runDoer. Mixed-mode is fine: doer can
+  // run headless while a reviewer of a different lineage falls back to tmux.
+  const transport = getTransport();
+  if (transport === 'headless' && shim.runHeadless) {
+    return runReviewerHeadless({
+      shim,
+      chatId,
+      phase,
+      round,
+      reviewerIdx,
+      candidateLineage: candidate.lineage,
+      candidateModel: candidate.models?.[0],
+      agentName,
+      askContent: ask,
+      answerFile,
+      reviewerDir,
+      abortSignal,
+      onEvent,
+    });
+  }
 
   // Reviewers don't share sessions across rounds — each round wants a fresh
   // perspective on the new doer output. Across-phase reuse never makes sense.
@@ -529,24 +903,45 @@ async function runReviewer(
       const pane = tmuxMgr.capturePane(session.name);
       const err = errorDetector.inspect(session.name, candidate.lineage, pane);
       if (err) {
-        recordHealth({
-          lineage: candidate.lineage as CliLineage,
-          status: kindToStatus(err.kind),
-          message: err.message,
-          resetAt: err.resetAt,
-        });
-        onEvent({
-          chatId,
-          type: 'cli_error',
-          payload: {
-            phaseId: phase.id,
-            round,
-            role: 'reviewer',
-            agent: `${agentName}-${reviewerIdx}`,
-            error: err,
-          },
-          ts: Date.now(),
-        });
+        const recoveryKeys =
+          err.kind === 'permission_prompt' ? shim.recoverKeys?.permission_prompt : undefined;
+        if (recoveryKeys && recoveryKeys.length > 0) {
+          // Layer 2 recovery — see doer poll loop above for rationale.
+          tmuxMgr.sendKeys(session.name, [...recoveryKeys]);
+          onEvent({
+            chatId,
+            type: 'cli_warning',
+            payload: {
+              phaseId: phase.id,
+              round,
+              role: 'reviewer',
+              agent: `${agentName}-${reviewerIdx}`,
+              recovered: err.kind,
+              keys: [...recoveryKeys],
+              detail: err.detail,
+            },
+            ts: Date.now(),
+          });
+        } else {
+          recordHealth({
+            lineage: candidate.lineage as CliLineage,
+            status: kindToStatus(err.kind),
+            message: err.message,
+            resetAt: err.resetAt,
+          });
+          onEvent({
+            chatId,
+            type: 'cli_error',
+            payload: {
+              phaseId: phase.id,
+              round,
+              role: 'reviewer',
+              agent: `${agentName}-${reviewerIdx}`,
+              error: err,
+            },
+            ts: Date.now(),
+          });
+        }
       }
     } catch {
       // ignore

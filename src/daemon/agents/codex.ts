@@ -4,9 +4,17 @@
  * Transport-aware sandbox modes (see feedback_codex_sandbox_modes.md).
  */
 
-import type { AgentShim, AgentSpawnOptions, AgentNudgeOptions } from './types.js';
+import type {
+  AgentShim,
+  AgentSpawnOptions,
+  AgentNudgeOptions,
+  HeadlessSpawnOptions,
+  AgentEvent,
+} from './types.js';
 import { quoteValue, quotePath, validateValue } from './quote.js';
 import { preTrustCodexWorkspace } from './preflight.js';
+import { spawnHeadless } from '../headless.js';
+import { parseCodex, parseCodexExit } from './parsers.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -98,6 +106,60 @@ export const codexShim: AgentShim = {
       `Read the prompt at: ${opts.promptFile}\n\n` +
       `Write your full answer to: ${opts.answerFile}${sentinel}`
     );
+  },
+
+  /**
+   * Headless mode (`codex exec`).
+   *
+   * Codex `exec` accepts a prompt on argv (or stdin if argv empty) and
+   * writes plain stdout — no stream-json. parseCodex returns [] every line;
+   * on exit we emit one message_done with the full stdout. Heartbeat is on
+   * so the UI shows progress during the silent run.
+   *
+   * Sandbox flags forwarded same as the tmux path. Codex's `exec` honors
+   * `-c sandbox_mode=...` and `-c sandbox_workspace_write.network_access=...`
+   * the same way as the interactive command.
+   */
+  runHeadless(opts: HeadlessSpawnOptions): AsyncIterable<AgentEvent> {
+    validateValue('accountId', opts.accountId);
+    validateValue('model', opts.model);
+
+    const codexHome = ensureCodexHome(opts.accountId);
+    preTrustCodexWorkspace(codexHome, opts.cwd);
+
+    const args: string[] = ['exec'];
+
+    if (opts.sandbox === 'full') {
+      args.push('--dangerously-bypass-approvals-and-sandbox');
+    } else if (opts.sandbox === 'strict') {
+      args.push('-c', 'sandbox_mode="read-only"');
+    }
+
+    if (opts.networkAccess) {
+      args.push('-c', 'sandbox_workspace_write.network_access=true');
+    }
+
+    if (opts.model) {
+      args.push('--model', opts.model);
+    }
+
+    // Codex exec accepts the prompt as the final positional arg.
+    args.push(opts.promptText);
+
+    const run = spawnHeadless({
+      command: 'codex',
+      args,
+      cwd: opts.cwd,
+      env: { CODEX_HOME: codexHome },
+      parseLine: parseCodex,
+      onExit: (fullStdout) => parseCodexExit(fullStdout),
+      cli: 'codex',
+      timeoutMs: opts.timeoutMs,
+      abortSignal: opts.abortSignal,
+      heartbeat: true, // no streaming; heartbeat keeps UI alive
+    });
+
+    return run.events;
   },
 
   estimateCostUsd(): number {

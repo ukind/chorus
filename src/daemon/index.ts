@@ -527,6 +527,39 @@ async function main() {
     }
   });
 
+  // ─── Transport setting (headless vs tmux) ───────────────────────────────
+
+  fastify.get<{ Reply: ApiResponse<object> }>('/settings/transport', async () => {
+    try {
+      const { getTransport, TRANSPORT_DESCRIPTIONS } = await import('../lib/settings/transport.js');
+      return successResponse({
+        transport: getTransport(),
+        descriptions: TRANSPORT_DESCRIPTIONS,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return errorResponse('internal', message);
+    }
+  });
+
+  fastify.put<{
+    Body: { transport: 'headless' | 'tmux' };
+    Reply: ApiResponse<object>;
+  }>('/settings/transport', async (request) => {
+    try {
+      const { setTransport } = await import('../lib/settings/transport.js');
+      const body = request.body ?? ({} as { transport: 'headless' | 'tmux' });
+      if (body.transport !== 'headless' && body.transport !== 'tmux') {
+        return errorResponse('validation', 'transport must be "headless" or "tmux"');
+      }
+      const next = setTransport(body.transport);
+      return successResponse({ transport: next });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return errorResponse('validation', message);
+    }
+  });
+
   // List orchestrators with their connection status
   fastify.get<{
     Reply: ApiResponse<object[]>;
@@ -558,6 +591,22 @@ async function main() {
 
   // Seed built-in templates on startup
   seedBuiltinTemplates();
+
+  // Reap orphan headless subprocesses from any prior daemon crash. Without
+  // this, a hung CLI from a previous run keeps burning subscription quota
+  // until manually killed. Safe to call on every startup.
+  try {
+    const { reapOrphanProcesses } = await import('./headless.js');
+    const result = reapOrphanProcesses();
+    if (result.reaped > 0 || result.cleared > 0) {
+      console.log(
+        `[chorus] reaper: killed ${result.reaped} orphan headless processes, cleared ${result.cleared} stale records`,
+      );
+    }
+  } catch (err) {
+    // Non-fatal — orphan cleanup is best-effort.
+    console.warn('[chorus] reaper: failed to scan PID dir', err);
+  }
 
   // Initialize tmux manager and reaper
   tmuxMgr = new TmuxManagerImpl();

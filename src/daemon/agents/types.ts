@@ -116,10 +116,113 @@ export interface AgentShim {
    */
   readonly clearKeys?: readonly string[];
   /**
+   * Per-CLI key sequences to auto-recover from blocking dialogs the
+   * error-detector flags. The runner consults this map when a `RecoverableKind`
+   * is detected, sends the keys via tmux, and emits a `cli_warning` rather than
+   * a `cli_error` (we recovered, no need to fail the chat).
+   *
+   * Example: OpenCode's "Always allow" dialog needs `['Right', 'Enter']` to
+   * navigate from default "Allow once" to "Always allow" and confirm.
+   *
+   * Layer 2 of the three-layer permission model. Layer 1 (config-file
+   * pre-approval, e.g. `permission.bash.allow` in opencode.json) prevents the
+   * dialog from appearing in the first place; Layer 2 catches anything Layer 1
+   * missed; Layer 3 surfaces non-recoverable failures (quota, auth) to the user.
+   */
+  readonly recoverKeys?: Partial<Record<RecoverableKind, readonly string[]>>;
+  /**
+   * Run this CLI in headless mode (no tmux, no TUI). Yields a stream of
+   * AgentEvents the runner consumes for live UI updates and final persistence.
+   *
+   * Optional during transition: when missing or when settings.transport='tmux',
+   * runner falls back to the tmux + tmux-types path. Implement per shim in
+   * Phase B of the headless migration.
+   *
+   * Implementation contract:
+   *   - Spawn the CLI's headless mode (claude --print, gemini -p, etc.)
+   *   - Pipe `opts.promptText` via argv or stdin per CLI's convention
+   *   - Parse stream-json (or one-shot output) into AgentEvents
+   *   - Honor `opts.abortSignal` — SIGTERM the child, then SIGKILL after grace
+   *   - Honor `opts.timeoutMs` — same kill sequence on timeout
+   *   - For non-streaming CLIs, emit `progress` every 5s while alive
+   *   - End with exactly one `message_done` (or `error`) before iterator closes
+   */
+  runHeadless?(opts: HeadlessSpawnOptions): AsyncIterable<AgentEvent>;
+  /**
    * Estimate per-call cost in USD. Used by /new cost preview. CLI-subscription
    * lineages return 0; API-keyed lineages use the rate card. Best-effort.
    */
   estimateCostUsd(inputTokens: number, outputTokens: number, model?: string): number;
+}
+
+/**
+ * Error-detector kinds that the runner can attempt to auto-recover from by
+ * sending a per-CLI key sequence. Non-recoverable kinds (quota_exhausted,
+ * auth_required, opencode_db_corrupt, etc.) stay as `cli_error` events.
+ */
+export type RecoverableKind = 'permission_prompt';
+
+// ─── Headless transport (v0.5+) ─────────────────────────────────────────────
+//
+// Alternative to tmux: spawn each CLI in `--print` / `exec` mode, pipe the
+// prompt to stdin, parse stream-json events from stdout. No TUI, no
+// pane-scraping, ~80% lower RAM, no persistent process between rounds.
+//
+// Each shim implements `runHeadless(opts)` returning AsyncIterable<AgentEvent>.
+// Runner consumes the stream, persists final text to answer.md (for run-page
+// artifact API backward compat), and emits SSE events as deltas arrive.
+//
+// CLIs that don't support stream-json (OpenCode `run --format json` is one-
+// shot; Codex `exec` is plain stdout) emit a synthetic `progress` heartbeat
+// every 5s so the UI shows the agent is alive, then a `message_done` with
+// the full text when the process exits.
+
+/**
+ * Internal event taxonomy emitted by `runHeadless`. Discriminated union of
+ * what every CLI's stream-json reduces to. Streaming CLIs (Claude, Gemini,
+ * Kimi) emit `text_delta` and `tool_call_*`; one-shot CLIs (OpenCode, Codex)
+ * emit only `progress` then `message_done`.
+ */
+export type AgentEvent =
+  | { type: 'text_delta'; text: string }
+  | { type: 'tool_call_start'; tool: string; input?: unknown }
+  | { type: 'tool_call_end'; tool: string; ok: boolean }
+  | { type: 'progress'; elapsedMs: number }
+  | { type: 'message_done'; finalText: string }
+  | { type: 'error'; kind: string; message: string };
+
+/**
+ * Options for `AgentShim.runHeadless`. Mirrors `AgentSpawnOptions` for the
+ * fields that still apply (cwd, model, sandbox, autoApprove, networkAccess)
+ * plus a prompt-text payload (no separate ask.md file in headless), an
+ * AbortSignal for cancel, and a hard timeoutMs.
+ *
+ * **Stuck-process safety:** the spawn manager enforces `timeoutMs` (default
+ * 10min) — SIGTERM on timeout, SIGKILL after 5s grace. AbortSignal does the
+ * same on user cancel. Without these a hung CLI can burn API tokens forever.
+ */
+export interface HeadlessSpawnOptions {
+  /** Working directory the CLI launches in. */
+  cwd: string;
+  /**
+   * Full prompt text. Some CLIs accept this on argv (`gemini -p "<text>"`),
+   * others on stdin (`claude --print < prompt`). The shim chooses.
+   */
+  promptText: string;
+  /** Specific model; empty = CLI default. */
+  model?: string;
+  /** Sandbox profile from settings. */
+  sandbox?: 'strict' | 'workspace' | 'full';
+  /** Auto-approve in-CLI prompts. Headless mode usually auto-approves regardless. */
+  autoApprove?: boolean;
+  /** Allow outbound network. */
+  networkAccess?: boolean;
+  /** Cancel propagation (chat cancel button, daemon shutdown). */
+  abortSignal?: AbortSignal;
+  /** Hard timeout — process is killed after this. Default 600_000 (10 min). */
+  timeoutMs?: number;
+  /** Per-account isolation (codex multi-auth). */
+  accountId?: string;
 }
 
 /**

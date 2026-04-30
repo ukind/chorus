@@ -102,9 +102,16 @@ interface SSEEvent {
     | "phase_done"
     | "phase_failed"
     | "cli_error"
+    | "cli_warning"
     | "chat_done";
   payload: Record<string, unknown>;
   ts: number;
+}
+
+/** Build the participant key the run page uses for matching SSE events
+ * to participant cards. Mirrors the directory-name suffix logic. */
+function participantKey(role: string, lineage: string): string {
+  return `${role}:${lineage}`;
 }
 
 export function LiveRunReal({
@@ -120,6 +127,13 @@ export function LiveRunReal({
   const [activeParticipants, setActiveParticipants] = useState<Set<string>>(
     new Set(),
   );
+
+  // Live tail per participant (role:lineage → most recent ~500 chars). When
+  // headless transport is in use, runner emits phase_progress events with
+  // payload.output containing the latest accumulated tail. We render this
+  // immediately for instant feedback, falling back to disk-polled content
+  // when the SSE event hasn't arrived yet.
+  const [liveTails, setLiveTails] = useState<Record<string, string>>({});
 
   const isTerminal = ["approved", "failed", "cancelled"].includes(status);
 
@@ -165,9 +179,25 @@ export function LiveRunReal({
           });
         }
 
+        if (e.type === "phase_progress" && role && agent) {
+          // Live text tail from headless transport — show immediately so the
+          // user sees the agent typing, not a 4s-polled snapshot.
+          const output = e.payload.output as string | undefined;
+          if (typeof output === "string" && output.length > 0) {
+            // Map agent label (e.g. "claude-code", "gemini-cli") back to
+            // lineage. The phase_progress payload uses the shim name; we
+            // map by prefix because dir names embed the agent name fully.
+            const lineage = agent.split("-")[0];
+            const key = participantKey(role, lineage);
+            setLiveTails((prev) => ({ ...prev, [key]: output }));
+          }
+        }
+
         if (e.type === "phase_done" || e.type === "phase_failed") {
           // Clear actives — next phase_start re-populates.
           setActiveParticipants(new Set());
+          // Don't clear liveTails — let the disk-poll update them with the
+          // final answer instead of flashing empty.
         }
 
         if (e.type === "chat_done") {
@@ -338,6 +368,7 @@ export function LiveRunReal({
               round={latestRound}
               isLatest
               activeFor={lineageMatchActive}
+              liveTails={liveTails}
             />
           )}
 
@@ -351,7 +382,12 @@ export function LiveRunReal({
                   .slice()
                   .reverse()
                   .map((r) => (
-                    <RoundView key={r.round} round={r} activeFor={() => false} />
+                    <RoundView
+                      key={r.round}
+                      round={r}
+                      activeFor={() => false}
+                      liveTails={{}}
+                    />
                   ))}
               </div>
             </details>
@@ -366,10 +402,12 @@ function RoundView({
   round,
   isLatest,
   activeFor,
+  liveTails,
 }: {
   round: RoundSnapshot;
   isLatest?: boolean;
   activeFor: (p: ParticipantSnapshot) => boolean;
+  liveTails: Record<string, string>;
 }) {
   return (
     <section>
@@ -387,6 +425,7 @@ function RoundView({
             key={p.participant}
             participant={p}
             isActive={activeFor(p)}
+            liveTail={liveTails[`${p.role}:${p.lineage}`]}
           />
         ))}
       </div>
@@ -397,15 +436,17 @@ function RoundView({
 function ParticipantCard({
   participant,
   isActive,
+  liveTail,
 }: {
   participant: ParticipantSnapshot;
   isActive: boolean;
+  liveTail?: string;
 }) {
   const [showFull, setShowFull] = useState(false);
 
   const state: "working" | "done" | "idle" = participant.hasAnswer
     ? "done"
-    : isActive
+    : isActive || (liveTail && liveTail.length > 0)
       ? "working"
       : "idle";
 
@@ -441,6 +482,12 @@ function ParticipantCard({
               {line}
             </div>
           ))
+        ) : liveTail && liveTail.length > 0 ? (
+          // Live tail from headless transport — last ~500 chars of streaming
+          // output. Shows the agent typing in real time, no 4s polling lag.
+          <pre className="whitespace-pre-wrap break-words text-foreground/85">
+            {liveTail}
+          </pre>
         ) : state === "working" ? (
           <div className="text-muted-foreground">Working…</div>
         ) : (

@@ -375,8 +375,46 @@ const OPENCODE_USER_CONFIG_PATH = path.join(os.homedir(), '.config', 'opencode',
 
 interface OpencodeConfig {
   mcp?: Record<string, unknown>;
+  permission?: {
+    edit?: 'ask' | 'allow' | 'deny';
+    bash?: Record<string, 'ask' | 'allow' | 'deny'>;
+    [key: string]: unknown;
+  };
   [key: string]: unknown;
 }
+
+/**
+ * Safe-bash allowlist for OpenCode reviewers. Read-only ops that reviewers
+ * legitimately need to inspect a diff (git diff, ls, cat, grep, find) — these
+ * shouldn't prompt every spawn. Destructive ops (rm, git push, git reset) fall
+ * through to `*: ask` which preserves the safety gate.
+ *
+ * Layer 1 of the three-layer permission model: prevent the dialog from
+ * appearing in the first place. Layer 2 (shim.recoverKeys) catches anything
+ * this misses.
+ */
+const OPENCODE_SAFE_BASH: Record<string, 'allow' | 'ask' | 'deny'> = {
+  'git diff': 'allow',
+  'git diff *': 'allow',
+  'git status': 'allow',
+  'git log': 'allow',
+  'git log *': 'allow',
+  'git show *': 'allow',
+  'git blame *': 'allow',
+  cat: 'allow',
+  'cat *': 'allow',
+  ls: 'allow',
+  'ls *': 'allow',
+  'find *': 'allow',
+  'rg *': 'allow',
+  'grep *': 'allow',
+  'head *': 'allow',
+  'tail *': 'allow',
+  'wc *': 'allow',
+  'pwd': 'allow',
+  'echo *': 'allow',
+  '*': 'ask',
+};
 
 function readOpencodeConfig(): { config: OpencodeConfig; existed: boolean } {
   if (!fs.existsSync(OPENCODE_USER_CONFIG_PATH)) {
@@ -420,10 +458,24 @@ export function connectOpencode(opts: { binPath: string; daemonUrl?: string }): 
   const existing = mcp.chorus as { command?: string[] } | undefined;
   const existingBinMatches =
     existing && Array.isArray(existing.command) && existing.command.includes(opts.binPath);
-  if (existingBinMatches) {
+
+  // Bash pre-approval is independent of the MCP block — pre-approve even if
+  // the MCP block is already correct, in case the user's existing config
+  // doesn't have it. Idempotent merge: never overwrite a user's explicit
+  // setting, only fill gaps.
+  const existingPermission = (config.permission ?? {}) as NonNullable<OpencodeConfig['permission']>;
+  const existingBash = (existingPermission.bash ?? {}) as Record<string, 'allow' | 'ask' | 'deny'>;
+  const mergedBash: Record<string, 'allow' | 'ask' | 'deny'> = { ...OPENCODE_SAFE_BASH };
+  // User's settings win over our defaults — preserves explicit deny rules etc.
+  for (const [pattern, mode] of Object.entries(existingBash)) {
+    mergedBash[pattern] = mode;
+  }
+  const bashChanged = JSON.stringify(existingBash) !== JSON.stringify(mergedBash);
+
+  if (existingBinMatches && !bashChanged) {
     return {
       added: [],
-      alreadyPresent: ['mcp.chorus'],
+      alreadyPresent: ['mcp.chorus', 'permission.bash'],
       configPath: OPENCODE_USER_CONFIG_PATH,
       slashCommand: 'skipped',
       slashCommandPath: '',
@@ -442,13 +494,21 @@ export function connectOpencode(opts: { binPath: string; daemonUrl?: string }): 
     $schema: 'https://opencode.ai/config.json',
     ...config,
     mcp,
+    permission: {
+      ...existingPermission,
+      bash: mergedBash,
+    },
   };
 
   fs.mkdirSync(path.dirname(OPENCODE_USER_CONFIG_PATH), { recursive: true });
   fs.writeFileSync(OPENCODE_USER_CONFIG_PATH, JSON.stringify(next, null, 2) + '\n', 'utf-8');
 
+  const added: string[] = [];
+  if (!existingBinMatches) added.push('mcp.chorus');
+  if (bashChanged) added.push('permission.bash');
+
   return {
-    added: ['mcp.chorus'],
+    added,
     alreadyPresent: [],
     configPath: OPENCODE_USER_CONFIG_PATH,
     slashCommand: 'skipped',

@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { getTransport, updateTransport, type Transport } from "@/lib/api/settings";
 import {
   Activity,
   AlertTriangle,
@@ -345,6 +346,9 @@ function FormView(p: FormViewProps) {
           <span aria-hidden>→</span>
         </a>
       </Section>
+
+      {/* Transport: headless vs tmux */}
+      <TransportSection />
 
       {/* Permissions — split by role */}
       <Section
@@ -876,4 +880,109 @@ notifications:
   mcp_enabled: ${s.mcpEnabled}
   webhook_url: ${s.webhookUrl ? `"${s.webhookUrl}"` : '""'}
 `;
+}
+
+/**
+ * Transport toggle — chooses how chorus invokes the underlying CLIs.
+ *
+ * Headless (default): subprocess + stream-json. Lower RAM, faster cold start,
+ * fewer permission prompts.
+ *
+ * Tmux: persistent TUI sessions you can attach to with `tmux attach -t <name>`
+ * for visual debugging. Higher RAM, but lets you see exactly what each agent
+ * is doing step-by-step. First-class option, no deprecation timeline.
+ */
+function TransportSection() {
+  const [current, setCurrent] = useState<Transport | null>(null);
+  const [descriptions, setDescriptions] = useState<
+    Record<Transport, { label: string; description: string }> | undefined
+  >(undefined);
+  const [pending, setPending] = useState<Transport | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getTransport()
+      .then((res) => {
+        if (cancelled) return;
+        setCurrent(res.transport);
+        setDescriptions(res.descriptions);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : "Could not load transport setting.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const onPick = (t: Transport): void => {
+    if (current === t || pending) return;
+    setPending(t);
+    setError(null);
+    updateTransport({ transport: t })
+      .then((res) => {
+        setCurrent(res.transport);
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : "Save failed.");
+      })
+      .finally(() => setPending(null));
+  };
+
+  return (
+    <Section
+      icon={<Server className="h-4 w-4" />}
+      title="Transport"
+      subtitle="How chorus runs each CLI. Default is headless (faster, lower RAM). Switch to tmux if you want to attach and watch agents work step-by-step."
+    >
+      {error && (
+        <div className="mb-3 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+          {error}
+        </div>
+      )}
+      <div className="grid gap-2 sm:grid-cols-2">
+        {(["headless", "tmux"] as const).map((t) => {
+          const active = current === t;
+          const isPending = pending === t;
+          const meta = descriptions?.[t];
+          return (
+            <button
+              key={t}
+              type="button"
+              onClick={() => onPick(t)}
+              disabled={pending !== null || current === null}
+              className={`flex flex-col gap-1 rounded-lg border p-3 text-left transition ${
+                active
+                  ? "border-primary/50 bg-primary/10"
+                  : "border-border bg-card hover:border-muted-foreground/30"
+              } ${pending !== null ? "opacity-60" : ""}`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium">
+                  {meta?.label ?? (t === "headless" ? "Headless" : "Tmux")}
+                </span>
+                {active && (
+                  <span className="rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-primary">
+                    {isPending ? "saving…" : "active"}
+                  </span>
+                )}
+              </div>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                {meta?.description ??
+                  (t === "headless"
+                    ? "Subprocess per call. Lower RAM, faster cold start, no permission dialogs."
+                    : "Persistent terminal sessions you can attach to for visual debug.")}
+              </p>
+            </button>
+          );
+        })}
+      </div>
+      <p className="mt-3 text-[11px] text-muted-foreground">
+        Tip: set <code className="rounded bg-muted px-1">CHORUS_TRANSPORT=tmux</code> in
+        your environment to override per-shell without changing this setting.
+      </p>
+    </Section>
+  );
 }

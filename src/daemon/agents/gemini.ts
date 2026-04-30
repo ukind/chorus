@@ -5,8 +5,16 @@
  * File references via @/abs/path inline syntax.
  */
 
-import type { AgentShim, AgentSpawnOptions, AgentNudgeOptions } from './types.js';
+import type {
+  AgentShim,
+  AgentSpawnOptions,
+  AgentNudgeOptions,
+  HeadlessSpawnOptions,
+  AgentEvent,
+} from './types.js';
 import { quoteValue, quotePath, validateValue } from './quote.js';
+import { spawnHeadless } from '../headless.js';
+import { parseGemini } from './parsers.js';
 
 export const geminiShim: AgentShim = {
   lineage: 'google',
@@ -46,6 +54,48 @@ export const geminiShim: AgentShim = {
       `@${opts.promptFile} Read this file and follow the <ask> XML block, ` +
       `write your full answer to ${opts.answerFile}.${sentinel}`
     );
+  },
+
+  /**
+   * Headless mode (`gemini -p "<prompt>" --output-format stream-json`).
+   *
+   * Gemini takes the prompt on argv (not stdin) — we pass it as the -p value.
+   * Approval mode + --skip-trust replaces tmux's preflight workspace-trust
+   * dance. Format verified 2026-04-30 against gemini-cli with model
+   * gemini-3.1-pro-preview; see parseGemini for shape.
+   */
+  runHeadless(opts: HeadlessSpawnOptions): AsyncIterable<AgentEvent> {
+    const args = ['-p', opts.promptText, '--output-format', 'stream-json', '--skip-trust'];
+
+    // Sandbox profile → approval-mode mapping. Never use yolo
+    // (see feedback_gemini_yolo_dangerous.md — empty-content overwrites).
+    if (opts.sandbox === 'strict') {
+      args.push('--approval-mode', 'plan'); // read-only
+    } else {
+      args.push('--approval-mode', 'auto_edit');
+    }
+
+    // Model — Gemini CLI requires an explicit model on current API; default
+    // to gemini-3.1-pro-preview (the verified-working model).
+    args.push('-m', opts.model || 'gemini-3.1-pro-preview');
+
+    const run = spawnHeadless({
+      command: 'gemini',
+      args,
+      cwd: opts.cwd,
+      // Gemini reads the prompt from argv, not stdin — no stdinPayload.
+      env: {
+        // Defense in depth: env-var trust override matches the --skip-trust flag.
+        GEMINI_CLI_TRUST_WORKSPACE: 'true',
+      },
+      parseLine: parseGemini,
+      cli: 'gemini',
+      timeoutMs: opts.timeoutMs,
+      abortSignal: opts.abortSignal,
+      heartbeat: false, // streaming
+    });
+
+    return run.events;
   },
 
   estimateCostUsd(): number {

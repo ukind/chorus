@@ -15,7 +15,7 @@ export type CliErrorKind =
   | 'token_refresh_lost'     // codex: "access token could not be refreshed because your refresh token was already used"
   | 'mcp_handshake_failed'   // codex: "failed: handshaking with MCP server failed"
   | 'opencode_db_corrupt'    // opencode: "Provider returned error" repeating with no successful response in last N seconds
-  | 'kimi_permission_prompt' // kimi: "Allow this tool?" dialog (only if --afk flag missing or future kimi rev drops it)
+  | 'permission_prompt'      // any CLI: "Allow this tool? / Always allow" dialog. Recoverable via shim.recoverKeys (Layer 2 of perm model)
   | 'cold_start_timeout'     // CLI never showed its prompt within cold_start_timeout_s
   | 'tmux_dead'              // session no longer exists per tmux has-session
   | 'unknown';               // catch-all
@@ -75,7 +75,14 @@ export class ErrorDetector {
    */
   inspect(sessionName: string, lineage: string, paneText: string): CliError | null {
     const result = this.detect(sessionName, lineage, paneText);
-    if (!result) return null;
+    if (!result) {
+      // No error currently visible — clear dedup so a recurring kind
+      // (e.g. a *second* permission_prompt after we recovered the first) can
+      // re-fire later. Without this, recoverable+recurring events are silently
+      // suppressed for the rest of the session.
+      this.lastEmittedKind.delete(sessionName);
+      return null;
+    }
 
     // Dedup: skip if we already emitted this exact kind for this session.
     // The user's experience: one quota error event per quota event, not 149.
@@ -136,19 +143,33 @@ export class ErrorDetector {
       return this.inspectOpenCodeCorruption(sessionName, paneText);
     }
 
-    // Pattern 5: Kimi permission prompt (defense-in-depth fallback).
-    // Normally kimi is launched with --afk which auto-approves; this catches
-    // the case where a future kimi version drops --afk or shows a different
-    // prompt type. Runner should auto-respond (send "always" + Enter) rather
-    // than fail the chat.
-    if (lineage === 'moonshot') {
-      const promptMatch = /Allow .*tool|Approve .*call|Always allow|\[a\]llow/i.exec(paneText);
+    // Pattern 5: Permission prompt — lineage-agnostic.
+    //
+    // Catches "Always allow" / "Allow this tool?" / approval dialogs across
+    // every CLI we drive (opencode, kimi, claude, codex, gemini). Layer 1 of
+    // the permission model (config-file pre-approval) makes this rare; this
+    // pattern is Layer 2 — defense-in-depth. The runner consults the shim's
+    // `recoverKeys.permission_prompt` to navigate the dialog (e.g. opencode
+    // needs `['Right', 'Enter']` to pick "Always allow") and emits a
+    // `cli_warning` rather than failing the chat.
+    //
+    // Filtered to interactive CLIs only — sentinel like 'any' has no UI.
+    const isInteractiveCli =
+      lineage === 'anthropic' ||
+      lineage === 'openai' ||
+      lineage === 'google' ||
+      lineage === 'opencode' ||
+      lineage === 'moonshot';
+    if (isInteractiveCli) {
+      // Match common prompt phrasings without false-positive on chat content
+      // (e.g. someone asking "approve this PR" — anchor on TUI-style markers).
+      const promptMatch = /(\b|△ ?)(Always allow|Allow always|Allow this|Allow once|Approve this call|Approve and run|\[a\]llow)\b/i.exec(paneText);
       if (promptMatch) {
         return {
-          kind: 'kimi_permission_prompt',
+          kind: 'permission_prompt',
           lineage,
-          message: 'Kimi is asking to approve a tool call (--afk flag may have been ignored).',
-          cta: 'Runner will auto-respond with "always allow".',
+          message: `${lineage} is showing an approval dialog.`,
+          cta: 'Runner auto-recovers via shim.recoverKeys; if missing, click "Always allow" manually.',
           detail: promptMatch[0],
         };
       }

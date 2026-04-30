@@ -35,6 +35,26 @@ export async function updateSettings(patch: Partial<Settings>): Promise<Settings
   });
 }
 
+export type Transport = "headless" | "tmux";
+
+export interface TransportSettings {
+  transport: Transport;
+  descriptions?: Record<Transport, { label: string; description: string }>;
+}
+
+export async function getTransport(): Promise<TransportSettings> {
+  return fetchFromDaemon<TransportSettings>("/settings/transport");
+}
+
+export async function updateTransport(
+  patch: { transport: Transport },
+): Promise<TransportSettings> {
+  return fetchFromDaemon<TransportSettings>("/settings/transport", {
+    method: "PUT",
+    body: JSON.stringify(patch),
+  });
+}
+
 export async function listSecrets(): Promise<Secret[]> {
   return fetchFromDaemon<Secret[]>("/secrets");
 }

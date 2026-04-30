@@ -3,9 +3,17 @@
  * Multi-paragraph prompts are fine; no special formatting needed.
  */
 
-import type { AgentShim, AgentSpawnOptions, AgentNudgeOptions } from './types.js';
+import type {
+  AgentShim,
+  AgentSpawnOptions,
+  AgentNudgeOptions,
+  HeadlessSpawnOptions,
+  AgentEvent,
+} from './types.js';
 import { quoteValue, quotePath } from './quote.js';
 import { preTrustClaudeWorkspace } from './preflight.js';
+import { spawnHeadless } from '../headless.js';
+import { parseClaude } from './parsers.js';
 
 export const claudeShim: AgentShim = {
   lineage: 'anthropic',
@@ -45,6 +53,63 @@ export const claudeShim: AgentShim = {
       `Read the prompt at: ${opts.promptFile}\n\n` +
       `Write your full answer to: ${opts.answerFile}${sentinel}`
     );
+  },
+
+  /**
+   * Headless mode (`claude --print --output-format stream-json --verbose`).
+   *
+   * Pipes the full prompt via stdin, parses Anthropic-shape stream-json events,
+   * yields AgentEvents to the runner. No tmux session, no pane scraping, no
+   * permission dialogs (bypassPermissions is set when autoApprove is on).
+   *
+   * Verified format 2026-04-30 against Claude Code 2.1.123. See parsers.ts
+   * for the parsed shapes and inline tests.
+   */
+  runHeadless(opts: HeadlessSpawnOptions): AsyncIterable<AgentEvent> {
+    preTrustClaudeWorkspace(opts.cwd);
+
+    const args = ['--print', '--output-format', 'stream-json', '--verbose'];
+
+    // Sandbox profile → permission-mode mapping. Headless mode auto-skips the
+    // workspace-trust dialog (per `claude -p` docs) so we don't need preflight
+    // beyond the trust marker write above.
+    if (opts.sandbox === 'strict') {
+      // 'plan' = read-only-ish: no Edit, no Bash. The closest Claude has to
+      // a strict sandbox in headless.
+      args.push('--permission-mode', 'plan');
+    } else if (opts.autoApprove !== false || opts.sandbox === 'full') {
+      // Default for headless reviewer spawns — bypass per-tool prompts so the
+      // agent doesn't hang waiting on stdin for an approval that'll never come.
+      args.push('--permission-mode', 'bypassPermissions');
+    }
+    // 'workspace' (default) without auto-approve: leave Claude in default
+    // permission mode (per-tool prompts). Will hang on the first prompt
+    // unless settings.local.json pre-approves what's needed — which is what
+    // `chorus init` writes into the user's config.
+
+    if (opts.model) {
+      args.push('--model', opts.model);
+    }
+
+    // Claude doesn't have a "no network" flag in headless, so networkAccess
+    // is implicitly governed by the user's claude config and any tool the
+    // agent attempts. Strict sandbox + plan mode is our gate.
+
+    const run = spawnHeadless({
+      command: 'claude',
+      args,
+      cwd: opts.cwd,
+      stdinPayload: opts.promptText,
+      parseLine: parseClaude,
+      cli: 'claude',
+      timeoutMs: opts.timeoutMs,
+      abortSignal: opts.abortSignal,
+      // Streaming CLI — no heartbeat needed; text_delta events provide
+      // continuous progress signal.
+      heartbeat: false,
+    });
+
+    return run.events;
   },
 
   estimateCostUsd(): number {

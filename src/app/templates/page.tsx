@@ -1,12 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { GitFork, Heart, Code2, Eye } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { NewTemplateDialog } from "@/components/new-template-dialog";
-import { TEMPLATES } from "@/lib/mock-data";
+import { listTemplates, DaemonError } from "@/lib/api";
+import { Template } from "@/lib/types";
 
 const LINEAGE_DOT: Record<string, string> = {
   codex: "bg-orange-400",
@@ -24,17 +25,45 @@ const CATEGORIES = [
 ] as const;
 
 export default function TemplatesPage() {
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [activeCat, setActiveCat] =
     useState<(typeof CATEGORIES)[number]["id"]>("all");
-  const [selectedId, setSelectedId] = useState(TEMPLATES[0].id);
+  const [selectedId, setSelectedId] = useState<string>("");
+
+  useEffect(() => {
+    listTemplates()
+      .then((temps) => {
+        setTemplates(temps);
+        if (temps.length > 0) setSelectedId(temps[0].id);
+      })
+      .catch((err) =>
+        setLoadError(
+          err instanceof DaemonError ? err.message : "Failed to load templates",
+        ),
+      );
+  }, []);
 
   const filtered =
     activeCat === "all"
-      ? TEMPLATES
-      : TEMPLATES.filter((t) => t.category === activeCat);
+      ? templates
+      : templates.filter((t) => t.category === activeCat);
 
   const selected =
-    TEMPLATES.find((t) => t.id === selectedId) ?? TEMPLATES[0];
+    templates.find((t) => t.id === selectedId) ?? templates[0] ?? null;
+
+  if (loadError) {
+    return (
+      <AppShell>
+        <div className="mx-auto w-full max-w-6xl px-8 py-10">
+          <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4">
+            <p className="text-sm text-destructive">Error loading templates</p>
+            <p className="mt-1 text-xs text-muted-foreground">{loadError}</p>
+          </div>
+        </div>
+      </AppShell>
+    );
+  }
 
   return (
     <AppShell>
@@ -139,37 +168,43 @@ export default function TemplatesPage() {
           </div>
 
           {/* YAML preview */}
-          <Card className="bg-card p-0">
-            <div className="flex items-center justify-between border-b border-border bg-card/60 px-4 py-2.5">
-              <div className="flex items-center gap-2 font-mono text-[11px] text-muted-foreground">
-                <Code2 className="h-3 w-3" />
-                {selected.id}.yaml
+          {selected ? (
+            <Card className="bg-card p-0">
+              <div className="flex items-center justify-between border-b border-border bg-card/60 px-4 py-2.5">
+                <div className="flex items-center gap-2 font-mono text-[11px] text-muted-foreground">
+                  <Code2 className="h-3 w-3" />
+                  {selected.id}.yaml
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[11px] text-muted-foreground transition hover:text-foreground"
+                  >
+                    <Eye className="h-3 w-3" />
+                    Preview
+                  </button>
+                  <button
+                    type="button"
+                    className="flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[11px] text-muted-foreground transition hover:text-foreground"
+                  >
+                    <GitFork className="h-3 w-3" />
+                    Fork
+                  </button>
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  className="flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[11px] text-muted-foreground transition hover:text-foreground"
-                >
-                  <Eye className="h-3 w-3" />
-                  Preview
-                </button>
-                <button
-                  type="button"
-                  className="flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[11px] text-muted-foreground transition hover:text-foreground"
-                >
-                  <GitFork className="h-3 w-3" />
-                  Fork
-                </button>
+              <pre className="overflow-x-auto px-5 py-4 font-mono text-xs leading-relaxed text-muted-foreground">
+                {selected.yaml}
+              </pre>
+              <div className="border-t border-border bg-card/60 px-4 py-2.5 text-[11px] text-muted-foreground">
+                by {selected.authorHandle} · {selected.forks} forks ·{" "}
+                {selected.popularity}% community love
               </div>
-            </div>
-            <pre className="overflow-x-auto px-5 py-4 font-mono text-xs leading-relaxed text-muted-foreground">
-              {selected.yaml}
-            </pre>
-            <div className="border-t border-border bg-card/60 px-4 py-2.5 text-[11px] text-muted-foreground">
-              by {selected.authorHandle} · {selected.forks} forks ·{" "}
-              {selected.popularity}% community love
-            </div>
-          </Card>
+            </Card>
+          ) : (
+            <Card className="bg-card p-4 text-center text-muted-foreground">
+              <p>Select a template to view details</p>
+            </Card>
+          )}
         </div>
       </div>
     </AppShell>

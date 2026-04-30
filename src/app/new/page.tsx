@@ -1,14 +1,11 @@
 "use client";
 
-import { Suspense, useMemo, useState } from "react";
-import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { Suspense, useMemo, useState, useTransition, useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowRight,
   Layers,
-  FolderKanban,
   Paperclip,
-  GitBranch,
   X,
   DollarSign,
   Info,
@@ -16,21 +13,8 @@ import {
 import { AppShell } from "@/components/app-shell";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { TEMPLATES, PROJECTS, ACTIVE_RUN } from "@/lib/mock-data";
-
-const LINEAGE_DOT: Record<string, string> = {
-  codex: "bg-orange-400",
-  gemini: "bg-blue-400",
-  opencode: "bg-emerald-400",
-  claude: "bg-violet-400",
-};
-
-// Map a project ID/slug to a fake source-path & branch for the context chip.
-const PROJECT_SOURCE: Record<string, { path: string; branch: string }> = {
-  "p-aurora": { path: "~/dev/aurora", branch: "main" },
-  "p-pricewise": { path: "~/dev/pricewise-api", branch: "develop" },
-  "p-orchard": { path: "~/dev/orchard", branch: "main" },
-};
+import { listTemplates, createChat, DaemonError } from "@/lib/api";
+import { Template } from "@/lib/types";
 
 export default function NewChatPage() {
   return (
@@ -49,24 +33,29 @@ interface Attachment {
 
 function NewChatPageInner() {
   const params = useSearchParams();
-  const initialTemplate = params.get("template") ?? TEMPLATES[0].id;
-  // Accept ?project= as either project ID (p-aurora) or slug (aurora-dashboard).
-  // Fall back to first project if not found.
-  const projectParam = params.get("project");
-  const initialProjectId =
-    PROJECTS.find(
-      (p) => p.id === projectParam || p.name.toLowerCase().replace(/\s+/g, "-") === projectParam,
-    )?.id ?? PROJECTS[0].id;
+  const router = useRouter();
+  const [isPending, startTransition] = useTransition();
 
-  const [templateId, setTemplateId] = useState(initialTemplate);
-  const [projectId, setProjectId] = useState(initialProjectId);
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [createError, setCreateError] = useState<string | null>(null);
+
+  useEffect(() => {
+    listTemplates()
+      .then(setTemplates)
+      .catch((err) =>
+        setLoadError(
+          err instanceof DaemonError ? err.message : "Failed to load templates",
+        ),
+      );
+  }, []);
+
+  const templateId =
+    params.get("template") ?? templates[0]?.id ?? "";
   const [prompt, setPrompt] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
 
-  const template =
-    TEMPLATES.find((t) => t.id === templateId) ?? TEMPLATES[0];
-  const project = PROJECTS.find((p) => p.id === projectId) ?? PROJECTS[0];
-  const source = PROJECT_SOURCE[projectId] ?? { path: "—", branch: "main" };
+  const template = templates.find((t) => t.id === templateId) ?? templates[0];
 
   // Cost estimate: rough heuristic based on prompt length + attachments + reviewer count.
   const costEstimate = useMemo(() => {
@@ -114,9 +103,42 @@ function NewChatPageInner() {
   }
 
   const overCap =
-    template.costCapUsd > 0 && costEstimate.usd > template.costCapUsd;
+    template?.costCapUsd && template.costCapUsd > 0 && costEstimate.usd > template.costCapUsd;
 
   const [yoloMode, setYoloMode] = useState(false);
+
+  async function handleStartRun() {
+    if (!template || !prompt) return;
+
+    setCreateError(null);
+    startTransition(async () => {
+      try {
+        const chat = await createChat({
+          work: prompt,
+          templateId: template.id,
+          files: attachments.length > 0 ? attachments.map((a) => a.name) : undefined,
+        });
+        router.push(`/runs/${chat.id}`);
+      } catch (err) {
+        setCreateError(
+          err instanceof DaemonError ? err.message : "Failed to create chat",
+        );
+      }
+    });
+  }
+
+  if (loadError) {
+    return (
+      <AppShell>
+        <div className="mx-auto w-full max-w-4xl px-8 py-10">
+          <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4">
+            <p className="text-sm text-destructive">Error loading templates</p>
+            <p className="mt-1 text-xs text-muted-foreground">{loadError}</p>
+          </div>
+        </div>
+      </AppShell>
+    );
+  }
 
   return (
     <AppShell>
@@ -130,70 +152,32 @@ function NewChatPageInner() {
           </h1>
         </div>
 
-        {/* Project source context — shows what the council will read from */}
-        <div className="mb-4 flex flex-wrap items-center gap-3 rounded-md border border-border bg-card/40 px-4 py-2.5 text-[11px] text-muted-foreground">
-          <span className="flex items-center gap-1.5">
-            <span aria-hidden>{project.emoji}</span>
-            <span className="font-medium text-foreground">{project.name}</span>
-          </span>
-          <span className="text-muted-foreground/50">·</span>
-          <span className="flex items-center gap-1">
-            <FolderKanban className="h-3 w-3" />
-            <code className="font-mono text-foreground/80">{source.path}</code>
-          </span>
-          <span className="text-muted-foreground/50">·</span>
-          <span className="flex items-center gap-1">
-            <GitBranch className="h-3 w-3" />
-            <code className="font-mono text-foreground/80">{source.branch}</code>
-          </span>
-          <span className="ml-auto text-[10px] text-muted-foreground/60">
-            this is what the council will read & write
-          </span>
-        </div>
+        {createError && (
+          <div className="mb-4 rounded-lg border border-destructive/50 bg-destructive/10 p-4">
+            <p className="text-sm text-destructive">{createError}</p>
+          </div>
+        )}
 
-        {/* Project + template pickers */}
+        {/* Template picker */}
         <div className="mb-4 flex flex-wrap items-center gap-2">
-          <Picker
-            icon={<FolderKanban className="h-3.5 w-3.5" />}
-            label="Project"
-            value={`${project.emoji} ${project.name}`}
-          >
-            <ul className="space-y-1">
-              {PROJECTS.map((p) => (
-                <li key={p.id}>
-                  <button
-                    type="button"
-                    onClick={() => setProjectId(p.id)}
-                    className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition ${
-                      p.id === projectId
-                        ? "bg-accent"
-                        : "hover:bg-accent/50"
-                    }`}
-                  >
-                    <span>{p.emoji}</span>
-                    <span>{p.name}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </Picker>
-
           <Picker
             icon={<Layers className="h-3.5 w-3.5" />}
             label="Template"
-            value={template.name}
+            value={template?.name || "Select a template"}
             wide
           >
             <ul className="space-y-1">
-              {TEMPLATES.map((t) => (
+              {templates.map((t) => (
                 <li key={t.id}>
                   <button
                     type="button"
-                    onClick={() => setTemplateId(t.id)}
+                    onClick={() => {
+                      const newParams = new URLSearchParams(params);
+                      newParams.set("template", t.id);
+                      router.push(`/new?${newParams.toString()}`);
+                    }}
                     className={`block w-full rounded-md p-2 text-left transition ${
-                      t.id === templateId
-                        ? "bg-accent"
-                        : "hover:bg-accent/50"
+                      t.id === templateId ? "bg-accent" : "hover:bg-accent/50"
                     }`}
                   >
                     <div className="text-sm font-medium">{t.name}</div>
@@ -286,9 +270,7 @@ function NewChatPageInner() {
                     className="flex items-center gap-1"
                     title={l}
                   >
-                    <span
-                      className={`h-1.5 w-1.5 rounded-full ${LINEAGE_DOT[l]}`}
-                    />
+                    <span className="h-1.5 w-1.5 rounded-full bg-blue-400" />
                     {l}
                   </span>
                 ))}
@@ -327,19 +309,19 @@ function NewChatPageInner() {
                 )}
               </div>
 
-              <Link
-                href={`/runs/${ACTIVE_RUN.id}`}
-                aria-disabled={prompt.length === 0 || overCap}
+              <button
+                type="button"
+                onClick={handleStartRun}
+                disabled={!prompt || overCap || isPending}
                 className={`inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition ${
-                  prompt.length === 0 || overCap
+                  !prompt || overCap || isPending
                     ? "cursor-not-allowed bg-muted text-muted-foreground"
                     : "bg-primary text-primary-foreground hover:bg-primary/90"
                 }`}
-                tabIndex={prompt.length === 0 ? -1 : 0}
               >
-                Start the run
+                {isPending ? "Starting..." : "Start the run"}
                 <ArrowRight className="h-4 w-4" />
-              </Link>
+              </button>
             </div>
           </div>
         </Card>

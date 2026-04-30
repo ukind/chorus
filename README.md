@@ -1,93 +1,174 @@
-# Chorus
+# 🎼 Chorus
 
-> Driver-agnostic multi-LLM peer review for code decisions.
+> **Get a second opinion on AI-written code — from a different AI.**
 
-You write code with your favourite AI CLI (Claude Code, Codex, Gemini,
-OpenCode, Kimi, Cursor, Windsurf). Chorus spawns 2–4 _other_ LLMs from
-different vendors to independently review the work, then surfaces the
-verdict before you ship.
+You wrote some code with ChatGPT, Claude, or Gemini. It looks good… but the same AI that wrote it can't catch its own blind spots. 🙈
 
-Why: the same model that wrote the code can't catch its own blind spots.
-Bring a different lineage in and you get a real second opinion — without
-context-switching out of your editor.
+**Chorus** runs your code past 2–4 *other* AIs from *different companies*, in parallel, and tells you whether they agree it's safe to ship.
 
-**Status:** v0.5 — pre-release. Apache-2.0.
+[![Status](https://img.shields.io/badge/status-v0.5_pre--release-orange)]()
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)]()
 
-## Quick start
+---
+
+## 👀 What it looks like
+
+![Chorus run page showing Claude, Codex, and Gemini reviewing a PR in parallel](docs/images/run-page.png)
+
+Three AIs review the same pull request. They each give a thumbs up or down. Chorus tells you "✅ Ready to merge" only when they agree.
+
+---
+
+## 🤔 Why bother?
+
+Imagine asking one friend to proofread your essay. They'll catch most typos — but they'll also *miss the same kinds of mistakes you'd miss*, because they think like you.
+
+Now imagine asking **four friends from different backgrounds** to proofread it. Way more bugs caught. 🐛
+
+That's Chorus, but for code.
+
+| Without Chorus 😬 | With Chorus 🎯 |
+|---|---|
+| One AI writes + reviews its own code | One AI writes, 3 others review |
+| Confident but wrong is invisible | Disagreement = red flag |
+| You ship, then debug at 2am | Reviewers catch it before merge |
+
+---
+
+## 🚀 Quick start (3 commands)
 
 ```bash
-npm i -g chorus
-chorus init     # detects installed CLIs, registers the chorus MCP server in each
-chorus start    # boots the local daemon + cockpit on http://localhost:5050
+npm i -g chorus      # 📦 install
+chorus init          # 🔌 auto-connects every AI CLI on your machine
+chorus start         # 🎬 opens http://localhost:5050
 ```
 
-That's it. Open the cockpit, fire a chat, watch the reviewers stream their
-critiques back live.
+That's it. Open the page, paste some code, hit **Submit**. Watch four AIs argue. ✨
 
-If you'd rather invoke from inside a CLI:
+---
 
-- **Claude Code**: `/chorus bug-diagnose <paste your snippet>`
-- **Codex / Gemini / Kimi / OpenCode / Cursor / Windsurf**: just say
-  *"chorus, run code-review on…"* — the MCP server we registered routes it.
+## 🎬 A real example
 
-## What gets connected
+Let's say you ask Claude to write a divide function:
 
-`chorus init` detects each CLI's config dir and wires Chorus as an MCP
-server. No prompts to dismiss in the CLI for the ones that support
-config-file pre-approval (Claude, Gemini, OpenCode). Kimi, Cursor, and
-Windsurf show a one-time "Always allow" prompt the first time you call a
-chorus tool — click through once and it's quiet forever.
+```js
+function divide(a, b) {
+  return a / b;
+}
+```
 
-| CLI | Inbound (call chorus from inside) | Outbound (chorus uses as reviewer) |
+Looks fine, right? Submit it to Chorus with the **Bug Diagnose** template:
+
+1. 🔵 **Claude (writer)** — "Looks correct to me!"
+2. 🟡 **Gemini (reviewer)** — "🚨 Missing zero-check. `divide(1, 0)` returns `Infinity`."
+3. 🟢 **Codex (reviewer)** — "🚨 Also no type validation — `divide('a', 'b')` returns `NaN`."
+
+**Verdict: ❌ Reject.** Now you know what to fix *before* you push.
+
+---
+
+## 🛠️ What CLIs are supported?
+
+Chorus auto-detects whichever AI tools you already have installed:
+
+| AI Tool | Can call Chorus | Can act as reviewer |
 |---|---|---|
-| Claude Code | ✅ | ✅ |
-| Codex | ✅ | ✅ |
-| Gemini | ✅ | ✅ |
-| OpenCode | ✅ | ✅ |
-| Kimi | ✅ | ✅ |
-| Cursor | ✅ | — (IDE, not headless) |
-| Windsurf | ✅ | — (IDE, not headless) |
+| 🤖 Claude Code | ✅ | ✅ |
+| 🦾 Codex CLI | ✅ | ✅ |
+| 💎 Gemini CLI | ✅ | ✅ |
+| 🌊 OpenCode | ✅ | ✅ |
+| 🌙 Kimi CLI | ✅ | ✅ |
+| ⚡ Cursor | ✅ | — *(IDE, not headless)* |
+| 🏄 Windsurf | ✅ | — *(IDE, not headless)* |
 
-## Templates
+You don't need *all* of them. Even **two** different AIs is a meaningful improvement over one.
 
-Built-in templates ship with the package:
+---
 
-- `bug-diagnose` — adversarial diagnosis (Claude Opus + Gemini cross-check)
-- `code-review` — 3-of-4 quorum across 4 lineages
-- `architect-review` — design proposal vs. cross-lineage devil's advocates
-- `red-green` — adversarial test/impl split with information asymmetry
+## 📝 Built-in templates
 
-You can also drop your own under `~/.chorus/templates/<id>.yaml`.
+Pick one when you submit a chat:
 
-## Permissions
+| Template | What it does | Best for |
+|---|---|---|
+| 🐛 `bug-diagnose` | One AI hunts the bug, another double-checks | "Why is this broken?" |
+| 👨‍⚖️ `code-review` | 4 AIs review, 3-of-4 must agree | Pre-merge gate |
+| 🏗️ `architect-review` | Cross-vendor critique of design proposals | Big decisions |
+| ⚔️ `red-green` | One AI writes tests, *another* writes the code (no peeking) | Adversarial testing |
 
-Cockpit `/settings/permissions` controls what reviewers can do:
+Want your own? Drop a YAML file in `~/.chorus/templates/` and it shows up automatically.
 
-- **Strict** — read only
-- **Workspace** (default) — read+write inside the chat dir
-- **Full** — no sandbox, only on a personal machine you trust
+---
 
-Plus toggles for auto-approving in-CLI prompts and outbound network access.
+## 🛡️ Permissions & safety
 
-## Commands
+Reviewers can run on your machine. You decide how much trust they get:
+
+- 🔒 **Strict** — read-only. They look, they don't touch.
+- 📁 **Workspace** *(default)* — read + write inside the chat folder, no internet.
+- 🔓 **Full** — no sandbox. Only on a personal machine you fully trust.
+
+Configure on first run, or anytime at `/settings/permissions`.
+
+---
+
+## 💡 How it actually works (peek under the hood)
 
 ```
-chorus init               # detect + connect every supported CLI
-chorus init --connect <list>  # only the ones you list (claude,codex,...)
-chorus start [--ui]       # start daemon + open cockpit
-chorus connect <cli>      # post-install one-CLI wire-up
-chorus ui                 # open cockpit in browser
-chorus status             # daemon health
-chorus stop               # stop daemon
-chorus mcp                # run MCP server on stdio (orchestrators call this)
+        ┌─────────────────┐
+        │   You submit    │
+        │   code + task   │
+        └────────┬────────┘
+                 │
+        ┌────────▼────────┐
+        │  Chorus daemon  │
+        │  (port 7707)    │
+        └────────┬────────┘
+                 │ spawns each AI in its own tmux session
+       ┌─────────┼─────────┬──────────┐
+       ▼         ▼         ▼          ▼
+   🤖 Claude  💎 Gemini  🦾 Codex  🌙 Kimi
+   (writer)  (reviewer) (reviewer) (reviewer)
+       │         │         │          │
+       └─────────┴────┬────┴──────────┘
+                      ▼
+              ✅ Verdict + diff
+              📊 Cockpit (port 5050)
 ```
 
-## Project links
+Each AI runs in a separate sandboxed terminal. Chorus reads their answers, compares them, and shows you the result live.
 
-- Cockpit: <http://localhost:5050>
-- Daemon API: <http://localhost:7707>
-- Issues / discussion: <https://github.com/99xAgency/chorus>
+---
 
-## License
+## 📋 All commands
 
-Apache-2.0. See [LICENSE](./LICENSE).
+```bash
+chorus init                       # detect + connect every CLI
+chorus init --connect claude,gemini   # only specific ones
+chorus start [--ui]               # boot daemon (and open browser)
+chorus connect <cli>              # wire up one CLI later
+chorus ui                         # open the cockpit in browser
+chorus status                     # is daemon running?
+chorus stop                       # shut it down
+chorus mcp                        # run MCP server (CLIs call this)
+```
+
+---
+
+## 🔗 Links
+
+- 🌐 Cockpit: <http://localhost:5050>
+- 🔌 Daemon API: <http://localhost:7707>
+- 🐛 Issues: <https://github.com/99xAgency/chorus/issues>
+- 📖 Install guide: [docs/v05/INSTALL-AND-TEST.md](docs/v05/INSTALL-AND-TEST.md)
+- 📝 Release notes: [docs/v05/RELEASE-NOTES.md](docs/v05/RELEASE-NOTES.md)
+
+---
+
+## 📜 License
+
+Apache-2.0. See [LICENSE](./LICENSE). Use it however you want — including commercially.
+
+---
+
+*Made with 🎵 by [99x.agency](https://99x.agency). Because one AI just isn't enough.*

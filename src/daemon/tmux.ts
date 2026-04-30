@@ -1,146 +1,403 @@
-import { execSync } from 'child_process';
-import { chats } from '../lib/db';
+import { spawnSync } from 'child_process';
+import type { TmuxManager, SessionHandle, AcquireSessionOptions } from './tmux-types.js';
 
-const REAPER_INTERVAL = 5 * 60 * 1000; // 5 minutes
-const SESSION_IDLE_TIMEOUT = 10 * 60 * 1000; // 10 minutes
+/**
+ * TmuxManagerImpl: Session manager for Chorus CLI integrations.
+ *
+ * Responsibilities:
+ * - Acquire sessions respecting share-session policy (across rounds, rarely across phases)
+ * - Spawn fresh tmux sessions via the agent shim's buildLaunchCommand
+ * - Provide tmux operations (sendKeys, pasteBuffer, capturePane)
+ * - Track sessions in memory + reconcile from `tmux ls` on startup
+ * - Reap orphans via reapOnce() called by index.ts every 5 min
+ *
+ * Hard rules:
+ * 1. %q-quote all user/template values at substitution time
+ * 2. Never reuse across chats (hard rule)
+ * 3. Tag every session with chorus-<chatId>-...
+ * 4. Per-session CODEX_HOME for codex (caller/shim handles env-var passing)
+ */
+export class TmuxManagerImpl implements TmuxManager {
+  /** In-memory registry: "chatId:phaseId:role:agentName" → SessionHandle */
+  private sessions = new Map<string, SessionHandle>();
 
-let reaperInterval: NodeJS.Timeout | null = null;
-
-export function initTmuxReaper(): void {
-  if (reaperInterval) return;
-
-  reaperInterval = setInterval(reapStaleSessions, REAPER_INTERVAL);
-}
-
-export function stopTmuxReaper(): void {
-  if (reaperInterval) {
-    clearInterval(reaperInterval);
-    reaperInterval = null;
-  }
-}
-
-export function createSession(chatId: string): string {
-  const sessionName = `chorus-${chatId}`;
-
-  // Check if session exists
-  try {
-    execSync(`tmux has-session -t "${sessionName}"`, { stdio: 'ignore' });
-    return sessionName;
-  } catch {
-    // Session doesn't exist, create it
+  constructor() {
+    // Reconcile existing chorus sessions on startup
+    this.reconcileExisting();
   }
 
-  // Create new session (detached)
-  execSync(`tmux new-session -d -s "${sessionName}"`);
+  /**
+   * Scan `tmux ls` for existing chorus-* sessions and rebuild the registry.
+   * Recovers state after daemon restart.
+   */
+  private reconcileExisting(): void {
+    try {
+      const result = spawnSync('tmux', ['list-sessions', '-F', '#{session_name}'], {
+        encoding: 'utf-8',
+      });
 
-  return sessionName;
-}
+      if (result.status === 0 && result.stdout) {
+        const lines = result.stdout.trim().split('\n').filter((line) => line.length > 0);
 
-export function killSession(chatId: string): void {
-  const sessionName = `chorus-${chatId}`;
+        for (const sessionName of lines) {
+          if (!sessionName.startsWith('chorus-')) continue;
 
-  try {
-    execSync(`tmux kill-session -t "${sessionName}"`, { stdio: 'ignore' });
-  } catch {
-    // Session may not exist, that's ok
-  }
-}
+          // Parse session name: chorus-<chatId>-<phaseId>-<role>-<agentName>
+          const parts = sessionName.split('-');
+          if (parts.length < 6) continue; // chorus + chatId + phaseId + role + agentName = 5 parts after split
 
-export function sendCommand(chatId: string, command: string): void {
-  const sessionName = `chorus-${chatId}`;
+          // Rebuild a minimal handle; agent lineage/name come from the parts
+          const chatId = parts[1];
+          const phaseId = parts[2];
+          const role = (parts[3] as 'doer' | 'reviewer') || 'doer';
+          const agentName = parts.slice(4).join('-'); // Re-join in case agent name has hyphens
 
-  try {
-    // Send command and press Enter
-    execSync(`tmux send-keys -t "${sessionName}" "${command}" Enter`, { stdio: 'ignore' });
-  } catch (error) {
-    console.error(`Failed to send command to tmux session ${sessionName}:`, error);
-  }
-}
+          const key = `${chatId}:${phaseId}:${role}:${agentName}`;
 
-export function getSessionStatus(chatId: string): 'active' | 'inactive' | 'not_found' {
-  const sessionName = `chorus-${chatId}`;
+          // Avoid overwriting if we already have this session tracked
+          if (this.sessions.has(key)) continue;
 
-  try {
-    const output = execSync(`tmux capture-pane -t "${sessionName}" -p`, { encoding: 'utf-8' });
+          const handle: SessionHandle = {
+            name: sessionName,
+            chatId,
+            phaseId,
+            role,
+            lineage: 'anthropic', // Safe default; actual lineage is unknown from tmux metadata
+            agentName,
+            spawnedAt: Date.now(),
+            lastActivityAt: Date.now(),
+            state: 'active',
+          };
 
-    // Check if any output (basic check)
-    return output.trim().length > 0 ? 'active' : 'inactive';
-  } catch {
-    return 'not_found';
-  }
-}
-
-function reapStaleSessions(): void {
-  try {
-    // Get all tmux sessions
-    const output = execSync('tmux list-sessions -F "#{session_name}"', { encoding: 'utf-8' });
-    const sessions = output.trim().split('\n').filter((s) => s.startsWith('chorus-'));
-
-    const now = Date.now();
-
-    for (const sessionName of sessions) {
-      const chatId = sessionName.replace('chorus-', '');
-
-      // Check if chat exists and is still active
-      const chat = chats.getById(chatId);
-
-      if (!chat) {
-        // Chat doesn't exist, kill session
-        killSession(chatId);
-        continue;
-      }
-
-      if (['cancelled', 'failed', 'merged'].includes(chat.status)) {
-        // Chat is finished, kill session
-        killSession(chatId);
-        continue;
-      }
-
-      // Check if session has been idle for too long
-      try {
-        execSync(`tmux capture-pane -t "${sessionName}" -p -e -S -100`, {
-          encoding: 'utf-8',
-          timeout: 1000,
-        });
-
-        // Get session creation time (rough estimate via activity)
-        // For now, we'll trust the chat's updated_at
-        const timeSinceUpdate = now - chat.updated_at;
-
-        if (timeSinceUpdate > SESSION_IDLE_TIMEOUT && chat.status === 'drafting') {
-          // Session idle too long and still drafting
-          killSession(chatId);
+          this.sessions.set(key, handle);
         }
-      } catch {
-        // Error accessing session, might be dead
-        killSession(chatId);
+      }
+    } catch {
+      // Silent fail; tmux may not be available yet
+    }
+  }
+
+  /**
+   * Validate a string against the allowed charset for tmux session names.
+   * Tmux allows [a-zA-Z0-9_-].
+   */
+  private validateNameComponent(value: string, field: string): string {
+    if (!/^[a-zA-Z0-9_-]+$/.test(value)) {
+      throw new Error(`Invalid ${field}: ${value} contains forbidden characters`);
+    }
+    return value;
+  }
+
+  /**
+   * Build the session key used in our in-memory registry.
+   */
+  private makeSessionKey(
+    chatId: string,
+    phaseId: string,
+    role: 'doer' | 'reviewer',
+    agentName: string
+  ): string {
+    return `${chatId}:${phaseId}:${role}:${agentName}`;
+  }
+
+  /**
+   * Build the tmux session name from components.
+   * Format: chorus-<chatId>-<phaseId>-<role>-<agentName>
+   */
+  private makeSessionName(
+    chatId: string,
+    phaseId: string,
+    role: 'doer' | 'reviewer',
+    agentName: string
+  ): string {
+    return `chorus-${chatId}-${phaseId}-${role}-${agentName}`;
+  }
+
+  /**
+   * Acquire a session for a phase round, respecting share-session policy.
+   *
+   * Decision tree:
+   * 1. If shareSessionAcrossRounds && session exists for this chat+phase+role+agent → reuse
+   * 2. Else if shareSessionAcrossPhases && session exists for this chat+role+agent on ANY phase → reuse + rename
+   * 3. Else spawn fresh
+   */
+  async acquire(opts: AcquireSessionOptions): Promise<SessionHandle> {
+    const {
+      chatId,
+      phaseId,
+      role,
+      shareSessionAcrossRounds,
+      shareSessionAcrossPhases,
+      agentName,
+    } = opts;
+
+    // Validate input charset
+    this.validateNameComponent(chatId, 'chatId');
+    this.validateNameComponent(phaseId, 'phaseId');
+    this.validateNameComponent(agentName, 'agentName');
+
+    const key = this.makeSessionKey(chatId, phaseId, role, agentName);
+
+    // Rule 1: Across rounds (round N → N+1) within THIS phase
+    if (shareSessionAcrossRounds) {
+      const existing = this.sessions.get(key);
+      if (existing) {
+        existing.lastActivityAt = Date.now();
+        return existing;
       }
     }
-  } catch (error) {
-    console.error('Error in tmux reaper:', error);
+
+    // Rule 2: Across phases (rare) — reuse from a previous phase
+    if (shareSessionAcrossPhases) {
+      for (const [registryKey, handle] of this.sessions) {
+        // Match on chat+role+agent, different phase
+        if (
+          handle.chatId === chatId &&
+          handle.role === role &&
+          handle.agentName === agentName &&
+          handle.phaseId !== phaseId
+        ) {
+          // Found one on a previous phase — rename and reuse
+          const newSessionName = this.makeSessionName(chatId, phaseId, role, agentName);
+
+          try {
+            spawnSync('tmux', ['rename-session', '-t', handle.name, newSessionName]);
+          } catch {
+            // If rename fails, fall through to spawn fresh
+            this.sessions.delete(registryKey);
+            break;
+          }
+
+          // Update the handle
+          handle.phaseId = phaseId;
+          handle.lastActivityAt = Date.now();
+          this.sessions.delete(registryKey);
+          this.sessions.set(key, handle);
+          return handle;
+        }
+      }
+    }
+
+    // Rule 3: Spawn fresh
+    return this.spawnFresh(opts, key);
   }
-}
 
-export async function runPhaseStub(chatId: string, phaseKind: string): Promise<string> {
-  // v0.5 stub: fake a 2-3s delay then return mock output
-  const delay = 2000 + Math.random() * 1000;
+  /**
+   * Spawn a fresh tmux session for the given phase round.
+   */
+  private async spawnFresh(opts: AcquireSessionOptions, key: string): Promise<SessionHandle> {
+    const { chatId, phaseId, role, agentName, shim, spawnOpts } = opts;
+    const sessionName = this.makeSessionName(chatId, phaseId, role, agentName);
 
-  await new Promise((resolve) => setTimeout(resolve, delay));
+    // Build launch command via the shim
+    const launchCommand = shim.buildLaunchCommand(spawnOpts);
 
-  const outputs: Record<string, string> = {
-    plan: JSON.stringify({
-      phases: [
-        { idx: 0, kind: 'plan', title: 'Planning Phase' },
-        { idx: 1, kind: 'spec', title: 'Specification' },
-      ],
-    }),
-    spec: 'Specification document generated',
-    tests: 'Unit tests written: 5 tests',
-    implement: 'Implementation complete: 150 lines of code',
-    review: JSON.stringify({ approved: true, comments: ['Good structure'] }),
-    verify: 'All checks passed',
-    divergence: JSON.stringify({ requiresUserInput: true, question: 'Proceed with merge?' }),
-  };
+    // Spawn tmux session
+    try {
+      // Use child_process.spawnSync with args array for safety
+      const result = spawnSync('tmux', ['new-session', '-d', '-s', sessionName, launchCommand], {
+        encoding: 'utf-8',
+      });
 
-  return outputs[phaseKind] || 'Phase completed';
+      if (result.status !== 0) {
+        throw new Error(
+          `Tmux spawn failed: status=${result.status}, stderr=${result.stderr || 'unknown'}`
+        );
+      }
+    } catch (error) {
+      throw new Error(
+        `TmuxSpawnError(code=tmux_unavailable): ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+
+    // Cold-start poll: wait up to 8s for the session to be ready
+    const startTime = Date.now();
+    const timeout = 8000;
+
+    while (Date.now() - startTime < timeout) {
+      try {
+        const hasResult = spawnSync('tmux', ['has-session', '-t', sessionName], {
+          encoding: 'utf-8',
+        });
+
+        if (hasResult.status === 0) {
+          // Session is live
+          const handle: SessionHandle = {
+            name: sessionName,
+            chatId,
+            phaseId,
+            role,
+            lineage: shim.lineage,
+            agentName,
+            spawnedAt: Date.now(),
+            lastActivityAt: Date.now(),
+            state: 'active',
+          };
+
+          this.sessions.set(key, handle);
+          return handle;
+        }
+      } catch {
+        // Still not ready
+      }
+
+      // Poll every 200ms
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+
+    // Cold-start timeout
+    throw new Error(
+      `TmuxSpawnError(code=cold_start_timeout): Session ${sessionName} did not become ready within 8s`
+    );
+  }
+
+  /**
+   * Send raw keys to a session (pre-nudge cleanup: Escape, Ctrl-C, /clear, etc.)
+   * Errors swallowed per spec.
+   */
+  sendKeys(sessionName: string, keys: string[]): void {
+    try {
+      const args = ['send-keys', '-t', sessionName, ...keys];
+      spawnSync('tmux', args, { stdio: 'ignore' });
+    } catch {
+      // Swallow errors — session may be dead or unresponsive
+    }
+  }
+
+  /**
+   * Paste multi-byte buffer via tmux load-buffer + paste-buffer.
+   * Per-session buffer name to avoid races between parallel chats.
+   */
+  pasteBuffer(sessionName: string, content: string): void {
+    try {
+      const bufferName = `chorus-${sessionName}-${process.pid}`;
+
+      // Load content into buffer
+      spawnSync('tmux', ['load-buffer', '-b', bufferName, '-'], {
+        input: content,
+        encoding: 'utf-8',
+      });
+
+      // Paste from buffer
+      spawnSync('tmux', ['paste-buffer', '-b', bufferName, '-t', sessionName], {
+        stdio: 'ignore',
+      });
+    } catch {
+      // Silent fail — buffer operations may fail in edge cases
+    }
+  }
+
+  /**
+   * Capture the current pane content (last 200 lines).
+   * Used by the failure detector to match error patterns.
+   */
+  capturePane(sessionName: string): string {
+    try {
+      const result = spawnSync('tmux', ['capture-pane', '-t', sessionName, '-p', '-S', '-200'], {
+        encoding: 'utf-8',
+      });
+
+      if (result.status === 0) {
+        return result.stdout || '';
+      }
+
+      return '';
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * List all chorus-* sessions currently tracked in memory.
+   */
+  list(): SessionHandle[] {
+    return Array.from(this.sessions.values());
+  }
+
+  /**
+   * Force-kill a session by name. Idempotent.
+   */
+  kill(sessionName: string): void {
+    try {
+      spawnSync('tmux', ['kill-session', '-t', sessionName], { stdio: 'ignore' });
+    } catch {
+      // Session may not exist or be already dead
+    }
+
+    // Remove from registry
+    for (const [key, handle] of this.sessions) {
+      if (handle.name === sessionName) {
+        this.sessions.delete(key);
+        break;
+      }
+    }
+  }
+
+  /**
+   * Mark a session as terminal (eligible for reaping).
+   * Useful when a phase finishes but the tmux session hasn't been killed yet.
+   */
+  markTerminal(sessionName: string): void {
+    for (const handle of this.sessions.values()) {
+      if (handle.name === sessionName) {
+        handle.state = 'terminal';
+        break;
+      }
+    }
+  }
+
+  /**
+   * Reaper sweep: identify and kill orphan / idle sessions.
+   *
+   * Kill criteria:
+   * 1. Session's chatId is NOT in activeChats
+   * 2. Chat status is terminal (merged, cancelled, errored, timed-out)
+   * 3. Session state is awaiting_user AND idle > idleDestroyMinutes
+   */
+  reapOnce(opts: {
+    activeChats: Map<string, string>;
+    idleDestroyMinutes: number;
+  }): { killed: string[] } {
+    const { activeChats, idleDestroyMinutes } = opts;
+    const killed: string[] = [];
+    const now = Date.now();
+    const idleThresholdMs = idleDestroyMinutes * 60 * 1000;
+
+    for (const handle of this.sessions.values()) {
+      let shouldKill = false;
+      let killReason = '';
+
+      // Criterion 1: Chat is not in activeChats map
+      if (!activeChats.has(handle.chatId)) {
+        shouldKill = true;
+        killReason = 'chat_not_active';
+      }
+
+      // Criterion 2: Chat status is terminal
+      const chatStatus = activeChats.get(handle.chatId);
+      if (chatStatus && ['merged', 'cancelled', 'errored', 'timed_out'].includes(chatStatus)) {
+        shouldKill = true;
+        killReason = `chat_${chatStatus}`;
+      }
+
+      // Criterion 3: Session state is terminal
+      if (handle.state === 'terminal') {
+        shouldKill = true;
+        killReason = 'session_terminal';
+      }
+
+      // Criterion 4: Session is awaiting_user and idle too long
+      if (handle.state === 'awaiting_user' && now - handle.lastActivityAt > idleThresholdMs) {
+        shouldKill = true;
+        killReason = `idle_${idleDestroyMinutes}m`;
+      }
+
+      if (shouldKill) {
+        this.kill(handle.name);
+        killed.push(`${handle.name}(${killReason})`);
+      }
+    }
+
+    return { killed };
+  }
 }

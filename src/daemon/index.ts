@@ -1,15 +1,27 @@
 import Fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
 import { chats, phaseEvents, templates, settings, secrets } from '../lib/db';
-import { initTmuxReaper, stopTmuxReaper, createSession, killSession, runPhaseStub } from './tmux';
+import { TmuxManagerImpl } from './tmux.js';
+import { startReaper } from './reaper.js';
 import fs from 'fs';
 import path from 'path';
 import yaml from 'yaml';
+
+// TODO(F): Placeholder until Agent H (runner) replaces this with real phase execution
+async function runPhaseStub(chatId: string, phaseKind: string): Promise<string> {
+  const delay = 2000 + Math.random() * 1000;
+  await new Promise((resolve) => setTimeout(resolve, delay));
+  return `${phaseKind} completed`;
+}
 
 const PORT = parseInt(process.env.CHORUS_DAEMON_PORT || '7707', 10);
 const HOST = '127.0.0.1';
 const VERSION = '0.5.0-dev.0';
 const startTime = Date.now();
+
+// Tmux manager instance (shared across daemon lifetime)
+let tmuxMgr: TmuxManagerImpl;
+let stopReaper: (() => void) | null = null;
 
 // Error response type
 interface ErrorResponse {
@@ -122,8 +134,8 @@ async function main() {
         attached_files: files ? JSON.stringify(files) : undefined,
       });
 
-      // Create tmux session
-      createSession(chat.id);
+      // Note: tmux sessions are created on-demand via tmuxMgr.acquire() when phases run.
+      // This endpoint is for chat creation only.
 
       // Create initial phase event
       phaseEvents.create({
@@ -155,7 +167,14 @@ async function main() {
   }>('/chats/:id/cancel', async (request) => {
     try {
       const chat = chats.cancel(request.params.id);
-      killSession(request.params.id);
+
+      // Kill any tmux sessions associated with this chat
+      const allSessions = tmuxMgr.list();
+      for (const session of allSessions) {
+        if (session.chatId === request.params.id) {
+          tmuxMgr.kill(session.name);
+        }
+      }
 
       return successResponse(chat);
     } catch (error) {
@@ -404,12 +423,26 @@ async function main() {
   // Seed built-in templates on startup
   seedBuiltinTemplates();
 
-  // Initialize tmux reaper
-  initTmuxReaper();
+  // Initialize tmux manager and reaper
+  tmuxMgr = new TmuxManagerImpl();
+  stopReaper = startReaper(tmuxMgr, () => {
+    // getActiveChats: return a map of chatId → status
+    const allChats = chats.list({ status: undefined, limit: 1000, offset: 0 });
+    const activeMap = new Map<string, string>();
+    for (const chat of allChats) {
+      activeMap.set(chat.id, chat.status);
+    }
+    return activeMap;
+  }, {
+    intervalMs: 5 * 60 * 1000, // 5 min
+    idleDestroyMinutes: 30,
+  });
 
   // Graceful shutdown
   process.on('SIGTERM', async () => {
-    stopTmuxReaper();
+    if (stopReaper) {
+      stopReaper();
+    }
     await fastify.close();
     process.exit(0);
   });
@@ -446,3 +479,13 @@ main().catch((error) => {
   console.error('Failed to start daemon:', error);
   process.exit(1);
 });
+
+/**
+ * Export the tmux manager for use by other daemon modules (runner, agents, etc.)
+ */
+export function getTmuxManager(): TmuxManagerImpl {
+  if (!tmuxMgr) {
+    throw new Error('TmuxManager not initialized. Daemon may not have started yet.');
+  }
+  return tmuxMgr;
+}

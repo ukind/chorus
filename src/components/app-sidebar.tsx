@@ -73,7 +73,15 @@ function useActiveProjectId(): string | null {
   return PROJECTS[0]?.id ?? null;
 }
 
-export function AppSidebar() {
+interface SidebarBodyProps {
+  onNavigate?: () => void;
+}
+
+/**
+ * Inner sidebar content — used by both the desktop fixed sidebar
+ * and the mobile Sheet overlay (see MobileNav).
+ */
+export function SidebarBody({ onNavigate }: SidebarBodyProps) {
   const pathname = usePathname();
   const activeProjectId = useActiveProjectId();
   const activeChats = activeProjectId
@@ -84,7 +92,7 @@ export function AppSidebar() {
     href === "/" ? pathname === "/" : pathname.startsWith(href);
 
   return (
-    <aside className="flex h-screen w-60 flex-col border-r border-border bg-card/30">
+    <div className="flex h-full flex-col">
       {/* Brand */}
       <div className="flex h-14 items-center gap-2 border-b border-border px-4">
         <div className="grid h-7 w-7 place-items-center rounded-md bg-primary/15 text-primary">
@@ -92,7 +100,7 @@ export function AppSidebar() {
         </div>
         <span className="text-sm font-semibold tracking-tight">Chorus</span>
         <span className="ml-auto rounded-md border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
-          v0.1
+          v0.5
         </span>
       </div>
 
@@ -108,6 +116,7 @@ export function AppSidebar() {
               <li key={item.href}>
                 <Link
                   href={item.href}
+                  onClick={onNavigate}
                   className={cn(
                     "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
                     isActive(item.href)
@@ -146,6 +155,7 @@ export function AppSidebar() {
           </span>
           <Link
             href="/new"
+            onClick={onNavigate}
             className="rounded p-0.5 text-muted-foreground transition hover:bg-accent hover:text-foreground"
             title="New chat"
           >
@@ -159,6 +169,7 @@ export function AppSidebar() {
               No chats yet in this project.{" "}
               <Link
                 href="/new"
+                onClick={onNavigate}
                 className="text-primary transition hover:underline"
               >
                 Start one →
@@ -173,6 +184,7 @@ export function AppSidebar() {
                   <li key={c.id}>
                     <Link
                       href={href}
+                      onClick={onNavigate}
                       className={cn(
                         "group flex items-start gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
                         active
@@ -207,6 +219,7 @@ export function AppSidebar() {
               <li key={item.href}>
                 <Link
                   href={item.href}
+                  onClick={onNavigate}
                   className={cn(
                     "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
                     isActive(item.href)
@@ -227,7 +240,18 @@ export function AppSidebar() {
           })}
         </ul>
       </div>
-    </aside>
+    </div>
   );
 }
 
+/**
+ * Desktop sidebar — hidden on mobile (md and up only).
+ * Mobile users get the same content via MobileNav (Sheet overlay).
+ */
+export function AppSidebar() {
+  return (
+    <aside className="hidden h-screen w-60 shrink-0 flex-col border-r border-border bg-card/30 md:flex">
+      <SidebarBody />
+    </aside>
+  );
+}

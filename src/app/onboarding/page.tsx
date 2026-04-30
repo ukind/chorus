@@ -312,7 +312,7 @@ export default function OnboardingPage() {
         </div>
       </div>
 
-      <div className="mx-auto w-full max-w-3xl px-8 py-12">
+      <div className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6 sm:py-10 md:px-8 md:py-12">
         <div className="mb-6">
           <p className="text-xs uppercase tracking-wider text-muted-foreground">
             Step {stepIdx + 1} of {STEPS.length}

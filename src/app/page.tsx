@@ -27,7 +27,7 @@ export default async function HomePage() {
 
   return (
     <AppShell>
-      <div className="mx-auto w-full max-w-6xl px-8 py-10">
+      <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 sm:py-8 md:px-8 md:py-10">
         {error && (
           <div className="mb-8 rounded-lg border border-destructive/50 bg-destructive/10 p-4">
             <p className="text-sm text-destructive">{error}</p>
@@ -41,7 +41,7 @@ export default async function HomePage() {
           <p className="text-xs uppercase tracking-wider text-muted-foreground">
             Today
           </p>
-          <h1 className="mt-1 text-3xl font-semibold tracking-tight">
+          <h1 className="mt-1 text-2xl font-semibold sm:text-3xl tracking-tight">
             Many voices, one chorus.
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">

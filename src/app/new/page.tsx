@@ -130,7 +130,7 @@ function NewChatPageInner() {
   if (loadError) {
     return (
       <AppShell>
-        <div className="mx-auto w-full max-w-4xl px-8 py-10">
+        <div className="mx-auto w-full max-w-4xl px-4 py-6 sm:px-6 sm:py-8 md:px-8 md:py-10">
           <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4">
             <p className="text-sm text-destructive">Error loading templates</p>
             <p className="mt-1 text-xs text-muted-foreground">{loadError}</p>
@@ -142,7 +142,7 @@ function NewChatPageInner() {
 
   return (
     <AppShell>
-      <div className="mx-auto w-full max-w-4xl px-8 py-10">
+      <div className="mx-auto w-full max-w-4xl px-4 py-6 sm:px-6 sm:py-8 md:px-8 md:py-10">
         <div className="mb-6">
           <p className="text-xs uppercase tracking-wider text-muted-foreground">
             New chat

@@ -84,6 +84,12 @@ export interface AgentShim {
    */
   preNudge?(sessionName: string): void;
   /**
+   * Optional tmux send-keys sequence for pre-nudge setup (e.g., /clear for opencode).
+   * Array of key names like ['Escape', '/clear', 'Enter'].
+   * The runner invokes `mgr.sendKeys(...)` with these in sequence.
+   */
+  readonly clearKeys?: readonly string[];
+  /**
    * Estimate per-call cost in USD. Used by /new cost preview. CLI-subscription
    * lineages return 0; API-keyed lineages use the rate card. Best-effort.
    */

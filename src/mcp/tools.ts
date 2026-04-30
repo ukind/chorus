@@ -4,7 +4,52 @@
  */
 
 import { z } from "zod";
+import yaml from "yaml";
 import { daemonFetch, streamChat } from "./client";
+
+interface RawTemplateRow {
+  id: string;
+  source?: string;
+  yaml?: string;
+}
+
+interface ParsedTemplateYaml {
+  name?: string;
+  description?: string;
+  phases?: Array<{
+    doer?: { lineage?: string };
+    reviewer?: { candidates?: Array<{ lineage?: string }> };
+  }>;
+}
+
+function parseTemplateRow(row: RawTemplateRow): {
+  id: string;
+  name: string;
+  description: string;
+  lineages: string[];
+} {
+  let parsed: ParsedTemplateYaml = {};
+  if (row.yaml) {
+    try {
+      parsed = (yaml.parse(row.yaml) as ParsedTemplateYaml) ?? {};
+    } catch {
+      // ignore — fall through to id-only fallback
+    }
+  }
+  const lineages = new Set<string>();
+  for (const p of parsed.phases ?? []) {
+    if (p.doer?.lineage) lineages.add(p.doer.lineage);
+    for (const c of p.reviewer?.candidates ?? []) {
+      if (c.lineage) lineages.add(c.lineage);
+    }
+  }
+  return {
+    id: row.id,
+    name: parsed.name ?? row.id,
+    description: parsed.description ?? "",
+    lineages: Array.from(lineages),
+  };
+}
 
 // ─── Input schemas ───────────────────────────────────────────────────────
 
@@ -190,14 +235,12 @@ export async function cancelChat(input: unknown) {
  */
 export async function listTemplates(input: unknown) {
   ListTemplatesSchema.parse(input);
-  // input is empty object, but we validate it anyway for schema consistency
 
   const result = await daemonFetch<unknown>("/templates");
+  const rows = Array.isArray(result)
+    ? (result as RawTemplateRow[])
+    : ((result as Record<string, unknown>).templates as RawTemplateRow[]) ?? [];
 
-  // Result should be an array of templates
-  const templates = z.array(TemplateSchema).parse(
-    Array.isArray(result) ? result : (result as Record<string, unknown>).templates || []
-  );
-
+  const templates = z.array(TemplateSchema).parse(rows.map(parseTemplateRow));
   return { templates };
 }

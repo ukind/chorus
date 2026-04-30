@@ -11,7 +11,7 @@
   },
   "private": true,
   "bin": {
-    "chorus": "./bin/chorus.js"
+    "chorus": "./bin/chorus.mjs"
   },
   "scripts": {
     "dev": "next dev -p 3011 -H 127.0.0.1",

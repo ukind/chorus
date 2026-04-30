@@ -6,6 +6,7 @@
 
 import type { AgentShim, AgentSpawnOptions, AgentNudgeOptions } from './types.js';
 import { quoteValue, quotePath, validateValue } from './quote.js';
+import { preTrustCodexWorkspace } from './preflight.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -48,6 +49,9 @@ export const codexShim: AgentShim = {
     validateValue('model', opts.model);
 
     const codexHome = ensureCodexHome(opts.accountId ?? 'default');
+    // Pre-trust the chat dir so Codex skips its first-launch trust prompt.
+    preTrustCodexWorkspace(codexHome, opts.cwd);
+
     const cwd = quotePath(opts.cwd);
     const flags: string[] = [];
 

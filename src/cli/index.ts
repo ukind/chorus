@@ -141,12 +141,11 @@ program
 program
   .command('mcp')
   .description('Run the MCP server on stdio (for orchestrators)')
-  .action(() => {
-    // This command is called by orchestrators expecting stdio MCP protocol
-    // The actual MCP server is in src/mcp/index.ts (Agent B)
-    // For now, this is a placeholder
-    console.error('chorus MCP server not yet implemented (Agent B)');
-    process.exit(1);
+  .action(async () => {
+    // Hand off stdio to the MCP server. This call never returns under normal
+    // operation — the orchestrator (Claude Code, Codex, Cursor) holds the
+    // pipe open and pumps JSON-RPC messages until it shuts the child down.
+    await import('../mcp/index.js');
   });
 
 // Command: chorus stop

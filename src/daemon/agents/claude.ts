@@ -5,12 +5,17 @@
 
 import type { AgentShim, AgentSpawnOptions, AgentNudgeOptions } from './types.js';
 import { quoteValue, quotePath } from './quote.js';
+import { preTrustClaudeWorkspace } from './preflight.js';
 
 export const claudeShim: AgentShim = {
   lineage: 'anthropic',
   name: 'claude-code',
 
   buildLaunchCommand(opts: AgentSpawnOptions): string {
+    // Pre-trust the chat dir so Claude Code doesn't stop on its first-launch
+    // "Trust this folder?" prompt. Idempotent; safe to call every spawn.
+    preTrustClaudeWorkspace(opts.cwd);
+
     const cwd = quotePath(opts.cwd);
     let cmd = `cd ${cwd} && claude`;
 

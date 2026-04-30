@@ -1,7 +1,9 @@
 import Fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
 import { chats, phaseEvents, templates, settings, secrets } from '../lib/db';
-import { initTmuxReaper, stopTmuxReaper, createSession, killSession, runPhaseStub } from './tmux';
+import { initTmuxReaper, stopTmuxReaper, createSession, killSession } from './tmux';
+import { runChat } from './runner.js';
+import { TemplateSchema } from '../lib/template-schema.js';
 import fs from 'fs';
 import path from 'path';
 import yaml from 'yaml';
@@ -190,64 +192,118 @@ async function main() {
   fastify.get<{
     Params: { id: string };
   }>('/chats/:id/stream', async (request, reply) => {
+    const chatId = request.params.id;
+
     try {
-      const chat = chats.getById(request.params.id);
+      const chat = chats.getById(chatId);
 
       if (!chat) {
         reply.code(404);
         return { error: 'not found' };
       }
 
-      reply.header('Content-Type', 'text/event-stream');
-      reply.header('Cache-Control', 'no-cache');
-      reply.header('Connection', 'keep-alive');
-
-      // Send initial state
-      reply.send(`data: ${JSON.stringify({ type: 'init', chat })}\n\n`);
-
-      // Simulate phase progression
-      const phaseSequence: Array<{ kind: string; role: string }> = [
-        { kind: 'plan', role: 'doer' },
-        { kind: 'spec', role: 'doer' },
-        { kind: 'tests', role: 'doer' },
-        { kind: 'implement', role: 'doer' },
-        { kind: 'review', role: 'reviewer' },
-      ];
-
-      for (let i = 0; i < phaseSequence.length; i++) {
-        const phase = phaseSequence[i];
-
-        // Simulate phase start
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-
-        const output = await runPhaseStub(chat.id, phase.kind);
-
-        // Update phase event
-        const events = phaseEvents.list(chat.id);
-        const eventForPhase = events.find((e) => e.phase_kind === phase.kind);
-
-        if (eventForPhase) {
-          phaseEvents.update(eventForPhase.id, {
-            state: 'submitted',
-            output,
-            finished_at: Date.now(),
-          });
-        }
-
-        reply.send(
-          `data: ${JSON.stringify({ type: 'phase_update', phase: phase.kind, state: 'submitted', output })}\n\n`
-        );
-
-        await new Promise((resolve) => setTimeout(resolve, 500));
+      const tmplRow = templates.getById(chat.template_id);
+      if (!tmplRow) {
+        reply.code(404);
+        return { error: 'template not found' };
       }
 
-      // Mark as finished
-      chats.update(chat.id, { status: 'approved', finished_at: Date.now() });
-      reply.send(`data: ${JSON.stringify({ type: 'finished', status: 'approved' })}\n\n`);
+      // Parse template YAML
+      let template;
+      try {
+        const parsed = yaml.parse(tmplRow.yaml);
+        template = TemplateSchema.parse(parsed);
+      } catch (parseError) {
+        reply.code(400);
+        return {
+          error: `Invalid template: ${parseError instanceof Error ? parseError.message : String(parseError)}`,
+        };
+      }
+
+      // Set SSE headers
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+
+      // Abort controller for early termination
+      const ac = new AbortController();
+      request.raw.on('close', () => {
+        ac.abort();
+      });
+
+      // Run the chat
+      await runChat({
+        chatId,
+        template,
+        work: chat.work,
+        abortSignal: ac.signal,
+        onEvent: (event) => {
+          // Write SSE event
+          reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
+
+          // Persist certain events to DB
+          if (
+            event.type === 'phase_start' ||
+            event.type === 'phase_done' ||
+            event.type === 'phase_failed'
+          ) {
+            const payload = event.payload as Record<string, unknown>;
+            const kind = payload.kind as string;
+            const validKinds = ['plan', 'spec', 'tests', 'implement', 'review', 'verify', 'divergence'];
+            const phaseKind = validKinds.includes(kind)
+              ? (kind as 'plan' | 'spec' | 'tests' | 'implement' | 'review' | 'verify' | 'divergence')
+              : 'plan';
+            phaseEvents.create({
+              chat_id: chatId,
+              phase_idx: (payload.phaseIdx as number) ?? 0,
+              phase_kind: phaseKind,
+              role: (payload.role as 'doer' | 'reviewer') ?? 'doer',
+              agent_id: (payload.agent as string) ?? null,
+              state:
+                event.type === 'phase_start'
+                  ? 'drafting'
+                  : event.type === 'phase_done'
+                    ? 'submitted'
+                    : 'blocked',
+              output: (payload.output as string) ?? null,
+              cost_usd: 0,
+              tokens_in: 0,
+              tokens_out: 0,
+              started_at: event.ts,
+              finished_at:
+                event.type === 'phase_done' || event.type === 'phase_failed'
+                  ? Date.now()
+                  : null,
+            });
+          }
+
+          // Update chat status on completion
+          if (event.type === 'chat_done') {
+            const payload = event.payload as Record<string, unknown>;
+            const status = (payload.status as string) ?? 'completed';
+            chats.update(chatId, {
+              status: (status === 'completed' ? 'approved' : status) as
+                | 'drafting'
+                | 'reviewing'
+                | 'approved'
+                | 'merged'
+                | 'blocked'
+                | 'cancelled'
+                | 'failed',
+              finished_at: Date.now(),
+            });
+          }
+        },
+      });
+
+      reply.raw.end();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       request.log.error(error);
-      reply.send(`data: ${JSON.stringify({ type: 'error', error: message })}\n\n`);
+      reply.raw.write(`data: ${JSON.stringify({ type: 'error', error: message })}\n\n`);
+      reply.raw.end();
     }
   });
 

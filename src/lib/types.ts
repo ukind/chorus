@@ -182,6 +182,7 @@ export interface BlockedChat {
 }
 
 export interface Settings {
+  onboarded?: boolean;
   permissions?: Record<string, unknown>;
   privacy?: Record<string, unknown>;
   webhooks?: Record<string, unknown>;

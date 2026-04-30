@@ -1,0 +1,408 @@
+import Database from 'better-sqlite3';
+import path from 'path';
+import os from 'os';
+import fs from 'fs';
+import { z } from 'zod';
+import { readFileSync } from 'fs';
+
+const dbDir = path.join(os.homedir(), '.chorus');
+const dbPath = path.join(dbDir, 'chorus.db');
+
+// Ensure db dir exists
+if (!fs.existsSync(dbDir)) {
+  fs.mkdirSync(dbDir, { recursive: true });
+}
+
+let dbInstance: Database.Database | null = null;
+
+export function getDb(): Database.Database {
+  if (!dbInstance) {
+    const isNew = !fs.existsSync(dbPath);
+    dbInstance = new Database(dbPath);
+    dbInstance.pragma('journal_mode = WAL');
+
+    if (isNew) {
+      const schemaPath = path.join(__dirname, '..', 'db', 'schema.sql');
+      const schema = readFileSync(schemaPath, 'utf-8');
+      dbInstance.exec(schema);
+    }
+  }
+  return dbInstance;
+}
+
+// Chat schemas and types
+const ChatRowSchema = z.object({
+  id: z.string(),
+  work: z.string(),
+  template_id: z.string(),
+  status: z.enum(['drafting', 'reviewing', 'approved', 'merged', 'blocked', 'cancelled', 'failed']),
+  current_phase_idx: z.number().int(),
+  yolo: z.coerce.boolean().default(false),
+  attached_files: z.string().nullable(),
+  created_at: z.number().int(),
+  updated_at: z.number().int(),
+  finished_at: z.number().int().nullable(),
+});
+
+export type ChatRow = z.infer<typeof ChatRowSchema>;
+
+const CreateChatSchema = z.object({
+  work: z.string(),
+  template_id: z.string(),
+  attached_files: z.string().optional(),
+});
+
+export type CreateChatInput = z.infer<typeof CreateChatSchema>;
+
+// Phase event schemas
+const PhaseEventSchema = z.object({
+  id: z.number().int(),
+  chat_id: z.string(),
+  phase_idx: z.number().int(),
+  phase_kind: z.enum(['plan', 'spec', 'tests', 'implement', 'review', 'verify', 'divergence']),
+  role: z.enum(['doer', 'reviewer']),
+  agent_id: z.string().nullable(),
+  state: z.enum(['drafting', 'submitted', 'reviewing', 'approved', 'revising', 'blocked']),
+  output: z.string().nullable(),
+  cost_usd: z.number().default(0),
+  tokens_in: z.number().int().default(0),
+  tokens_out: z.number().int().default(0),
+  started_at: z.number().int(),
+  finished_at: z.number().int().nullable(),
+});
+
+export type PhaseEvent = z.infer<typeof PhaseEventSchema>;
+
+// Template schemas
+const TemplateSchema = z.object({
+  id: z.string(),
+  source: z.enum(['builtin', 'user']),
+  yaml: z.string(),
+  created_at: z.number().int(),
+  updated_at: z.number().int(),
+});
+
+export type Template = z.infer<typeof TemplateSchema>;
+
+// Settings schemas
+export type SettingRow = {
+  key: string;
+  value: string;
+};
+
+// Secrets schemas
+const SecretSchema = z.object({
+  provider: z.string(),
+  kind: z.enum(['api_key', 'cli_subscription']),
+  value: z.string(),
+  meta: z.string().nullable(),
+  updated_at: z.number().int(),
+});
+
+export type Secret = z.infer<typeof SecretSchema>;
+
+// Chat operations
+export const chats = {
+  create(input: CreateChatInput): ChatRow {
+    const db = getDb();
+    const validated = CreateChatSchema.parse(input);
+    const ulid = generateUlid();
+    const now = Date.now();
+
+    const stmt = db.prepare(`
+      INSERT INTO chats (id, work, template_id, status, current_phase_idx, yolo, attached_files, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    stmt.run(
+      ulid,
+      validated.work,
+      validated.template_id,
+      'drafting',
+      0,
+      0,
+      validated.attached_files || null,
+      now,
+      now
+    );
+
+    return chats.getById(ulid)!;
+  },
+
+  list(opts?: { status?: string; limit?: number; offset?: number }): ChatRow[] {
+    const db = getDb();
+    let sql = 'SELECT * FROM chats';
+    const params: unknown[] = [];
+
+    if (opts?.status) {
+      sql += ' WHERE status = ?';
+      params.push(opts.status);
+    }
+
+    sql += ' ORDER BY updated_at DESC';
+
+    if (opts?.limit) {
+      sql += ' LIMIT ?';
+      params.push(opts.limit);
+    }
+
+    if (opts?.offset) {
+      sql += ' OFFSET ?';
+      params.push(opts.offset);
+    }
+
+    const stmt = db.prepare(sql);
+    const rows = stmt.all(...params) as unknown[];
+
+    return rows.map((row) => ChatRowSchema.parse(row));
+  },
+
+  getById(id: string): ChatRow | null {
+    const db = getDb();
+    const stmt = db.prepare('SELECT * FROM chats WHERE id = ?');
+    const row = stmt.get(id) as unknown;
+
+    if (!row) return null;
+    return ChatRowSchema.parse(row);
+  },
+
+  update(id: string, partial: Partial<Omit<ChatRow, 'id' | 'created_at'>>): ChatRow {
+    const db = getDb();
+    const chat = chats.getById(id);
+
+    if (!chat) {
+      throw new Error(`Chat ${id} not found`);
+    }
+
+    const updated = {
+      ...chat,
+      ...partial,
+      id: chat.id,
+      created_at: chat.created_at,
+      updated_at: Date.now(),
+    };
+
+    const stmt = db.prepare(`
+      UPDATE chats
+      SET work = ?, template_id = ?, status = ?, current_phase_idx = ?, yolo = ?, attached_files = ?, updated_at = ?, finished_at = ?
+      WHERE id = ?
+    `);
+
+    stmt.run(
+      updated.work,
+      updated.template_id,
+      updated.status,
+      updated.current_phase_idx,
+      updated.yolo ? 1 : 0,
+      updated.attached_files,
+      updated.updated_at,
+      updated.finished_at,
+      id
+    );
+
+    return chats.getById(id)!;
+  },
+
+  cancel(id: string): ChatRow {
+    return chats.update(id, { status: 'cancelled', finished_at: Date.now() });
+  },
+};
+
+// Phase events operations
+export const phaseEvents = {
+  create(event: Omit<PhaseEvent, 'id'>): PhaseEvent {
+    const db = getDb();
+    const validated = PhaseEventSchema.omit({ id: true }).parse(event);
+
+    const stmt = db.prepare(`
+      INSERT INTO phase_events (chat_id, phase_idx, phase_kind, role, agent_id, state, output, cost_usd, tokens_in, tokens_out, started_at, finished_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const result = stmt.run(
+      validated.chat_id,
+      validated.phase_idx,
+      validated.phase_kind,
+      validated.role,
+      validated.agent_id,
+      validated.state,
+      validated.output,
+      validated.cost_usd,
+      validated.tokens_in,
+      validated.tokens_out,
+      validated.started_at,
+      validated.finished_at
+    );
+
+    return phaseEvents.getById(result.lastInsertRowid as number)!;
+  },
+
+  list(chatId: string): PhaseEvent[] {
+    const db = getDb();
+    const stmt = db.prepare('SELECT * FROM phase_events WHERE chat_id = ? ORDER BY phase_idx, id');
+    const rows = stmt.all(chatId) as unknown[];
+
+    return rows.map((row) => PhaseEventSchema.parse(row));
+  },
+
+  getById(id: number): PhaseEvent | null {
+    const db = getDb();
+    const stmt = db.prepare('SELECT * FROM phase_events WHERE id = ?');
+    const row = stmt.get(id) as unknown;
+
+    if (!row) return null;
+    return PhaseEventSchema.parse(row);
+  },
+
+  update(id: number, partial: Partial<Omit<PhaseEvent, 'id' | 'started_at'>>): PhaseEvent {
+    const db = getDb();
+    const event = phaseEvents.getById(id);
+
+    if (!event) {
+      throw new Error(`Phase event ${id} not found`);
+    }
+
+    const updated = { ...event, ...partial };
+
+    const stmt = db.prepare(`
+      UPDATE phase_events
+      SET chat_id = ?, phase_idx = ?, phase_kind = ?, role = ?, agent_id = ?, state = ?, output = ?, cost_usd = ?, tokens_in = ?, tokens_out = ?, finished_at = ?
+      WHERE id = ?
+    `);
+
+    stmt.run(
+      updated.chat_id,
+      updated.phase_idx,
+      updated.phase_kind,
+      updated.role,
+      updated.agent_id,
+      updated.state,
+      updated.output,
+      updated.cost_usd,
+      updated.tokens_in,
+      updated.tokens_out,
+      updated.finished_at,
+      id
+    );
+
+    return phaseEvents.getById(id)!;
+  },
+};
+
+// Templates operations
+export const templates = {
+  create(id: string, yaml: string, source: 'builtin' | 'user' = 'user'): Template {
+    const db = getDb();
+    const now = Date.now();
+
+    const stmt = db.prepare(`
+      INSERT OR REPLACE INTO templates (id, source, yaml, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+
+    stmt.run(id, source, yaml, now, now);
+    return templates.getById(id)!;
+  },
+
+  list(): Template[] {
+    const db = getDb();
+    const stmt = db.prepare('SELECT * FROM templates ORDER BY created_at DESC');
+    const rows = stmt.all() as unknown[];
+
+    return rows.map((row) => TemplateSchema.parse(row));
+  },
+
+  getById(id: string): Template | null {
+    const db = getDb();
+    const stmt = db.prepare('SELECT * FROM templates WHERE id = ?');
+    const row = stmt.get(id) as unknown;
+
+    if (!row) return null;
+    return TemplateSchema.parse(row);
+  },
+};
+
+// Settings operations
+export const settings = {
+  get(key: string): unknown | null {
+    const db = getDb();
+    const stmt = db.prepare('SELECT value FROM settings WHERE key = ?');
+    const row = stmt.get(key) as { value: string } | undefined;
+
+    if (!row) return null;
+    try {
+      return JSON.parse(row.value);
+    } catch {
+      return row.value;
+    }
+  },
+
+  set(key: string, value: unknown): void {
+    const db = getDb();
+    const stmt = db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
+
+    const stringValue = typeof value === 'string' ? value : JSON.stringify(value);
+    stmt.run(key, stringValue);
+  },
+
+  getAll(): Record<string, unknown> {
+    const db = getDb();
+    const stmt = db.prepare('SELECT key, value FROM settings');
+    const rows = stmt.all() as { key: string; value: string }[];
+
+    const result: Record<string, unknown> = {};
+    for (const row of rows) {
+      try {
+        result[row.key] = JSON.parse(row.value);
+      } catch {
+        result[row.key] = row.value;
+      }
+    }
+
+    return result;
+  },
+};
+
+// Secrets operations
+export const secrets = {
+  set(provider: string, kind: 'api_key' | 'cli_subscription', value: string, meta?: Record<string, unknown>): void {
+    const db = getDb();
+    const stmt = db.prepare(
+      'INSERT OR REPLACE INTO secrets (provider, kind, value, meta, updated_at) VALUES (?, ?, ?, ?, ?)'
+    );
+
+    stmt.run(provider, kind, value, meta ? JSON.stringify(meta) : null, Date.now());
+  },
+
+  get(provider: string): Secret | null {
+    const db = getDb();
+    const stmt = db.prepare('SELECT * FROM secrets WHERE provider = ?');
+    const row = stmt.get(provider) as unknown;
+
+    if (!row) return null;
+    return SecretSchema.parse(row);
+  },
+
+  list(): Omit<Secret, 'value'>[] {
+    const db = getDb();
+    const stmt = db.prepare('SELECT provider, kind, meta, updated_at FROM secrets');
+    const rows = stmt.all() as unknown[];
+
+    return rows.map((row) =>
+      SecretSchema.omit({ value: true })
+        .extend({ meta: z.string().nullable() })
+        .parse(row)
+    );
+  },
+};
+
+// Utility: Generate ULID
+function generateUlid(): string {
+  const now = Date.now();
+  const randomBytes = crypto.getRandomValues(new Uint8Array(10));
+
+  const timeBytes = now.toString(16).padStart(12, '0');
+  const randBytes = Array.from(randomBytes).map((b) => b.toString(16).padStart(2, '0')).join('');
+
+  return (timeBytes + randBytes).toUpperCase();
+}

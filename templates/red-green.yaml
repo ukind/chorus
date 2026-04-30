@@ -1,0 +1,27 @@
+id: red-green
+title: Red-Green-Refactor (TDD)
+description: Test-driven development workflow
+phases:
+  - idx: 0
+    kind: spec
+    title: Write Specs
+    roles:
+      - doer
+  - idx: 1
+    kind: tests
+    title: Write Tests (Red)
+    roles:
+      - doer
+  - idx: 2
+    kind: implement
+    title: Implementation (Green)
+    roles:
+      - doer
+  - idx: 3
+    kind: review
+    title: Code Review
+    roles:
+      - reviewer
+      - reviewer
+agreement_threshold: 2
+max_rounds: 2

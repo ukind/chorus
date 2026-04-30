@@ -1,0 +1,23 @@
+id: design-review
+title: Architecture & Design Review
+description: High-level design and architecture review
+phases:
+  - idx: 0
+    kind: spec
+    title: Design Document
+    roles:
+      - doer
+  - idx: 1
+    kind: review
+    title: Architecture Review
+    roles:
+      - reviewer
+      - reviewer
+      - reviewer
+  - idx: 2
+    kind: implement
+    title: Implementation Plan
+    roles:
+      - doer
+agreement_threshold: 3
+max_rounds: 4

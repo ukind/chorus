@@ -1,0 +1,27 @@
+id: security-audit
+title: Security Audit
+description: Security-focused review and testing
+phases:
+  - idx: 0
+    kind: implement
+    title: Implementation
+    roles:
+      - doer
+  - idx: 1
+    kind: spec
+    title: Threat Model
+    roles:
+      - doer
+  - idx: 2
+    kind: tests
+    title: Security Tests
+    roles:
+      - doer
+  - idx: 3
+    kind: review
+    title: Security Review
+    roles:
+      - reviewer
+      - reviewer
+agreement_threshold: 2
+max_rounds: 3

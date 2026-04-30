@@ -1,0 +1,27 @@
+id: code-review
+title: Code Review
+description: Standard peer code review with doer and reviewers
+phases:
+  - idx: 0
+    kind: plan
+    title: Planning Phase
+    roles:
+      - doer
+  - idx: 1
+    kind: implement
+    title: Implementation
+    roles:
+      - doer
+  - idx: 2
+    kind: review
+    title: Code Review
+    roles:
+      - reviewer
+      - reviewer
+  - idx: 3
+    kind: verify
+    title: Final Verification
+    roles:
+      - doer
+agreement_threshold: 2
+max_rounds: 3

@@ -1,0 +1,53 @@
+CREATE TABLE IF NOT EXISTS chats (
+  id TEXT PRIMARY KEY,
+  work TEXT NOT NULL,
+  template_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  current_phase_idx INTEGER DEFAULT 0,
+  yolo BOOLEAN DEFAULT 0,
+  attached_files TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  finished_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS phase_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat_id TEXT NOT NULL,
+  phase_idx INTEGER NOT NULL,
+  phase_kind TEXT NOT NULL,
+  role TEXT NOT NULL,
+  agent_id TEXT,
+  state TEXT NOT NULL,
+  output TEXT,
+  cost_usd REAL DEFAULT 0,
+  tokens_in INTEGER DEFAULT 0,
+  tokens_out INTEGER DEFAULT 0,
+  started_at INTEGER NOT NULL,
+  finished_at INTEGER,
+  FOREIGN KEY (chat_id) REFERENCES chats(id)
+);
+
+CREATE TABLE IF NOT EXISTS templates (
+  id TEXT PRIMARY KEY,
+  source TEXT NOT NULL,
+  yaml TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS secrets (
+  provider TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  value TEXT NOT NULL,
+  meta TEXT,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_chats_status ON chats(status);
+CREATE INDEX IF NOT EXISTS idx_phase_events_chat ON phase_events(chat_id, phase_idx);

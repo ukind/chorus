@@ -1,6 +1,6 @@
 id: code-review
 name: Code Review
-description: Single-phase review template. Submit code; 3 cross-lineage reviewers critique. Best for quick peer feedback.
+description: Single-phase review template. Submit code; up to 4 cross-lineage reviewers critique. Best for quick peer feedback.
 author: chorus
 agreementThreshold: 0.66
 onThresholdMet: ask
@@ -11,7 +11,7 @@ phases:
   - id: review
     kind: review
     title: Code Review
-    description: You submit your implementation; three reviewers from different LLM lineages critique it independently.
+    description: You submit your implementation; reviewers from different LLM lineages critique it independently. Quorum is 3 of 4.
     doer:
       lineage: any
       models: []
@@ -22,6 +22,7 @@ phases:
         - lineage: anthropic
         - lineage: openai
         - lineage: google
+        - lineage: moonshot
     inputs:
       include: []
       exclude: []

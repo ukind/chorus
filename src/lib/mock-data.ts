@@ -1,7 +1,7 @@
 // Static mock data for the prototype. Drives every screen.
 // Real backend slots in here when the engine lands.
 
-export type ReviewerLineage = "codex" | "gemini" | "opencode" | "claude";
+export type ReviewerLineage = "codex" | "gemini" | "opencode" | "claude" | "kimi";
 
 export type AgentState =
   | "idle"
@@ -578,6 +578,7 @@ function producePhase(args: {
     codex: "gpt-5.5",
     gemini: "gemini-3.1-pro-preview",
     opencode: "kimi-k2.6",
+    kimi: "kimi-k2.6",
   };
   return {
     id: args.id,

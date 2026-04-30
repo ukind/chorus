@@ -9,16 +9,18 @@
     "type": "git",
     "url": "https://github.com/99xAgency/chorus.git"
   },
-  "private": true,
   "bin": {
     "chorus": "./bin/chorus.mjs"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
-    "dev": "next dev -p 3011 -H 127.0.0.1",
+    "dev": "next dev -p 5050 -H 127.0.0.1",
     "dev:daemon": "tsx watch src/daemon/index.ts",
     "dev:mcp": "tsx src/mcp/index.ts",
     "build": "next build",
-    "start": "next start -p 3011 -H 127.0.0.1",
+    "start": "next start -p 5050 -H 127.0.0.1",
     "start:daemon": "node dist/daemon/index.js",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
@@ -65,6 +67,7 @@
     "bin",
     "dist",
     ".next",
-    "templates"
+    "templates",
+    "assets"
   ]
 }

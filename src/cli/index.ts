@@ -5,6 +5,34 @@ import os from 'os';
 import fs from 'fs';
 import open from 'open';
 import { templates, getDb } from '../lib/db';
+import { detectRuntimeEnv, shouldAutoOpenBrowser } from './runtime-env.js';
+
+const COCKPIT_URL = 'http://127.0.0.1:5050';
+const DAEMON_URL = 'http://127.0.0.1:7707';
+
+/**
+ * Absolute path to bin/chorus.mjs. We resolve from __dirname so the path is
+ * correct whether the CLI is being run via:
+ *   - `npm i -g chorus` → /usr/local/lib/node_modules/chorus/dist/cli/index.js
+ *   - tsx dev mode      → /home/.../chorus/src/cli/index.ts
+ *   - direct dist       → /home/.../chorus/dist/cli/index.js
+ * In every case <pkg-root>/bin/chorus.mjs is the right MCP entry point.
+ *
+ * `process.argv[1]` would also work for the npm-installed case, but in tsx
+ * dev mode it points at the .ts file which `node` can't execute directly.
+ */
+const CHORUS_BIN_PATH = path.resolve(__dirname, '..', '..', 'bin', 'chorus.mjs');
+
+function printCockpitAccessHint(): void {
+  const env = detectRuntimeEnv();
+  console.log('');
+  console.log(`  Cockpit UI:  ${COCKPIT_URL}`);
+  console.log(`  Daemon API:  ${DAEMON_URL}`);
+  if (env.hint) {
+    console.log('');
+    console.log(`  ${env.hint}`);
+  }
+}
 
 const pkg = { version: '0.5.0-dev.0', name: 'chorus' };
 
@@ -19,8 +47,12 @@ program
 program
   .command('init')
   .description('Initialize Chorus: create ~/.chorus/, seed database, register MCP with detected editors')
-  .option('--no-register', 'Skip auto-detecting orchestrators (Claude Code etc.)')
-  .action(async (opts: { register?: boolean }) => {
+  .option('--no-register', 'Skip auto-detecting orchestrators')
+  .option(
+    '--connect <list>',
+    'Comma-separated list of CLIs to connect (claude,codex,gemini,opencode,kimi,cursor,windsurf). Default: all detected.',
+  )
+  .action(async (opts: { register?: boolean; connect?: string }) => {
     try {
       const chorusDir = path.join(os.homedir(), '.chorus');
 
@@ -55,9 +87,9 @@ program
       }
 
       // Auto-detect & register every supported orchestrator on the host.
-      // Skipped if user passes --no-register.
+      // Skipped if user passes --no-register; restricted via --connect <list>.
       if (opts.register !== false) {
-        await runOrchestratorAutoConnect();
+        await runOrchestratorAutoConnect(opts.connect);
       }
 
       console.log('\nChorus initialized successfully!');
@@ -70,23 +102,39 @@ program
   });
 
 /**
- * Detect Claude Code / Codex / Cursor and wire each one we know how to wire.
- * Prints a summary line per CLI. Resolves the absolute path to bin/chorus.mjs
- * from `process.argv[1]` so the registered MCP entry survives `npm i -g chorus`
- * symlink redirects.
+ * Detect Claude Code / Codex / Gemini / OpenCode and wire each one.
+ * If the user passed `--connect <list>` we only touch those.
+ * Prints a summary line per CLI.
  */
-async function runOrchestratorAutoConnect(): Promise<void> {
-  const { autoConnectAll } = await import('../daemon/orchestrators.js');
-  const binPath = process.argv[1] ?? '';
+async function runOrchestratorAutoConnect(connectFlag?: string): Promise<void> {
+  const { autoConnectAll, detectOrchestrators } = await import('../daemon/orchestrators.js');
+  const binPath = CHORUS_BIN_PATH;
 
-  if (!binPath) {
-    console.log('\n(Skipped orchestrator detection — could not resolve chorus bin path.)');
-    return;
+  type Name = 'claude' | 'codex' | 'gemini' | 'opencode' | 'kimi' | 'cursor' | 'windsurf';
+  const ALL_NAMES = ['claude', 'codex', 'gemini', 'opencode', 'kimi', 'cursor', 'windsurf'] as const;
+
+  let only: Name[] | undefined;
+  if (connectFlag) {
+    const wanted = connectFlag.split(',').map((s) => s.trim().toLowerCase());
+    only = [];
+    for (const w of wanted) {
+      if ((ALL_NAMES as readonly string[]).includes(w)) {
+        only.push(w as Name);
+      } else {
+        console.error(`Unknown orchestrator '${w}' in --connect. Valid: ${ALL_NAMES.join(', ')}`);
+        process.exit(1);
+      }
+    }
   }
 
   console.log('\nDetecting orchestrators...');
+  const detected = detectOrchestrators().filter((d) => d.detected);
+  if (detected.length > 0 && !only) {
+    console.log(`  Found: ${detected.map((d) => d.label).join(', ')}`);
+    console.log('  (Pass --connect <name,name> to limit to specific CLIs.)');
+  }
 
-  const result = autoConnectAll({ binPath });
+  const result = autoConnectAll({ binPath, ...(only ? { only } : {}) });
 
   for (const step of result.steps) {
     if (!step.detected) {
@@ -97,15 +145,13 @@ async function runOrchestratorAutoConnect(): Promise<void> {
       console.log(`  ! ${step.label}: ${step.error}`);
       continue;
     }
-    if (step.unsupported) {
-      console.log(`  ~ ${step.label}: detected but auto-wire not supported yet — skipped`);
-      continue;
-    }
     const parts: string[] = [];
     if (step.registered) parts.push('MCP server registered');
     else parts.push('MCP already registered');
     if (step.toolsAdded > 0) parts.push(`${step.toolsAdded} tool(s) approved`);
-    else parts.push('all tools already approved');
+    else if (step.name === 'claude') parts.push('all tools already approved');
+    if (step.slashCommand === 'installed') parts.push('/chorus command installed');
+    else if (step.slashCommand === 'updated') parts.push('/chorus command updated');
     console.log(`  ✓ ${step.label}: ${parts.join(' · ')}`);
   }
 
@@ -133,9 +179,10 @@ program
         try {
           execSync(`kill -0 ${oldPid}`, { stdio: 'ignore' });
           console.log(`Daemon already running (PID ${oldPid})`);
+          printCockpitAccessHint();
 
-          if (options.ui) {
-            open('http://127.0.0.1:3011');
+          if (options.ui && shouldAutoOpenBrowser(detectRuntimeEnv())) {
+            open(COCKPIT_URL);
           }
 
           return;
@@ -165,12 +212,12 @@ program
       child.unref();
 
       console.log(`Daemon started (PID ${child.pid})`);
-      console.log(`Listening on http://127.0.0.1:7707`);
+      printCockpitAccessHint();
 
       // Give daemon time to start
       setTimeout(() => {
-        if (options.ui) {
-          open('http://127.0.0.1:3011');
+        if (options.ui && shouldAutoOpenBrowser(detectRuntimeEnv())) {
+          open(COCKPIT_URL);
         }
       }, 1000);
     } catch (error) {
@@ -185,8 +232,12 @@ program
   .description('Open the Chorus web UI in default browser')
   .action(async () => {
     try {
-      await open('http://127.0.0.1:3011');
-      console.log('Opening http://127.0.0.1:3011');
+      const env = detectRuntimeEnv();
+      printCockpitAccessHint();
+      if (shouldAutoOpenBrowser(env)) {
+        await open(COCKPIT_URL);
+        console.log(`\nOpening ${COCKPIT_URL}...`);
+      }
     } catch (error) {
       console.error('Failed to open browser:', error);
       process.exit(1);

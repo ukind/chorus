@@ -265,25 +265,25 @@ export class TmuxManagerImpl implements TmuxManager {
   }
 
   /**
-   * Paste multi-byte buffer via tmux load-buffer + paste-buffer.
-   * Per-session buffer name to avoid races between parallel chats.
+   * Send a prompt to a CLI's TUI input box.
+   *
+   * Originally implemented via `tmux load-buffer + paste-buffer`. That works
+   * for Claude/Codex/OpenCode/Kimi but Gemini's TUI silently drops paste-
+   * buffer events (likely due to its custom terminal-escape handling). The
+   * `send-keys -l` approach types each character literally and works
+   * universally across all the CLIs we ship — at the cost of slightly more
+   * shell argv pressure for very long prompts.
+   *
+   * Method name kept as `pasteBuffer` for caller compatibility, but the
+   * implementation no longer uses tmux's paste mechanism.
    */
   pasteBuffer(sessionName: string, content: string): void {
     try {
-      const bufferName = `chorus-${sessionName}-${process.pid}`;
-
-      // Load content into buffer
-      spawnSync('tmux', ['load-buffer', '-b', bufferName, '-'], {
-        input: content,
-        encoding: 'utf-8',
-      });
-
-      // Paste from buffer
-      spawnSync('tmux', ['paste-buffer', '-b', bufferName, '-t', sessionName], {
+      spawnSync('tmux', ['send-keys', '-l', '-t', sessionName, content], {
         stdio: 'ignore',
       });
     } catch {
-      // Silent fail — buffer operations may fail in edge cases
+      // Silent fail — session may be dead or unresponsive
     }
   }
 

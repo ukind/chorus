@@ -15,6 +15,11 @@ const HOST = '127.0.0.1';
 const VERSION = '0.5.0-dev.0';
 const startTime = Date.now();
 
+// Absolute path to bin/chorus.mjs — used by /orchestrators/:name/connect when
+// the cockpit triggers a one-click wire-up. Both src/daemon/index.ts (tsx)
+// and dist/daemon/index.js (PM2/built) resolve to <pkg-root>/bin/chorus.mjs.
+const CHORUS_BIN_PATH = path.resolve(__dirname, '..', '..', 'bin', 'chorus.mjs');
+
 // Singletons shared across the daemon lifetime.
 let tmuxMgr: TmuxManagerImpl;
 let stopReaper: (() => void) | null = null;
@@ -55,7 +60,7 @@ async function main() {
 
   // CORS
   await fastify.register(fastifyCors, {
-    origin: ['http://127.0.0.1:3011'],
+    origin: ['http://127.0.0.1:5050'],
     credentials: true,
   });
 
@@ -307,7 +312,8 @@ async function main() {
                 | 'merged'
                 | 'blocked'
                 | 'cancelled'
-                | 'failed',
+                | 'failed'
+                | 'no_review',
               finished_at: Date.now(),
             });
           }
@@ -473,6 +479,54 @@ async function main() {
     }
   });
 
+  // ─── CLI health ─────────────────────────────────────────────────────────
+
+  fastify.get<{ Reply: ApiResponse<object[]> }>('/cli/health', async () => {
+    try {
+      const { getAllHealth } = await import('../lib/cli-health.js');
+      return successResponse(getAllHealth());
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return errorResponse('internal', message);
+    }
+  });
+
+  // ─── Permission settings ────────────────────────────────────────────────
+
+  fastify.get<{ Reply: ApiResponse<object> }>('/settings/permissions', async () => {
+    try {
+      const { getPermissions, PROFILE_DESCRIPTIONS } = await import('../lib/settings/permissions.js');
+      return successResponse({
+        ...getPermissions(),
+        profileDescriptions: PROFILE_DESCRIPTIONS,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return errorResponse('internal', message);
+    }
+  });
+
+  fastify.put<{
+    Body: { sandboxProfile?: string; autoApprovePrompts?: boolean; networkAccess?: boolean };
+    Reply: ApiResponse<object>;
+  }>('/settings/permissions', async (request) => {
+    try {
+      const { setPermissions } = await import('../lib/settings/permissions.js');
+      const body = request.body ?? {};
+      const next = setPermissions({
+        ...(body.sandboxProfile !== undefined && {
+          sandboxProfile: body.sandboxProfile as 'strict' | 'workspace' | 'full',
+        }),
+        ...(body.autoApprovePrompts !== undefined && { autoApprovePrompts: body.autoApprovePrompts }),
+        ...(body.networkAccess !== undefined && { networkAccess: body.networkAccess }),
+      });
+      return successResponse(next);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return errorResponse('validation', message);
+    }
+  });
+
   // List orchestrators with their connection status
   fastify.get<{
     Reply: ApiResponse<object[]>;
@@ -493,7 +547,7 @@ async function main() {
   }>('/orchestrators/:name/connect', async (request) => {
     try {
       const { connectByName, listOrchestrators } = await import('./orchestrators.js');
-      const result = connectByName(request.params.name);
+      const result = connectByName(request.params.name, { binPath: CHORUS_BIN_PATH });
       const status = listOrchestrators().find((o) => o.name === request.params.name);
       return successResponse({ ...result, status });
     } catch (error) {

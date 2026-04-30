@@ -51,16 +51,22 @@ const KNOWN_LINEAGES: ReadonlySet<string> = new Set([
   "anthropic",
   "openai",
   "google",
-  "xai",
+  "opencode",
+  "moonshot",
   "any",
+  // Legacy alias — old templates still use 'xai' for OpenCode.
+  "xai",
 ]);
 
 const UI_LINEAGE_MAP: Record<string, Template["phases"][number]["doer"]["lineage"]> = {
   anthropic: "claude",
   openai: "codex",
   google: "gemini",
-  xai: "opencode",
+  opencode: "opencode",
+  moonshot: "kimi",
   any: "claude",
+  // Legacy alias.
+  xai: "opencode",
 };
 
 function mapLineage(raw: string | undefined): Template["phases"][number]["doer"]["lineage"] {

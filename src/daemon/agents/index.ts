@@ -9,12 +9,14 @@ import { claudeShim } from './claude.js';
 import { codexShim } from './codex.js';
 import { geminiShim } from './gemini.js';
 import { opencodeShim } from './opencode.js';
+import { kimiShim } from './kimi.js';
 
 const SHIMS: Record<Lineage, AgentShim> = {
   anthropic: claudeShim,
   openai: codexShim,
   google: geminiShim,
-  xai: opencodeShim,
+  opencode: opencodeShim,
+  moonshot: kimiShim,
   any: claudeShim, // Fallback to Claude
 };
 
@@ -29,4 +31,4 @@ export const registry: AgentRegistry = {
 };
 
 // Re-export shims for direct access if needed
-export { claudeShim, codexShim, geminiShim, opencodeShim };
+export { claudeShim, codexShim, geminiShim, opencodeShim, kimiShim };

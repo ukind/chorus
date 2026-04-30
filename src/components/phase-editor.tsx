@@ -66,6 +66,7 @@ const DEFAULT_MODELS: Record<ReviewerLineage, string> = {
   codex: "gpt-5.5",
   gemini: "gemini-3.1-pro-preview",
   opencode: "kimi-k2.6",
+  kimi: "kimi-k2.6",
 };
 
 // ─── Public API ──────────────────────────────────────────────────────

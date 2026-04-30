@@ -2,7 +2,14 @@
 // "is Claude Code wired up?" status and the one-click "Connect" button.
 import { fetchFromDaemon } from "./client";
 
-export type OrchestratorName = "claude" | "codex" | "cursor";
+export type OrchestratorName =
+  | "claude"
+  | "codex"
+  | "gemini"
+  | "opencode"
+  | "kimi"
+  | "cursor"
+  | "windsurf";
 
 export interface OrchestratorStatus {
   name: OrchestratorName;
@@ -12,6 +19,7 @@ export interface OrchestratorStatus {
   totalTools: number;
   note: string;
   supported: boolean;
+  firstCallBehavior: "auto" | "prompts_once" | "inherits_global";
 }
 
 export interface ConnectResult {

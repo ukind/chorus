@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { upsertSecret, updateSettings, DaemonError } from "@/lib/api";
+import { updatePermissions, type SandboxProfile } from "@/lib/api/settings";
 import { cn } from "@/lib/utils";
 
 interface CliRow {
@@ -36,16 +37,34 @@ const CLIS: CliRow[] = [
     hint: "OpenAI — ChatGPT Plus/Pro subscription",
   },
   {
-    id: "cursor",
-    provider: "cursor",
-    label: "Cursor",
-    hint: "Bundled providers via Cursor app",
-  },
-  {
-    id: "gemini",
+    id: "gemini-cli",
     provider: "google",
     label: "Gemini CLI",
     hint: "Google — uses your gcloud auth",
+  },
+  {
+    id: "opencode-cli",
+    provider: "opencode",
+    label: "OpenCode",
+    hint: "OpenCode Go — routes Kimi, DeepSeek, Grok",
+  },
+  {
+    id: "kimi-cli",
+    provider: "moonshot",
+    label: "Kimi CLI",
+    hint: "MoonshotAI — kimi-k2 plan",
+  },
+  {
+    id: "cursor",
+    provider: "cursor",
+    label: "Cursor",
+    hint: "Cursor IDE — invoke chorus from inside it",
+  },
+  {
+    id: "windsurf",
+    provider: "windsurf",
+    label: "Windsurf",
+    hint: "Windsurf IDE — invoke chorus from inside it",
   },
 ];
 
@@ -64,6 +83,9 @@ export default function OnboardingPage() {
 
   const [selectedClis, setSelectedClis] = useState<Set<string>>(new Set());
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
+  const [sandboxProfile, setSandboxProfile] = useState<SandboxProfile>("workspace");
+  const [autoApprovePrompts, setAutoApprovePrompts] = useState<boolean>(true);
+  const [networkAccess, setNetworkAccess] = useState<boolean>(false);
 
   const toggleCli = (id: string) => {
     setSelectedClis((prev) => {
@@ -111,6 +133,12 @@ export default function OnboardingPage() {
             updatedAt: Date.now(),
           });
         }
+
+        await updatePermissions({
+          sandboxProfile,
+          autoApprovePrompts,
+          networkAccess,
+        });
 
         await updateSettings({ onboarded: true });
         router.push("/");
@@ -224,6 +252,105 @@ export default function OnboardingPage() {
           <p className="mt-2 text-xs text-muted-foreground">
             Stored locally in <code>~/.chorus/chorus.db</code>. Never sent anywhere except the model provider you call.
           </p>
+        </section>
+
+        <section className="mb-8">
+          <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Permissions &amp; sandbox
+          </h2>
+          <p className="mb-4 text-xs leading-relaxed text-muted-foreground">
+            Controls what reviewers can do on your machine. You can change this anytime in
+            Settings &rarr; Permissions.
+          </p>
+
+          <div className="space-y-2">
+            {(
+              [
+                {
+                  id: "strict",
+                  label: "Strict",
+                  hint: "Read-only. Reviewers can inspect code but can't write files, exec shell, or hit the network.",
+                },
+                {
+                  id: "workspace",
+                  label: "Workspace (recommended)",
+                  hint: "Read+write inside the chat dir, scoped shell, no network. Default for most teams.",
+                },
+                {
+                  id: "full",
+                  label: "Full access",
+                  hint: "No sandbox at all. Only on a personal machine you fully trust.",
+                },
+              ] as const
+            ).map((p) => {
+              const checked = sandboxProfile === p.id;
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => setSandboxProfile(p.id)}
+                  className={cn(
+                    "flex w-full items-start gap-3 rounded-lg border p-4 text-left transition",
+                    checked
+                      ? "border-primary/50 bg-primary/10"
+                      : "border-border bg-card hover:border-muted-foreground/30",
+                  )}
+                >
+                  <div
+                    className={cn(
+                      "mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full border transition",
+                      checked
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "border-border",
+                    )}
+                  >
+                    {checked && <Check className="h-3 w-3" />}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium">{p.label}</div>
+                    <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                      {p.hint}
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="mt-3 space-y-2">
+            <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border bg-card p-3">
+              <input
+                type="checkbox"
+                checked={autoApprovePrompts}
+                onChange={(e) => setAutoApprovePrompts(e.target.checked)}
+                className="mt-1 h-4 w-4 cursor-pointer accent-primary"
+              />
+              <div className="min-w-0 flex-1 text-xs leading-relaxed">
+                <div className="text-sm font-medium">Skip in-CLI permission prompts</div>
+                <div className="mt-0.5 text-muted-foreground">
+                  Passes <code className="rounded bg-muted px-1">--afk</code> /{" "}
+                  <code className="rounded bg-muted px-1">auto_edit</code> to spawned reviewers
+                  so they don't hang on per-tool prompts. Off = every action requires explicit
+                  consent in the CLI's TUI.
+                </div>
+              </div>
+            </label>
+
+            <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border bg-card p-3">
+              <input
+                type="checkbox"
+                checked={networkAccess}
+                onChange={(e) => setNetworkAccess(e.target.checked)}
+                className="mt-1 h-4 w-4 cursor-pointer accent-primary"
+              />
+              <div className="min-w-0 flex-1 text-xs leading-relaxed">
+                <div className="text-sm font-medium">Allow outbound network from reviewers</div>
+                <div className="mt-0.5 text-muted-foreground">
+                  Off by default. Templates that explicitly need network override per phase.
+                </div>
+              </div>
+            </label>
+          </div>
         </section>
 
         {error && (

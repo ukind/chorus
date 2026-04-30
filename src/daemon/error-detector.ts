@@ -15,13 +15,14 @@ export type CliErrorKind =
   | 'token_refresh_lost'     // codex: "access token could not be refreshed because your refresh token was already used"
   | 'mcp_handshake_failed'   // codex: "failed: handshaking with MCP server failed"
   | 'opencode_db_corrupt'    // opencode: "Provider returned error" repeating with no successful response in last N seconds
+  | 'kimi_permission_prompt' // kimi: "Allow this tool?" dialog (only if --afk flag missing or future kimi rev drops it)
   | 'cold_start_timeout'     // CLI never showed its prompt within cold_start_timeout_s
   | 'tmux_dead'              // session no longer exists per tmux has-session
   | 'unknown';               // catch-all
 
 export interface CliError {
   kind: CliErrorKind;
-  lineage: string;           // 'anthropic' | 'openai' | 'google' | 'xai'
+  lineage: string;           // 'anthropic' | 'openai' | 'google' | 'opencode' | 'moonshot'
   message: string;           // user-friendly one-liner for the run header
   cta?: string;              // recommended action (e.g. 'Re-authenticate codex')
   detail?: string;           // raw line that triggered the match
@@ -55,9 +56,15 @@ interface OpenCodeState {
  *
  * Patterns 1-3 (quota, token-refresh, MCP) are stateless — matched inline.
  * Pattern 4 (opencode DB corruption) is stateful — tracks error frequency.
+ *
+ * Per-session dedup: the runner polls capture-pane every ~2s, so the same
+ * quota text sits in the buffer and would emit on every poll. We track the
+ * last-emitted error kind per session and suppress repeats of the same kind
+ * until a different kind (or no error) appears.
  */
 export class ErrorDetector {
   private openCodeState = new Map<string, OpenCodeState>();
+  private lastEmittedKind = new Map<string, CliErrorKind>();
 
   /**
    * Inspect a tmux pane snapshot for known failure patterns.
@@ -67,6 +74,19 @@ export class ErrorDetector {
    * the session is killed or restarted to clear per-session counters.
    */
   inspect(sessionName: string, lineage: string, paneText: string): CliError | null {
+    const result = this.detect(sessionName, lineage, paneText);
+    if (!result) return null;
+
+    // Dedup: skip if we already emitted this exact kind for this session.
+    // The user's experience: one quota error event per quota event, not 149.
+    const lastKind = this.lastEmittedKind.get(sessionName);
+    if (lastKind === result.kind) return null;
+    this.lastEmittedKind.set(sessionName, result.kind);
+    return result;
+  }
+
+  /** Inner pattern matcher — see inspect() for the dedup wrapper. */
+  private detect(sessionName: string, lineage: string, paneText: string): CliError | null {
     // Pattern 1: Codex quota exhausted
     if (lineage === 'openai') {
       const quotaMatch = /You've hit your usage limit\.[\s\S]*?try again at\s+([^\n.]+)/i.exec(paneText);
@@ -110,8 +130,28 @@ export class ErrorDetector {
     }
 
     // Pattern 4: Opencode DB corruption (stateful)
-    if (lineage === 'xai') {
+    // Accept both 'opencode' (current) and 'xai' (legacy alias) lineage tags
+    // so older templates / sessions don't silently lose detection.
+    if (lineage === 'opencode' || lineage === 'xai') {
       return this.inspectOpenCodeCorruption(sessionName, paneText);
+    }
+
+    // Pattern 5: Kimi permission prompt (defense-in-depth fallback).
+    // Normally kimi is launched with --afk which auto-approves; this catches
+    // the case where a future kimi version drops --afk or shows a different
+    // prompt type. Runner should auto-respond (send "always" + Enter) rather
+    // than fail the chat.
+    if (lineage === 'moonshot') {
+      const promptMatch = /Allow .*tool|Approve .*call|Always allow|\[a\]llow/i.exec(paneText);
+      if (promptMatch) {
+        return {
+          kind: 'kimi_permission_prompt',
+          lineage,
+          message: 'Kimi is asking to approve a tool call (--afk flag may have been ignored).',
+          cta: 'Runner will auto-respond with "always allow".',
+          detail: promptMatch[0],
+        };
+      }
     }
 
     return null;
@@ -155,7 +195,7 @@ export class ErrorDetector {
     if (state.errCount >= 3 && now - state.lastSuccessAt > 60000) {
       return {
         kind: 'opencode_db_corrupt',
-        lineage: 'xai',
+        lineage: 'opencode',
         message: 'Opencode session DB likely corrupted (Kimi rejecting empty msgs).',
         cta: 'Run `work-fleet-restart kimi deepseek` after wiping ~/.local/share/opencode/opencode.db',
         detail: 'Multiple Provider-returned-error responses in window.',
@@ -171,6 +211,7 @@ export class ErrorDetector {
    */
   reset(sessionName: string): void {
     this.openCodeState.delete(sessionName);
+    this.lastEmittedKind.delete(sessionName);
   }
 
   /**
@@ -265,13 +306,13 @@ export function runTests(): void {
     });
 
     // Call inspect 3 times with errors
-    const err1 = detector4a.inspect('test-session-4a', 'xai', 'Provider returned error');
+    const err1 = detector4a.inspect('test-session-4a', 'opencode', 'Provider returned error');
     assert(err1 === null, 'Test 4a.1: First error should not trigger yet');
 
-    const err2 = detector4a.inspect('test-session-4a', 'xai', 'Provider returned error');
+    const err2 = detector4a.inspect('test-session-4a', 'opencode', 'Provider returned error');
     assert(err2 === null, 'Test 4a.2: Second error should not trigger yet');
 
-    const err3 = detector4a.inspect('test-session-4a', 'xai', 'Provider returned error');
+    const err3 = detector4a.inspect('test-session-4a', 'opencode', 'Provider returned error');
     assert(err3 !== null, 'Test 4a.3: Third error with sustained failure should trigger');
     assertEquals(err3!.kind, 'opencode_db_corrupt', 'Test 4a: kind should be opencode_db_corrupt');
     console.log('✓ Test 4a (opencode_db_corrupt - sustained): PASS');
@@ -281,10 +322,10 @@ export function runTests(): void {
   {
     const detector4b = new ErrorDetector();
     // Send error, then success sentinel, then another error → should NOT trigger
-    detector4b.inspect('test-session-4b', 'xai', 'Provider returned error');
-    detector4b.inspect('test-session-4b', 'xai', 'Provider returned error');
-    detector4b.inspect('test-session-4b', 'xai', '## DONE'); // Reset errCount
-    const err = detector4b.inspect('test-session-4b', 'xai', 'Provider returned error');
+    detector4b.inspect('test-session-4b', 'opencode', 'Provider returned error');
+    detector4b.inspect('test-session-4b', 'opencode', 'Provider returned error');
+    detector4b.inspect('test-session-4b', 'opencode', '## DONE'); // Reset errCount
+    const err = detector4b.inspect('test-session-4b', 'opencode', 'Provider returned error');
     assert(err === null, 'Test 4b: Error after success sentinel should not trigger');
     console.log('✓ Test 4b (opencode_db_corrupt - transient): PASS');
   }

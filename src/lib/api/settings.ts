@@ -2,6 +2,28 @@
 import { Settings, Secret } from "@/lib/types";
 import { fetchFromDaemon } from "./client";
 
+export type SandboxProfile = "strict" | "workspace" | "full";
+
+export interface PermissionSettings {
+  sandboxProfile: SandboxProfile;
+  autoApprovePrompts: boolean;
+  networkAccess: boolean;
+  profileDescriptions?: Record<SandboxProfile, { label: string; description: string }>;
+}
+
+export async function getPermissions(): Promise<PermissionSettings> {
+  return fetchFromDaemon<PermissionSettings>("/settings/permissions");
+}
+
+export async function updatePermissions(
+  patch: Partial<Omit<PermissionSettings, "profileDescriptions">>,
+): Promise<PermissionSettings> {
+  return fetchFromDaemon<PermissionSettings>("/settings/permissions", {
+    method: "PUT",
+    body: JSON.stringify(patch),
+  });
+}
+
 export async function getSettings(): Promise<Settings> {
   return fetchFromDaemon<Settings>("/settings");
 }

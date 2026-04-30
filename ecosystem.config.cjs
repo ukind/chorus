@@ -3,7 +3,7 @@ module.exports = {
     {
       name: "chorus-web",
       script: "node_modules/next/dist/bin/next",
-      args: "start -p 3011 -H 127.0.0.1",
+      args: "start -p 5050 -H 127.0.0.1",
       cwd: __dirname,
       instances: 1,
       autorestart: true,

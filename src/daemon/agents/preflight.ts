@@ -15,8 +15,15 @@ import path from 'node:path';
 import os from 'node:os';
 
 /**
- * Mark `cwd` as trusted in ~/.claude.json so Claude Code skips the trust dialog
- * when launched there. Idempotent.
+ * Pre-suppress every Claude Code first-launch prompt that would block a
+ * spawned doer/reviewer. Currently:
+ *   - projects.<cwd>.hasTrustDialogAccepted (workspace trust dialog)
+ *   - hasCompletedClaudeInChromeOnboarding (top-level "Claude in Chrome (Beta)" splash)
+ *
+ * Add new keys here as Claude Code releases new one-time popups. Each fix is
+ * a small global tax we pay once, vs. one stuck-doer per missed splash.
+ *
+ * Idempotent. Returns early if config is corrupt rather than wiping it.
  */
 export function preTrustClaudeWorkspace(cwd: string): void {
   const configPath = path.join(os.homedir(), '.claude.json');
@@ -37,7 +44,9 @@ export function preTrustClaudeWorkspace(cwd: string): void {
     : {});
 
   const existing = projects[cwd] ?? {};
-  if (existing.hasTrustDialogAccepted === true) return; // already trusted
+  const trustOk = existing.hasTrustDialogAccepted === true;
+  const chromeOk = config.hasCompletedClaudeInChromeOnboarding === true;
+  if (trustOk && chromeOk) return; // nothing to write
 
   projects[cwd] = {
     ...existing,
@@ -46,7 +55,15 @@ export function preTrustClaudeWorkspace(cwd: string): void {
 
   fs.writeFileSync(
     configPath,
-    JSON.stringify({ ...config, projects }, null, 2),
+    JSON.stringify(
+      {
+        ...config,
+        projects,
+        hasCompletedClaudeInChromeOnboarding: true,
+      },
+      null,
+      2,
+    ),
     'utf-8',
   );
 }

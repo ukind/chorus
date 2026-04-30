@@ -9,7 +9,7 @@ import type { AgentShim, AgentSpawnOptions, AgentNudgeOptions } from './types.js
 import { quotePath, validateValue } from './quote.js';
 
 export const opencodeShim: AgentShim = {
-  lineage: 'xai',
+  lineage: 'opencode',
   name: 'opencode-cli',
 
   // clearKeys are sent by the runner via mgr.sendKeys() before nudging.

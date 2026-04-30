@@ -2,42 +2,92 @@
 
 > Driver-agnostic multi-LLM peer review for code decisions.
 
-Bring your own AI coding CLI (Claude Code, Codex, Cursor, Windsurf). Chorus convenes 2-4 other LLMs of different lineages to peer-review the work before you ship.
+You write code with your favourite AI CLI (Claude Code, Codex, Gemini,
+OpenCode, Kimi, Cursor, Windsurf). Chorus spawns 2–4 _other_ LLMs from
+different vendors to independently review the work, then surfaces the
+verdict before you ship.
 
-**Status:** v0.5 in development. Target ship: 2026-05-22.
+Why: the same model that wrote the code can't catch its own blind spots.
+Bring a different lineage in and you get a real second opinion — without
+context-switching out of your editor.
 
-## Install (when published)
+**Status:** v0.5 — pre-release. Apache-2.0.
+
+## Quick start
 
 ```bash
 npm i -g chorus
-chorus init      # one-time setup wizard
-chorus start     # start the daemon + open the cockpit
+chorus init     # detects installed CLIs, registers the chorus MCP server in each
+chorus start    # boots the local daemon + cockpit on http://localhost:5050
 ```
+
+That's it. Open the cockpit, fire a chat, watch the reviewers stream their
+critiques back live.
+
+If you'd rather invoke from inside a CLI:
+
+- **Claude Code**: `/chorus bug-diagnose <paste your snippet>`
+- **Codex / Gemini / Kimi / OpenCode / Cursor / Windsurf**: just say
+  *"chorus, run code-review on…"* — the MCP server we registered routes it.
+
+## What gets connected
+
+`chorus init` detects each CLI's config dir and wires Chorus as an MCP
+server. No prompts to dismiss in the CLI for the ones that support
+config-file pre-approval (Claude, Gemini, OpenCode). Kimi, Cursor, and
+Windsurf show a one-time "Always allow" prompt the first time you call a
+chorus tool — click through once and it's quiet forever.
+
+| CLI | Inbound (call chorus from inside) | Outbound (chorus uses as reviewer) |
+|---|---|---|
+| Claude Code | ✅ | ✅ |
+| Codex | ✅ | ✅ |
+| Gemini | ✅ | ✅ |
+| OpenCode | ✅ | ✅ |
+| Kimi | ✅ | ✅ |
+| Cursor | ✅ | — (IDE, not headless) |
+| Windsurf | ✅ | — (IDE, not headless) |
+
+## Templates
+
+Built-in templates ship with the package:
+
+- `bug-diagnose` — adversarial diagnosis (Claude Opus + Gemini cross-check)
+- `code-review` — 3-of-4 quorum across 4 lineages
+- `architect-review` — design proposal vs. cross-lineage devil's advocates
+- `red-green` — adversarial test/impl split with information asymmetry
+
+You can also drop your own under `~/.chorus/templates/<id>.yaml`.
+
+## Permissions
+
+Cockpit `/settings/permissions` controls what reviewers can do:
+
+- **Strict** — read only
+- **Workspace** (default) — read+write inside the chat dir
+- **Full** — no sandbox, only on a personal machine you trust
+
+Plus toggles for auto-approving in-CLI prompts and outbound network access.
 
 ## Commands
 
 ```
-chorus start [--ui]    # start daemon (and optionally open browser)
-chorus ui              # open the cockpit in your browser
-chorus mcp             # run MCP server on stdio (called by orchestrators)
-chorus stop            # stop the daemon
-chorus status          # daemon health
+chorus init               # detect + connect every supported CLI
+chorus init --connect <list>  # only the ones you list (claude,codex,...)
+chorus start [--ui]       # start daemon + open cockpit
+chorus connect <cli>      # post-install one-CLI wire-up
+chorus ui                 # open cockpit in browser
+chorus status             # daemon health
+chorus stop               # stop daemon
+chorus mcp                # run MCP server on stdio (orchestrators call this)
 ```
 
-## Architecture
+## Project links
 
-- **CLI** (`bin/chorus.js`) — entry point shipped via `npm i -g chorus`
-- **Daemon** (`src/daemon/`) — Fastify on `localhost:7707`, SQLite for state, tmux session manager
-- **MCP server** (`src/mcp/`) — primary input surface, 7 stdio tools (create_chat, wait_for_chat, get_chat_status, list_blocked, resume_chat, cancel_chat, list_templates)
-- **Web UI** (`src/app/`) — Next.js 16 cockpit at `localhost:3011`
-- **Templates** (`templates/`) — 4 built-in YAML templates: code-review, bug-diagnose, architect-review, red-green
+- Cockpit: <http://localhost:5050>
+- Daemon API: <http://localhost:7707>
+- Issues / discussion: <https://github.com/99xAgency/chorus>
 
 ## License
 
-Apache-2.0 (once public). Private during development.
-
-## Links
-
-- Predecessor prototype: https://murmur.99x.agency (frozen v0.2 reference)
-- Dev environment: https://chorus.99x.agency (this build)
-- Production target: https://chorus.codes (launch 2026-05-22)
+Apache-2.0. See [LICENSE](./LICENSE).

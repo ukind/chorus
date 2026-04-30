@@ -331,10 +331,25 @@ function FormView(p: FormViewProps) {
         </p>
       </Section>
 
+      {/* Sandbox profile — links to dedicated /settings/permissions page */}
+      <Section
+        icon={<Shield className="h-4 w-4" />}
+        title="Sandbox & first-call permissions"
+        subtitle="What can chorus-spawned reviewers do on this machine? Pick a profile, toggle prompt auto-approval, choose whether to allow outbound network."
+      >
+        <a
+          href="/settings/permissions"
+          className="inline-flex items-center gap-2 rounded-md border border-primary/40 bg-primary/5 px-3 py-2 text-sm font-medium text-primary transition hover:bg-primary/10"
+        >
+          Open Permissions page
+          <span aria-hidden>→</span>
+        </a>
+      </Section>
+
       {/* Permissions — split by role */}
       <Section
         icon={<FolderLock className="h-4 w-4" />}
-        title="Permissions & auto-approve"
+        title="Per-tool auto-approve"
         subtitle="Drivers write code; reviewers don't. Defaults reflect that. Click any chip to cycle auto / ask / block."
       >
         {/* Header row */}

@@ -1,6 +1,6 @@
 id: bug-diagnose
 name: Bug Diagnosis
-description: Adversarial diagnosis. Anthropic produces a hypothesis; OpenAI challenges it. Good for complex bugs where multiple perspectives uncover the root cause.
+description: Adversarial diagnosis. Anthropic produces a hypothesis; Gemini independently challenges it. Good for complex bugs where multiple perspectives uncover the root cause.
 author: chorus
 agreementThreshold: 0.5
 onThresholdMet: ask
@@ -11,18 +11,16 @@ phases:
   - id: diagnose
     kind: plan
     title: Diagnose Bug
-    description: Anthropic (Opus) produces a hypothesis about what's broken and why. OpenAI (GPT-5) independently challenges it.
+    description: Anthropic (Opus) produces a hypothesis about what's broken and why. Gemini independently challenges it.
     doer:
       lineage: anthropic
-      models:
-        - claude-opus-4-7
+      models: []
     reviewer:
       require: 1
       crossLineage: true
       candidates:
-        - lineage: openai
-          models:
-            - gpt-5
+        - lineage: google
+          models: []
     inputs:
       include: []
       exclude: []

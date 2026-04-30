@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { ArrowRight, Plus, Sparkles, Users } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
+import { CliStatusPanel } from "@/components/cli-status-panel";
 
 export const dynamic = "force-dynamic";
 
@@ -68,6 +69,8 @@ export default async function HomePage() {
         )}
 
         {!hasChats ? <EmptyHero /> : <ActiveHome chats={chats} />}
+
+        <CliStatusPanel />
 
         {templates.length > 0 && (
           <section className="mt-12">

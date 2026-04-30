@@ -76,7 +76,11 @@ export function waitForAnswer(
       persistent: true,
     });
 
-    watcher.on('change', (filePath) => {
+    // Shared handler — chokidar fires 'add' on first creation and 'change'
+    // on subsequent writes. CLIs that write the whole answer in one shot
+    // (Claude, Gemini) only trigger 'add'; CLIs that stream (Codex) trigger
+    // 'change'. We need both.
+    const onAnswerWrite = (filePath: string) => {
       if (path.basename(filePath) !== answerBasename) return;
 
       lastWriteTime = Date.now();
@@ -84,8 +88,6 @@ export function waitForAnswer(
 
       try {
         const content = fs.readFileSync(answerFile, 'utf-8');
-
-        // Check for sentinel
         if (content.includes(sentinel)) {
           if (!resolved) {
             resolved = true;
@@ -96,11 +98,15 @@ export function waitForAnswer(
           }
         }
       } catch {
-        // File not yet readable, wait
+        // File not yet readable on this snapshot, retry on next write event.
       }
-    });
+    };
 
-    // Watch for done sentinel file
+    watcher.on('add', onAnswerWrite);
+    watcher.on('change', onAnswerWrite);
+
+    // Optional explicit `done` sentinel file — kept as an opt-in escape hatch
+    // for shims that prefer marker-file completion over content sentinel.
     watcher.on('add', (filePath) => {
       if (path.basename(filePath) !== 'done') return;
 

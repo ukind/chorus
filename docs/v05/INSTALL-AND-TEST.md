@@ -1,176 +1,109 @@
-# Install Chorus MCP into Claude Code (or Codex / Cursor) and test it
+# Install Chorus and run a real chat
 
 This is the **dev-mode** install — the npm package isn't published yet, so we
-point the orchestrator at the absolute path of `bin/chorus.mjs`.
+point each orchestrator at the absolute path of `bin/chorus.mjs`.
 
-## Pre-flight (do once on this host)
+## 1. Build + start the daemon
 
 ```bash
 cd /home/ubuntu/dev/chorus
-pnpm install --prefer-offline
+pnpm install
 pnpm build:server
-cp src/lib/db/schema.sql dist/lib/db/schema.sql   # one-time, until postbuild step lands
-
-# Daemon is already running under PM2 as chorus-daemon:
-pm2 list | grep chorus
-# If not:
-#   pm2 start ecosystem.config.cjs
+pm2 start ecosystem.config.cjs           # daemon on :7707, cockpit on :5050
 ```
 
 Verify:
 
 ```bash
-curl -s http://127.0.0.1:7707/health
-# {"ok":true,"data":{"ok":true,"version":"0.5.0-dev.0",...}}
-
-curl -s http://127.0.0.1:7707/templates | python3 -c "import json,sys; d=json.load(sys.stdin); print([t['id'] for t in d['data']])"
-# ['bug-diagnose', 'code-review', 'red-green', 'architect-review']
+curl -s http://127.0.0.1:7707/health | jq
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:5050/   # 200
 ```
 
-## Add Chorus to Claude Code's MCP config
-
-Open `~/.claude.json` and add a new entry under `mcpServers`. Two ways to do
-it — pick one.
-
-### Option A: edit `~/.claude.json` directly
-
-Find the project block for the directory you'll launch Claude in (e.g.
-`/home/ubuntu` or your repo). Add `chorus` to its `mcpServers`:
-
-```json
-{
-  "projects": {
-    "/home/ubuntu": {
-      "mcpServers": {
-        "chorus": {
-          "command": "node",
-          "args": ["/home/ubuntu/dev/chorus/bin/chorus.mjs", "mcp"],
-          "env": {
-            "CHORUS_DAEMON_URL": "http://127.0.0.1:7707"
-          }
-        }
-      }
-    }
-  }
-}
-```
-
-### Option B: use Claude's CLI (if you prefer)
+## 2. Connect every CLI on this box in one pass
 
 ```bash
-claude mcp add chorus \
-  -- node /home/ubuntu/dev/chorus/bin/chorus.mjs mcp
+pnpm exec tsx src/cli/index.ts connect
 ```
 
-Restart Claude Code. The `chorus` MCP server should appear in `/mcp` listing.
+You should see roughly:
 
-### Pre-approve the 7 Chorus tools (skip the per-tool prompts)
+```
+✓ Claude Code: MCP server registered · all 7 tools already approved · /chorus command installed
+✓ Codex CLI: MCP server registered
+✓ Gemini CLI: MCP server registered
+✓ OpenCode: MCP server registered
+✓ Kimi CLI: MCP server registered
+✗ Cursor: not detected on this machine
+✗ Windsurf: not detected on this machine
 
-Pick **one** of:
+Heads up: Kimi CLI will show a one-time permission prompt on your first
+chorus.* tool call. Click "Always allow" to make it stick.
+```
 
-**Option 1 — Already done by `chorus init`** (see step earlier). Init auto-detects Claude Code (and any other supported editor on this host) and registers + pre-approves it. Re-run safely.
-
-**Option 2 — Cockpit one-click.** Open http://localhost:3011/connect after `chorus start`, click **Connect Claude Code**.
-
-**Option 3 — CLI explicit.** `chorus connect` (idempotent — safe to re-run).
-
-Both patch `~/.claude/settings.local.json` → `permissions.allow` with all 7 `mcp__chorus__*` tools. Idempotent. Without this, Claude prompts "Yes, allow `mcp__chorus__create_chat` for this project?" the first time you use each tool.
-
-## Smoke test from inside Claude Code
-
-In a Claude session, ask:
-
-> Use the chorus MCP server. Call `list_templates` and tell me what's available.
-
-Expected: Claude prints 4 templates — `bug-diagnose`, `code-review`,
-`red-green`, `architect-review`.
-
-Then:
-
-> Use `chorus.create_chat` with `work: "Review this for off-by-one errors:
-> for (let i = 0; i <= arr.length; i++) { console.log(arr[i]); }"` and
-> `template: "code-review"`. Then `chorus.wait_for_chat` on the returned
-> chatId.
-
-What happens:
-1. `create_chat` returns immediately with a `chatId` and `url`
-   (`http://127.0.0.1:3011/runs/<chatId>`).
-2. The Chorus daemon spawns a fresh tmux session per reviewer:
-   - `chorus-<chatId>-review-reviewer-claude-code-0`
-   - `chorus-<chatId>-review-reviewer-codex-cli-1`
-   - `chorus-<chatId>-review-reviewer-gemini-2`
-3. Each reviewer's CLI launches in `~/.chorus/chats/<chatId>/round-1/...`,
-   reads `ask.md`, writes `answer.md`.
-4. `wait_for_chat` blocks until consensus or timeout, emitting MCP progress
-   notifications on each phase transition.
-5. Final response includes verdict + per-reviewer findings.
-
-## Watch what's happening
-
-In a separate terminal:
+To pick a subset:
 
 ```bash
-# Live tmux sessions Chorus has spawned:
-watch -n 1 'tmux ls 2>/dev/null | grep chorus-'
-
-# Live filesystem activity for the chat:
-ls -la ~/.chorus/chats/<chatId>/round-1/
-
-# Open the cockpit in a browser:
-open http://127.0.0.1:3011
-
-# Tail daemon logs:
-pm2 logs chorus-daemon --lines 50
+pnpm exec tsx src/cli/index.ts connect claude,gemini
 ```
 
-To attach to a reviewer's tmux pane and see the CLI's view:
+## 3. Where chorus is registered (per CLI)
 
-```bash
-tmux attach -t chorus-<chatId>-review-reviewer-claude-code-0
-# Detach with Ctrl-b d
-```
-
-## Things that may bite on first run
-
-| Symptom | Why | Fix |
+| CLI | Config file edited | Pre-approval |
 |---|---|---|
-| Claude pane stuck at "Trust this folder?" | First launch in fresh chat dir | **Already auto-fixed** — preflight patches `~/.claude.json`. If still stuck, delete the project block in `~/.claude.json` and retry. |
-| Codex pane stuck at "Trust this folder?" | Same, for codex | **Already auto-fixed** in `<CODEX_HOME>/config.toml`. If using a brand new account, you'll also need `codex login` once. |
-| `wait_for_chat` times out | One reviewer's CLI hung at an interactive prompt | Inspect with `tmux attach -t <session>`; press the right key, or kill the session. The daemon's reaper sweeps idle sessions every 5 min. |
-| "Daemon unreachable" from MCP | `chorus-daemon` PM2 process is down | `pm2 restart chorus-daemon` |
-| MCP server appears but tools/call hangs | Browser-context limitation we just fixed (proxy in `/api/daemon/`); MCP shouldn't hit this — it talks to daemon directly | Check `pm2 logs chorus-daemon` for the actual call |
+| Claude Code | `~/.claude.json` + `~/.claude/settings.local.json` | 7 tools auto-allowed |
+| Codex | `~/.codex/config.toml` `[mcp_servers.chorus]` | inherits `approval_policy` |
+| Gemini | `~/.gemini/settings.json` `mcpServers.chorus` | `--trust` set |
+| OpenCode | `~/.config/opencode/opencode.json` `mcp.chorus` | `enabled: true` |
+| Kimi | `~/.kimi/mcp.json` `mcpServers.chorus` | one-time TUI prompt |
+| Cursor | `~/.cursor/mcp.json` `mcpServers.chorus` | first-call IDE prompt |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` | first-call IDE prompt |
 
-## Cancel a misbehaving run
+## 4. Fire a chat from the cockpit
 
-From inside Claude:
+Open <http://localhost:5050>. Click **New chat** → pick `bug-diagnose` →
+paste a small snippet → Submit. You should see:
 
-> Use `chorus.cancel_chat` with `chatId: "<id>"`.
+- Phase stepper at the top with one phase ("Diagnose Bug")
+- Round 1 grid: doer card (Claude) and reviewer card (Gemini)
+- Doer streams to "DONE" first, reviewer card flips to "WORKING", then "DONE"
+- Status banner flips from `DRAFTING` → `REVIEWING` → `APPROVED` (or
+  `NO REVIEW` if all reviewers fail)
 
-Or directly:
+## 5. Or fire from inside Claude Code
 
-```bash
-curl -X POST http://127.0.0.1:7707/chats/<chatId>/cancel
+```
+/chorus bug-diagnose Spot the bug in: function divide(a,b){return a/b}
 ```
 
-The runner aborts, sessions are killed, `~/.chorus/chats/<chatId>/` stays for
-inspection (manually `rm -rf` to clean up).
+The Claude Code instance calls `mcp__chorus__create_chat` (silent — all 7
+tools pre-approved by step 2), then `mcp__chorus__wait_for_chat`, then
+summarises the verdict.
 
-## After the test — cleanup and report
+## 6. Or fire from the daemon HTTP API directly
 
 ```bash
-# Stop any leftover sessions:
-tmux ls 2>/dev/null | grep chorus- | cut -d: -f1 | xargs -r -n1 tmux kill-session -t
+RESP=$(curl -s -X POST http://127.0.0.1:7707/chats \
+  -H 'content-type: application/json' \
+  -d '{"work":"Spot the bug in: const a=[1]; for(let i=0;i<=a.length;i++) console.log(a[i]);","templateId":"bug-diagnose"}')
+CHAT_ID=$(echo "$RESP" | jq -r '.data.id')
 
-# Clear test chats from disk:
-rm -rf ~/.chorus/chats/<chatId>
-
-# Or wipe everything if it's a clean test environment:
-rm -rf ~/.chorus/chats/* ~/.chorus/chorus.db*
-pm2 restart chorus-daemon
+# The SSE stream drives the runner — keep it open for the run's lifetime
+curl -sN "http://127.0.0.1:7707/chats/$CHAT_ID/stream"
 ```
 
-If you hit a reproducible issue, paste:
-1. The MCP call you made
-2. The chatId returned
-3. `pm2 logs chorus-daemon --lines 100` tail
-4. `tmux capture-pane -t <session> -p` of any stuck pane
+Open `http://localhost:5050/runs/$CHAT_ID` in another tab to watch live.
+
+## 7. Permissions
+
+Cockpit `/settings/permissions` controls reviewer sandbox. Three profiles
+(strict / workspace / full), plus toggles for auto-approve-prompts and
+network access. Onboarding asks the same questions on first run.
+
+## 8. Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| Cockpit can't reach daemon | `pm2 status` — both `chorus-web` and `chorus-daemon` should be online |
+| Reviewer pane shows OAuth login URL | CLI needs auth here. `codex login`, `gemini --auth`, `kimi /login`. |
+| Reviewer never writes answer.md | Attach with `tmux attach -t <session>`. Common causes: quota (cockpit "Reviewer fleet" panel shows reset time), or a new first-launch popup we haven't pre-suppressed yet. |
+| Chat ends with `no_review` | All reviewers failed (typically quota). Use a template targeting a different lineage, or wait for reset. |

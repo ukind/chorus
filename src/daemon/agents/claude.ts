@@ -19,6 +19,15 @@ export const claudeShim: AgentShim = {
     const cwd = quotePath(opts.cwd);
     let cmd = `cd ${cwd} && claude`;
 
+    // Sandbox profile mapping. Claude Code itself doesn't expose a
+    // workspace-vs-strict toggle — the existing per-tool permission allow-list
+    // (settings.local.json `permissions.allow[]`) already implements the
+    // "workspace" profile. Full = bypass everything; strict isn't expressible
+    // at spawn time, only via tighter allow-list.
+    if (opts.unsandboxed || opts.sandbox === 'full') {
+      cmd += ` --dangerously-skip-permissions`;
+    }
+
     if (opts.model) {
       cmd += ` --model ${quoteValue(opts.model)}`;
     }

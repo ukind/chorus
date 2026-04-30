@@ -16,7 +16,7 @@ export const PhaseSchema = z.object({
   description: z.string().optional(),
 
   doer: z.object({
-    lineage: z.enum(['anthropic', 'openai', 'google', 'xai', 'any']),
+    lineage: z.enum(['anthropic', 'openai', 'google', 'opencode', 'moonshot', 'any']),
     models: z.array(z.string()).optional(),
   }),
 
@@ -24,7 +24,7 @@ export const PhaseSchema = z.object({
     require: z.number().int().min(0).default(1),
     crossLineage: z.boolean().default(true),
     candidates: z.array(z.object({
-      lineage: z.enum(['anthropic', 'openai', 'google', 'xai']),
+      lineage: z.enum(['anthropic', 'openai', 'google', 'opencode', 'moonshot']),
       models: z.array(z.string()).optional(),
     })),
   }).optional(),

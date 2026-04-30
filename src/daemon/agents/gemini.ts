@@ -16,7 +16,16 @@ export const geminiShim: AgentShim = {
     validateValue('model', opts.model);
 
     const cwd = quotePath(opts.cwd);
-    let cmd = `cd ${cwd} && gemini --approval-mode auto_edit`;
+
+    // Map sandbox profile to gemini's approval-mode. Never use yolo —
+    // see feedback_gemini_yolo_dangerous.md (auto_edit is safe-by-default).
+    let approvalMode = 'auto_edit';
+    if (opts.sandbox === 'strict') approvalMode = 'default';
+    // 'workspace' (default) and 'full' both use auto_edit. Going beyond
+    // auto_edit (i.e. yolo) is intentionally NOT supported here — the user
+    // who wants gemini fully unsandboxed can run gemini outside chorus.
+
+    let cmd = `cd ${cwd} && gemini --approval-mode ${approvalMode}`;
 
     if (opts.model) {
       cmd += ` -m ${quoteValue(opts.model)}`;

@@ -13,6 +13,8 @@ import { waitForAnswer } from './output-watcher.js';
 import type { TmuxManager } from './tmux-types.js';
 import { registry } from './agents/index.js';
 import { ErrorDetector } from './error-detector.js';
+import { getPermissions } from '../lib/settings/permissions.js';
+import { recordHealth, kindToStatus, type CliLineage } from '../lib/cli-health.js';
 
 export interface RunnerEvent {
   chatId: string;
@@ -77,6 +79,11 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
     });
   };
   abortSignal.addEventListener('abort', abortListener);
+
+  // Track whether any phase failed because every reviewer in it failed
+  // (timeout/quota/crash). If so, the chat ends in 'no_review' rather than
+  // 'approved' — there was no actual peer review to approve from.
+  let anyPhaseAllReviewersFailed = false;
 
   try {
     // Walk phases
@@ -161,6 +168,10 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
             onEvent,
           );
 
+          if (consensus.allFailed) {
+            anyPhaseAllReviewersFailed = true;
+          }
+
           if (consensus.agreed) {
             doerSucceeded = true;
             break;
@@ -216,7 +227,10 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
     onEvent({
       chatId,
       type: 'chat_done',
-      payload: { status: 'completed' },
+      payload: {
+        status: anyPhaseAllReviewersFailed ? 'no_review' : 'completed',
+        verdict: anyPhaseAllReviewersFailed ? 'no_review' : 'approved',
+      },
       ts: Date.now(),
     });
   } catch (error) {
@@ -261,6 +275,7 @@ async function runDoer(
 
   // Acquire session — fresh per chat by default; reuses across rounds when
   // template policy says so (shareSessionAcrossRounds, default true).
+  const perms = getPermissions();
   const sessionName = sanitizeName(`chorus-${chatId}-${phase.id}-doer-${agentName}`);
   const session = await tmuxMgr.acquire({
     chatId,
@@ -274,6 +289,9 @@ async function runDoer(
       sessionName,
       cwd: doerDir,
       model: phase.doer.models?.[0],
+      sandbox: perms.sandboxProfile,
+      autoApprove: perms.autoApprovePrompts,
+      networkAccess: perms.networkAccess,
     },
     agentName,
   });
@@ -291,7 +309,16 @@ async function runDoer(
     expectDoneSentinel: true,
   });
 
+  // Wait for the CLI's TUI to finish cold-start before pasting. 6s covers
+  // Codex's slow cold-start (it auths + paints panels); shorter and the
+  // Enter we send below races against the input box being ready and gets
+  // eaten. Raise if a slower box still misses the prompt.
+  await new Promise((r) => setTimeout(r, 6000));
+
   tmuxMgr.pasteBuffer(session.name, prompt);
+  // Small gap between paste and Enter so the TUI registers the paste before
+  // we submit.
+  await new Promise((r) => setTimeout(r, 500));
   tmuxMgr.sendKeys(session.name, ['Enter']);
 
   // Poll capture-pane every 2s to surface known CLI failure modes while we
@@ -302,6 +329,12 @@ async function runDoer(
       const pane = tmuxMgr.capturePane(session.name);
       const err = errorDetector.inspect(session.name, phase.doer.lineage, pane);
       if (err) {
+        recordHealth({
+          lineage: phase.doer.lineage as CliLineage,
+          status: kindToStatus(err.kind),
+          message: err.message,
+          resetAt: err.resetAt,
+        });
         onEvent({
           chatId,
           type: 'cli_error',
@@ -342,9 +375,9 @@ async function runReviewers(
   tmuxMgr: TmuxManager,
   errorDetector: ErrorDetector,
   onEvent: (e: RunnerEvent) => void,
-): Promise<{ agreed: boolean; summary: string }> {
+): Promise<{ agreed: boolean; summary: string; allFailed: boolean }> {
   if (!phase.reviewer || phase.reviewer.candidates.length === 0) {
-    return { agreed: true, summary: '' };
+    return { agreed: true, summary: '', allFailed: false };
   }
 
   const roundDir = path.join(chatDir, `round-${round}`);
@@ -352,9 +385,15 @@ async function runReviewers(
     fs.mkdirSync(roundDir, { recursive: true });
   }
 
-  const reviews: { reviewer: string; verdict: boolean }[] = [];
+  // Each reviewer returns: 'agreed' | 'disagreed' | 'failed'.
+  // 'failed' = reviewer never produced a valid answer (timeout, quota, crash).
+  // The chat-level verdict has to know the difference: if EVERY reviewer
+  // failed, we shouldn't auto-approve — there was no actual peer review.
+  const reviews: {
+    reviewer: string;
+    outcome: 'agreed' | 'disagreed' | 'failed';
+  }[] = [];
 
-  // Fan out reviewers in parallel (can be changed to sequential if needed)
   const reviewPromises = phase.reviewer.candidates.map((candidate, idx) =>
     runReviewer(
       chatDir,
@@ -368,34 +407,36 @@ async function runReviewers(
       tmuxMgr,
       errorDetector,
       onEvent,
-    ).then((verdict) => {
-      reviews.push({
-        reviewer: `${candidate.lineage}-${idx}`,
-        verdict,
-      });
-    })
-    .catch(() => {
-      // Reviewer failure: count as disagreement
-      reviews.push({
-        reviewer: `${candidate.lineage}-${idx}`,
-        verdict: false,
-      });
-    })
+    )
+      .then((res) => {
+        reviews.push({
+          reviewer: `${candidate.lineage}-${idx}`,
+          outcome: res === null ? 'failed' : res ? 'agreed' : 'disagreed',
+        });
+      })
+      .catch(() => {
+        reviews.push({
+          reviewer: `${candidate.lineage}-${idx}`,
+          outcome: 'failed',
+        });
+      }),
   );
 
   await Promise.all(reviewPromises);
 
-  // Check consensus
-  const agreedCount = reviews.filter((r) => r.verdict).length;
+  const agreedCount = reviews.filter((r) => r.outcome === 'agreed').length;
+  const failedCount = reviews.filter((r) => r.outcome === 'failed').length;
   const required = phase.reviewer.require;
   const agreed = agreedCount >= required;
+  const allFailed = failedCount === reviews.length && reviews.length > 0;
 
-  const summary =
-    reviews.length > 0
-      ? `${agreedCount}/${reviews.length} reviewers agreed`
+  const summary = allFailed
+    ? `All ${reviews.length} reviewer(s) failed (timeout/quota/crash)`
+    : reviews.length > 0
+      ? `${agreedCount}/${reviews.length} reviewers agreed${failedCount ? `, ${failedCount} failed` : ''}`
       : 'No reviews completed';
 
-  return { agreed, summary };
+  return { agreed, summary, allFailed };
 }
 
 async function runReviewer(
@@ -410,7 +451,11 @@ async function runReviewer(
   tmuxMgr: TmuxManager,
   errorDetector: ErrorDetector,
   onEvent: (e: RunnerEvent) => void,
-): Promise<boolean> {
+): Promise<boolean | null> {
+  // Returns:
+  //   true  = reviewer ran and approved
+  //   false = reviewer ran and disagreed
+  //   null  = reviewer never produced a valid answer (timeout/quota/crash)
   if (!phase.reviewer) return true;
   const candidate = phase.reviewer.candidates[reviewerIdx];
 
@@ -432,6 +477,7 @@ async function runReviewer(
 
   // Reviewers don't share sessions across rounds — each round wants a fresh
   // perspective on the new doer output. Across-phase reuse never makes sense.
+  const perms = getPermissions();
   const sessionName = sanitizeName(
     `chorus-${chatId}-${phase.id}-reviewer-${agentName}-${reviewerIdx}`,
   );
@@ -447,6 +493,9 @@ async function runReviewer(
       sessionName,
       cwd: reviewerDir,
       model: candidate.models?.[0],
+      sandbox: perms.sandboxProfile,
+      autoApprove: perms.autoApprovePrompts,
+      networkAccess: perms.networkAccess,
     },
     agentName: `${agentName}-${reviewerIdx}`,
   });
@@ -462,7 +511,16 @@ async function runReviewer(
     task: `Review: ${phase.title}`,
     expectDoneSentinel: true,
   });
+  // Wait for the CLI's TUI to finish cold-start before pasting. 6s covers
+  // Codex's slow cold-start (it auths + paints panels); shorter and the
+  // Enter we send below races against the input box being ready and gets
+  // eaten. Raise if a slower box still misses the prompt.
+  await new Promise((r) => setTimeout(r, 6000));
+
   tmuxMgr.pasteBuffer(session.name, prompt);
+  // Small gap between paste and Enter so the TUI registers the paste before
+  // we submit.
+  await new Promise((r) => setTimeout(r, 500));
   tmuxMgr.sendKeys(session.name, ['Enter']);
 
   // Failure-mode polling — same pattern as the doer.
@@ -471,6 +529,12 @@ async function runReviewer(
       const pane = tmuxMgr.capturePane(session.name);
       const err = errorDetector.inspect(session.name, candidate.lineage, pane);
       if (err) {
+        recordHealth({
+          lineage: candidate.lineage as CliLineage,
+          status: kindToStatus(err.kind),
+          message: err.message,
+          resetAt: err.resetAt,
+        });
         onEvent({
           chatId,
           type: 'cli_error',
@@ -494,12 +558,17 @@ async function runReviewer(
       timeoutMs: 5 * 60 * 1000,
       doneSentinel: '## DONE',
     });
+    if (!result.full || result.content.trim().length === 0) {
+      // Watcher resolved on timeout/silence with no real answer.
+      return null;
+    }
     const approved =
       result.content.toLowerCase().includes('approve') ||
       result.content.toLowerCase().includes('good');
     return approved;
   } catch {
-    return false;
+    // Timed out or watcher errored — no valid answer produced.
+    return null;
   } finally {
     clearInterval(pollHandle);
   }

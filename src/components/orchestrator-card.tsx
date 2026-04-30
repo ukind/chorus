@@ -67,6 +67,16 @@ export function OrchestratorCard({ initial }: Props) {
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
             {status.note}
           </p>
+          {isConnected && status.firstCallBehavior === "prompts_once" && (
+            <p className="mt-2 text-[11px] text-amber-300/90">
+              ⚠ First chorus.* call will show a one-time prompt — click "Always allow".
+            </p>
+          )}
+          {isConnected && status.firstCallBehavior === "inherits_global" && (
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              Whether tool calls prompt depends on your existing approval-policy setting.
+            </p>
+          )}
         </div>
       </div>
 

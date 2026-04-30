@@ -72,9 +72,9 @@ phases:
   - id: implement
     kind: implement
     title: Implementation
-    description: Xai (or fallback) implements based ONLY on spec—cannot see tests. This info asymmetry prevents overfitting to test literals.
+    description: OpenCode (or fallback) implements based ONLY on spec—cannot see tests. This info asymmetry prevents overfitting to test literals.
     doer:
-      lineage: xai
+      lineage: opencode
       models: []
     reviewer:
       require: 1

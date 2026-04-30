@@ -35,7 +35,7 @@ const ChatRowSchema = z.object({
   id: z.string(),
   work: z.string(),
   template_id: z.string(),
-  status: z.enum(['drafting', 'reviewing', 'approved', 'merged', 'blocked', 'cancelled', 'failed']),
+  status: z.enum(['drafting', 'reviewing', 'approved', 'merged', 'blocked', 'cancelled', 'failed', 'no_review']),
   current_phase_idx: z.number().int(),
   yolo: z.coerce.boolean().default(false),
   attached_files: z.string().nullable(),

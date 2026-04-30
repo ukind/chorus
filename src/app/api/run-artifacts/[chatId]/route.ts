@@ -1,40 +1,21 @@
+/**
+ * Filesystem-backed artifacts endpoint for the run page.
+ * Returns the structure of ~/.chorus/chats/<id>/round-N/<participant>/answer.md
+ * as a JSON tree the LiveRunReal client component can consume.
+ *
+ * Reads from disk, no DB. Cheap enough to poll every 4s. Daemon and Next.js
+ * are co-hosted so the filesystem read is local.
+ */
+
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { notFound } from "next/navigation";
-import { AppShell } from "@/components/app-shell";
-import { LiveRunReal } from "@/components/live-run-real";
-import { getChat, getTemplate, DaemonError } from "@/lib/api";
-
-export const dynamic = "force-dynamic";
-
-interface RunPageProps {
-  params: Promise<{ runId: string }>;
-}
-
-async function getRunData(runId: string) {
-  try {
-    const chat = await getChat(runId);
-    const template = await getTemplate(chat.templateId);
-    return { chat, template };
-  } catch (err) {
-    throw err instanceof DaemonError ? err : new Error("Failed to load run data");
-  }
-}
-
-const AGENT_TO_LINEAGE: Record<string, "claude" | "codex" | "gemini" | "opencode" | "kimi"> = {
-  "claude-code": "claude",
-  "codex-cli": "codex",
-  "gemini-cli": "gemini",
-  "opencode-cli": "opencode",
-  "kimi-cli": "kimi",
-};
 
 interface ParticipantSnapshot {
   participant: string;
   role: "doer" | "reviewer";
   agentName: string;
-  lineage: "claude" | "codex" | "gemini" | "opencode" | "kimi";
+  lineage: string;
   hasAnswer: boolean;
   answer?: string;
   findingsPreview?: string[];
@@ -44,6 +25,14 @@ interface RoundSnapshot {
   round: number;
   participants: ParticipantSnapshot[];
 }
+
+const AGENT_TO_LINEAGE: Record<string, string> = {
+  "claude-code": "claude",
+  "codex-cli": "codex",
+  "gemini-cli": "gemini",
+  "opencode-cli": "opencode",
+  "kimi-cli": "kimi",
+};
 
 function readChatRounds(chatId: string): RoundSnapshot[] {
   const chatDir = path.join(os.homedir(), ".chorus", "chats", chatId);
@@ -63,9 +52,12 @@ function readChatRounds(chatId: string): RoundSnapshot[] {
       .readdirSync(roundDir, { withFileTypes: true })
       .filter((d) => d.isDirectory())
       .map((d) => {
-        const role: "doer" | "reviewer" = d.name.startsWith("doer-") ? "doer" : "reviewer";
+        const role: "doer" | "reviewer" = d.name.startsWith("doer-")
+          ? "doer"
+          : "reviewer";
+        // Strip role prefix and trailing -N for reviewer indices.
         const rawAgent = d.name.replace(/^(doer-|reviewer-)/, "").replace(/-\d+$/, "");
-        const lineage = AGENT_TO_LINEAGE[rawAgent] ?? "claude";
+        const lineage = AGENT_TO_LINEAGE[rawAgent] ?? rawAgent;
         const answerPath = path.join(roundDir, d.name, "answer.md");
         let hasAnswer = false;
         let answer: string | undefined;
@@ -83,7 +75,15 @@ function readChatRounds(chatId: string): RoundSnapshot[] {
             answer = undefined;
           }
         }
-        return { participant: d.name, role, agentName: rawAgent, lineage, hasAnswer, answer, findingsPreview };
+        return {
+          participant: d.name,
+          role,
+          agentName: rawAgent,
+          lineage,
+          hasAnswer,
+          answer,
+          findingsPreview,
+        };
       });
 
     rounds.push({ round: roundNum, participants });
@@ -92,25 +92,16 @@ function readChatRounds(chatId: string): RoundSnapshot[] {
   return rounds.sort((a, b) => a.round - b.round);
 }
 
-export default async function RunPage({ params }: RunPageProps) {
-  const { runId } = await params;
-  const { chat, template } = await getRunData(runId);
-
-  if (!chat) {
-    notFound();
+export async function GET(
+  _req: Request,
+  { params }: { params: Promise<{ chatId: string }> },
+) {
+  const { chatId } = await params;
+  // Defense-in-depth: chatId is a ULID-looking string. Reject paths with `..`
+  // or slashes so a malformed param can't escape the chats dir.
+  if (chatId.includes("..") || chatId.includes("/") || chatId.includes("\\")) {
+    return Response.json({ rounds: [] }, { status: 400 });
   }
-
-  const initialRounds = readChatRounds(chat.id);
-
-  return (
-    <AppShell>
-      <LiveRunReal
-        chatId={chat.id}
-        initialStatus={chat.status}
-        initialRounds={initialRounds}
-        template={template}
-        work={chat.work}
-      />
-    </AppShell>
-  );
+  const rounds = readChatRounds(chatId);
+  return Response.json({ rounds });
 }

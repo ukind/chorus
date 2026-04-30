@@ -2,7 +2,19 @@
 // Pattern ported from openbridge's lib/agents/<name>.sh; see
 // /home/ubuntu/.claude/projects/-home-ubuntu/memory/openbridge_architecture.md
 
-export type Lineage = 'anthropic' | 'openai' | 'google' | 'xai' | 'any';
+/**
+ * Lineage tags a model family / vendor.
+ *
+ * v0.5 caveat: this enum currently conflates "CLI" with "model family":
+ * `opencode` is a CLI that can host multiple lineages (moonshot/deepseek/grok
+ * depending on user's opencode.json). v0.6 will split into:
+ *   - Vendor: anthropic, openai, google, moonshot, deepseek, xai, mistral, ...
+ *   - Channel: cli vs api
+ *   - CLI:    claude, codex, gemini, kimi, opencode
+ * For now, treat `opencode` as "the OpenCode CLI" and let the user's opencode
+ * config decide the underlying model. `moonshot` means the dedicated kimi CLI.
+ */
+export type Lineage = 'anthropic' | 'openai' | 'google' | 'opencode' | 'moonshot' | 'any';
 
 /**
  * Transport-aware sandbox modes (Codex CLI relevant; others ignore).
@@ -21,10 +33,24 @@ export interface AgentSpawnOptions {
   transport?: Transport;
   /** Specific model (e.g. `claude-opus-4-7`); empty = CLI default. */
   model?: string;
-  /** Pre-approved sandbox bypass for this session. Default false. */
+  /** Pre-approved sandbox bypass for this session. Default false. Legacy — prefer `sandbox: 'full'`. */
   unsandboxed?: boolean;
   /** Used for per-account isolation (codex multi-auth). */
   accountId?: string;
+  /**
+   * User-configured sandbox profile from the settings table. Each shim
+   * translates this into the right CLI flag(s). When unset, shims fall back
+   * to their conservative default (workspace).
+   */
+  sandbox?: 'strict' | 'workspace' | 'full';
+  /**
+   * If true, shims emit auto-approval flags (kimi `--afk`, gemini auto-edit,
+   * etc.) so the spawned reviewer doesn't hang on permission prompts.
+   * Default true for headless reviewer spawns.
+   */
+  autoApprove?: boolean;
+  /** Allow outbound network from the spawned reviewer. Default false. */
+  networkAccess?: boolean;
 }
 
 export interface AgentNudgeOptions {

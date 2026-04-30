@@ -5,7 +5,7 @@
 //   /home/ubuntu/.claude/projects/-home-ubuntu/memory/feedback_shell_injection_via_tmux.md
 //   /home/ubuntu/.claude/projects/-home-ubuntu/memory/feedback_codex_home_per_account.md
 
-import type { AgentSpawnOptions } from './agents/types.js';
+import type { AgentSpawnOptions, AgentShim } from './agents/types.js';
 
 /**
  * Lifecycle states a session can be in.
@@ -44,8 +44,12 @@ export interface AcquireSessionOptions {
   /** Template-level policy from `phase.iterate`. */
   shareSessionAcrossRounds: boolean;
   shareSessionAcrossPhases: boolean;
+  /** The agent shim that will build the launch command. */
+  shim: AgentShim;
   /** Spawn options if a fresh session is needed. */
-  spawn: AgentSpawnOptions & { lineage: string };
+  spawnOpts: AgentSpawnOptions;
+  /** Stable agent name (extracted from the shim and phase). */
+  agentName: string;
 }
 
 export interface TmuxManager {
@@ -80,7 +84,7 @@ export interface TmuxManager {
   kill(sessionName: string): void;
 
   /** Mark a session terminal — eligible for reaping next sweep. */
-  markTerminal(sessionName: string, reason: string): void;
+  markTerminal(sessionName: string): void;
 
   /** Reaper sweep. Run every ~5 min by index.ts. */
   reapOnce(opts: {

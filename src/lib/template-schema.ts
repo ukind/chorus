@@ -37,7 +37,20 @@ export const PhaseSchema = z.object({
   iterate: z.object({
     maxRounds: z.number().int().min(1).default(2),
     onDisagreement: z.enum(['continue', 'escalate', 'accept-doer']).default('continue'),
-  }).default({ maxRounds: 2, onDisagreement: 'continue' }),
+    // Reuse the same tmux session across rounds 1..N of THIS phase.
+    // Default true = save tokens (LLM keeps context in its session).
+    // Set false when a fresh perspective per round matters more than cost.
+    shareSessionAcrossRounds: z.boolean().default(true),
+    // Reuse this phase's tmux session for the NEXT phase too.
+    // Default false = fresh session per phase boundary (different artifacts).
+    // Rare to enable; only when phases are tightly coupled and context-sharing helps.
+    shareSessionAcrossPhases: z.boolean().default(false),
+  }).default({
+    maxRounds: 2,
+    onDisagreement: 'continue',
+    shareSessionAcrossRounds: true,
+    shareSessionAcrossPhases: false,
+  }),
 });
 
 export type Phase = z.infer<typeof PhaseSchema>;

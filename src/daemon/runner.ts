@@ -45,6 +45,15 @@ export interface PhaseRunnerOptions {
    * When unset: doer cwd is scratch dir as before; ship phase auto-skips.
    */
   repoPath?: string;
+  /**
+   * Optional list of file paths to read and inline into doer + reviewer
+   * prompts. Paths are resolved relative to repoPath when set, else absolute.
+   * Missing files are skipped with a note. Each file is capped at 64 KB,
+   * total payload at 256 KB; oversize is truncated with a marker. Previously
+   * `attached_files` was stored on the chat row but never read — this is the
+   * wire-up so `invoke_persona({files: [...]})` actually reaches the prompt.
+   */
+  attachedFiles?: string[];
   onEvent: (e: RunnerEvent) => void;
   abortSignal: AbortSignal;
   tmuxMgr: TmuxManager;
@@ -63,8 +72,12 @@ interface ChatMeta {
  * checks consensus, and emits events.
  */
 export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
-  const { chatId, template, work, repoPath, onEvent, abortSignal, tmuxMgr, errorDetector } = opts;
+  const { chatId, template, work, repoPath, attachedFiles, onEvent, abortSignal, tmuxMgr, errorDetector } = opts;
   const chatDir = path.join(os.homedir(), '.chorus', 'chats', chatId);
+
+  // Pack attached files into a single block once per chat. Both doer + every
+  // reviewer get the same block — they're auditing the same artifacts.
+  const filesBlock = packAttachedFiles(attachedFiles, repoPath);
 
   // Ensure chat directory
   if (!fs.existsSync(chatDir)) {
@@ -80,15 +93,22 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
   };
   fs.writeFileSync(path.join(chatDir, 'meta.json'), JSON.stringify(meta, null, 2));
 
+  // chat_done is a one-way latch. The abort listener and the normal terminal
+  // emission (line 304+) both try to fire it; whichever runs first wins. This
+  // closes a race where SSE-disconnect → abort → chat_done(cancelled), then
+  // the loop kept running and emitted chat_done(completed), overwriting
+  // 'cancelled' with 'approved' in the DB. Now: first emission sticks.
+  let chatDoneEmitted = false;
+  const emitChatDone = (payload: Record<string, unknown>): void => {
+    if (chatDoneEmitted) return;
+    chatDoneEmitted = true;
+    onEvent({ chatId, type: 'chat_done', payload, ts: Date.now() });
+  };
+
   // Abort handler
   const abortListener = () => {
     // TODO(H): send polite Escape to active session, flip status to cancelled
-    onEvent({
-      chatId,
-      type: 'chat_done',
-      payload: { status: 'cancelled' },
-      ts: Date.now(),
-    });
+    emitChatDone({ status: 'cancelled' });
   };
   abortSignal.addEventListener('abort', abortListener);
 
@@ -96,6 +116,9 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
   // (timeout/quota/crash). If so, the chat ends in 'no_review' rather than
   // 'approved' — there was no actual peer review to approve from.
   let anyPhaseAllReviewersFailed = false;
+  // Track whether any doer failed all rounds (couldn't produce output). If so,
+  // the chat must NOT end approved — there was no real implementation to review.
+  let anyPhaseDoerFailed = false;
 
   try {
     // Walk phases
@@ -135,6 +158,7 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
           phaseIdx,
           round,
           work,
+          filesBlock,
           tmuxMgr,
           errorDetector,
           onEvent,
@@ -148,6 +172,9 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
             type: 'phase_failed',
             payload: {
               phaseId: phase.id,
+              phaseIdx,
+              kind: phase.kind,
+              role: 'doer',
               reason: 'doer_timeout',
             },
             ts: Date.now(),
@@ -177,6 +204,7 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
             round,
             doerAnswer.content,
             work,
+            filesBlock,
             tmuxMgr,
             errorDetector,
             onEvent,
@@ -214,17 +242,24 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
       }
 
       if (!doerSucceeded) {
+        anyPhaseDoerFailed = true;
         onEvent({
           chatId,
           type: 'phase_failed',
           payload: {
             phaseId: phase.id,
+            phaseIdx,
+            kind: phase.kind,
+            role: 'doer',
             reason: 'max_rounds_exhausted',
           },
           ts: Date.now(),
         });
-        // Continue to next phase or fail entire chat?
-        // For now, continue (escalation policy per phase.iterate.onDisagreement)
+        // Don't continue to subsequent phases when a doer failed every round —
+        // there is no real implementation to feed forward, and the chat must
+        // not end 'approved'. The chat_done branch below handles the terminal
+        // status as 'failed' / 'no_review' instead of completed.
+        break;
       }
 
       onEvent({
@@ -302,54 +337,35 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
     }
 
     // Final chat_done — encodes terminal status and ship-phase outcome.
-    if (anyPhaseAllReviewersFailed) {
-      onEvent({
-        chatId,
-        type: 'chat_done',
-        payload: { status: 'no_review', verdict: 'no_review' },
-        ts: Date.now(),
-      });
+    // Routed through emitChatDone so an earlier abort (SSE close, user cancel)
+    // can't be overwritten by a later "completed" emission.
+    if (anyPhaseDoerFailed) {
+      // The doer never produced a real implementation. Don't pretend the
+      // chat was reviewed — surface as failed so the cockpit shows it red.
+      emitChatDone({ status: 'failed', verdict: 'failed', error: 'doer_failed_all_rounds' });
+    } else if (anyPhaseAllReviewersFailed) {
+      emitChatDone({ status: 'no_review', verdict: 'no_review' });
     } else if (shipOutcome.kind === 'merged') {
-      onEvent({
-        chatId,
-        type: 'chat_done',
-        payload: {
-          status: 'merged',
-          verdict: 'approved',
-          prUrl: shipOutcome.prUrl,
-        },
-        ts: Date.now(),
+      emitChatDone({
+        status: 'merged',
+        verdict: 'approved',
+        prUrl: shipOutcome.prUrl,
       });
     } else if (shipOutcome.kind === 'blocked') {
-      onEvent({
-        chatId,
-        type: 'chat_done',
-        payload: { status: 'blocked', verdict: 'approved', shipError: shipOutcome.error },
-        ts: Date.now(),
-      });
+      emitChatDone({ status: 'blocked', verdict: 'approved', shipError: shipOutcome.error });
     } else {
       // Either no ship phase or ship was skipped — chat ends approved.
-      onEvent({
-        chatId,
-        type: 'chat_done',
-        payload: {
-          status: 'completed',
-          verdict: 'approved',
-          ...(shipOutcome.kind === 'skipped' && shipOutcome.reason
-            ? { shipSkipped: shipOutcome.reason }
-            : {}),
-        },
-        ts: Date.now(),
+      emitChatDone({
+        status: 'completed',
+        verdict: 'approved',
+        ...(shipOutcome.kind === 'skipped' && shipOutcome.reason
+          ? { shipSkipped: shipOutcome.reason }
+          : {}),
       });
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    onEvent({
-      chatId,
-      type: 'chat_done',
-      payload: { status: 'failed', error: message },
-      ts: Date.now(),
-    });
+    emitChatDone({ status: 'failed', error: message });
   } finally {
     abortSignal.removeEventListener('abort', abortListener);
   }
@@ -507,6 +523,17 @@ async function runDoerHeadless(args: {
   // deltas when message_done was empty (Gemini's result line is stats-only)
   // or absent (CLI exited unexpectedly).
   const content = finalText && finalText.length > 0 ? finalText : accumulated;
+
+  // Treat "stream ended with no content AND no message_done" as a failure even
+  // when the parser didn't emit an explicit error event. This catches CLI
+  // exits where stdout was unparseable, the process was killed early by an
+  // abort, or the SDK ended the stream silently — all of which previously
+  // returned `{content: '', full: false}` which the phase loop happily
+  // accepted as a successful empty doer answer.
+  if (finalText === undefined && content.trim().length === 0) {
+    return null;
+  }
+
   return { content, full: finalText !== undefined || accumulated.length > 0 };
 }
 
@@ -517,6 +544,7 @@ async function runDoer(
   phaseIdx: number,
   round: number,
   work: string,
+  filesBlock: string,
   tmuxMgr: TmuxManager,
   errorDetector: ErrorDetector,
   onEvent: (e: RunnerEvent) => void,
@@ -536,7 +564,7 @@ async function runDoer(
   const answerFile = path.join(doerDir, 'answer.md');
 
   // Write ask.md (the prompt body the CLI reads).
-  const ask = buildAsk(phase, phaseIdx, round, work, phase.inputs);
+  const ask = buildAsk(phase, phaseIdx, round, work, phase.inputs, filesBlock);
   fs.writeFileSync(askFile, ask);
 
   // When the chat was created with a repoPath, the doer's working tree
@@ -716,6 +744,7 @@ async function runReviewers(
   round: number,
   doerOutput: string,
   work: string,
+  filesBlock: string,
   tmuxMgr: TmuxManager,
   errorDetector: ErrorDetector,
   onEvent: (e: RunnerEvent) => void,
@@ -749,6 +778,7 @@ async function runReviewers(
       idx,
       doerOutput,
       work,
+      filesBlock,
       tmuxMgr,
       errorDetector,
       onEvent,
@@ -943,6 +973,7 @@ async function runReviewer(
   reviewerIdx: number,
   doerOutput: string,
   work: string,
+  filesBlock: string,
   tmuxMgr: TmuxManager,
   errorDetector: ErrorDetector,
   onEvent: (e: RunnerEvent) => void,
@@ -968,7 +999,7 @@ async function runReviewer(
   const askFile = path.join(reviewerDir, 'ask.md');
   const answerFile = path.join(reviewerDir, 'answer.md');
 
-  const ask = buildReviewerAsk(phase, phaseIdx, round, work, doerOutput);
+  const ask = buildReviewerAsk(phase, phaseIdx, round, work, doerOutput, filesBlock);
   fs.writeFileSync(askFile, ask);
 
   // Headless branch — same pattern as runDoer. Mixed-mode is fine: doer can
@@ -1112,12 +1143,68 @@ async function runReviewer(
   }
 }
 
+// Per-file cap and total cap when inlining attached files into a prompt.
+// Numbers chosen to keep prompts comfortably within Anthropic / OpenAI / Google
+// 1M-token budgets while still surfacing realistic source files. Hardcoded
+// for now; if template authors need larger payloads we'd lift these into
+// template config (template.inputs.maxFileBytes / maxTotalBytes).
+const ATTACHED_FILE_MAX_BYTES = 64 * 1024;
+const ATTACHED_FILES_TOTAL_BYTES = 256 * 1024;
+
+function packAttachedFiles(paths: string[] | undefined, repoPath: string | undefined): string {
+  if (!paths || paths.length === 0) return '';
+
+  const chunks: string[] = [];
+  let totalBytes = 0;
+
+  for (const rel of paths) {
+    const abs = path.isAbsolute(rel) ? rel : path.join(repoPath ?? process.cwd(), rel);
+    const display = path.isAbsolute(rel) ? path.relative(repoPath ?? process.cwd(), abs) || abs : rel;
+
+    if (!fs.existsSync(abs)) {
+      chunks.push(`### \`${display}\` — _file not found, skipping_`);
+      continue;
+    }
+
+    let body: string;
+    try {
+      const stat = fs.statSync(abs);
+      if (!stat.isFile()) {
+        chunks.push(`### \`${display}\` — _not a regular file, skipping_`);
+        continue;
+      }
+      body = fs.readFileSync(abs, 'utf-8');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      chunks.push(`### \`${display}\` — _read error: ${msg}_`);
+      continue;
+    }
+
+    const truncated = body.length > ATTACHED_FILE_MAX_BYTES;
+    const slice = truncated ? body.slice(0, ATTACHED_FILE_MAX_BYTES) : body;
+    const remainingBudget = ATTACHED_FILES_TOTAL_BYTES - totalBytes;
+
+    if (slice.length > remainingBudget) {
+      chunks.push(`### \`${display}\` — _skipped: would exceed ${ATTACHED_FILES_TOTAL_BYTES}-byte total cap_`);
+      continue;
+    }
+
+    totalBytes += slice.length;
+    const ext = path.extname(display).slice(1) || '';
+    chunks.push(`### \`${display}\`${truncated ? ` (truncated to ${ATTACHED_FILE_MAX_BYTES} bytes)` : ''}\n\`\`\`${ext}\n${slice}\n\`\`\``);
+  }
+
+  if (chunks.length === 0) return '';
+  return ['## Attached files', '', ...chunks, ''].join('\n');
+}
+
 function buildAsk(
   phase: Phase,
   phaseIdx: number,
   round: number,
   work: string,
-  inputs: Phase['inputs']
+  inputs: Phase['inputs'],
+  filesBlock: string
 ): string {
   const lines: string[] = [];
 
@@ -1136,6 +1223,10 @@ function buildAsk(
   lines.push('## The user\'s request');
   lines.push(work);
   lines.push('');
+
+  if (filesBlock) {
+    lines.push(filesBlock);
+  }
 
   if (inputs.include && inputs.include.length > 0) {
     lines.push('## Inputs (from prior phases)');
@@ -1164,7 +1255,8 @@ function buildReviewerAsk(
   phaseIdx: number,
   round: number,
   work: string,
-  doerOutput: string
+  doerOutput: string,
+  filesBlock: string
 ): string {
   const lines: string[] = [];
 
@@ -1183,6 +1275,11 @@ function buildReviewerAsk(
   lines.push('## The user\'s request');
   lines.push(work);
   lines.push('');
+
+  if (filesBlock) {
+    lines.push(filesBlock);
+  }
+
   lines.push('## Artifact to review');
   lines.push('```');
   lines.push(doerOutput.slice(0, 2000));

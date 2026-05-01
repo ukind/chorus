@@ -260,9 +260,20 @@ program
       const daemonPath = useCompiled ? daemonJs : daemonTs;
       const spawnArgs = useCompiled ? [daemonPath] : ['-r', 'tsx/cjs', daemonPath];
 
+      // Pipe daemon stdout + stderr to a log file in ~/.chorus/logs/ so the
+      // user (and we, when debugging) can see why a chat went sideways.
+      // Previously stdio was 'ignore' which made silent failures impossible
+      // to diagnose. Logs rotate manually; truncated to 10 MB max via
+      // periodic rotate inside the daemon (TODO).
+      fs.mkdirSync(chorusDir, { recursive: true });
+      const logsDir = path.join(chorusDir, 'logs');
+      fs.mkdirSync(logsDir, { recursive: true });
+      const daemonLogPath = path.join(logsDir, 'daemon.log');
+      const daemonLogFd = fs.openSync(daemonLogPath, 'a');
+
       const child = spawn('node', spawnArgs, {
         detached: true,
-        stdio: 'ignore',
+        stdio: ['ignore', daemonLogFd, daemonLogFd],
       });
 
       if (!child.pid) {
@@ -270,7 +281,6 @@ program
       }
 
       // Write PID
-      fs.mkdirSync(chorusDir, { recursive: true });
       fs.writeFileSync(pidFile, child.pid.toString());
 
       // Spawn the cockpit web UI alongside the daemon. The package ships a
@@ -283,10 +293,12 @@ program
       const nextEntry = path.resolve(packageRoot, 'node_modules', 'next', 'dist', 'bin', 'next');
       const webPidFile = path.join(chorusDir, 'web.pid');
       if (fs.existsSync(nextEntry) && fs.existsSync(path.join(packageRoot, '.next'))) {
+        const webLogPath = path.join(logsDir, 'web.log');
+        const webLogFd = fs.openSync(webLogPath, 'a');
         const webChild = spawn('node', [nextEntry, 'start', '-p', '5050', '-H', '127.0.0.1'], {
           cwd: packageRoot,
           detached: true,
-          stdio: 'ignore',
+          stdio: ['ignore', webLogFd, webLogFd],
         });
         if (webChild.pid) {
           fs.writeFileSync(webPidFile, webChild.pid.toString());

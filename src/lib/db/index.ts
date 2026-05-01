@@ -358,7 +358,7 @@ export const templates = {
     const stmt = db.prepare('SELECT * FROM templates ORDER BY created_at DESC');
     const rows = stmt.all() as unknown[];
 
-    return rows.map((row) => TemplateSchema.parse(row));
+    return rows.map((row) => TemplateSchema.parse(coerceTemplateYaml(row)));
   },
 
   getById(id: string): Template | null {
@@ -367,9 +367,22 @@ export const templates = {
     const row = stmt.get(id) as unknown;
 
     if (!row) return null;
-    return TemplateSchema.parse(row);
+    return TemplateSchema.parse(coerceTemplateYaml(row));
   },
 };
+
+// SQLite stores text columns as TEXT, but `INSERT ... readfile(...)` and some
+// admin tools write BLOBs. better-sqlite3 surfaces those as Buffer instances.
+// The Zod schema requires `yaml: string`, so coerce here at the read boundary
+// instead of relaxing the schema. Idempotent for already-string rows.
+function coerceTemplateYaml(row: unknown): unknown {
+  if (!row || typeof row !== 'object') return row;
+  const r = row as Record<string, unknown>;
+  if (Buffer.isBuffer(r.yaml)) {
+    return { ...r, yaml: r.yaml.toString('utf-8') };
+  }
+  return r;
+}
 
 // Settings operations
 export const settings = {

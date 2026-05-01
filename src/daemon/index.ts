@@ -25,6 +25,182 @@ let tmuxMgr: TmuxManagerImpl;
 let stopReaper: (() => void) | null = null;
 const errorDetector = new ErrorDetector();
 
+// chat.attached_files is stored as a JSON-encoded string[]. Parse defensively
+// — bad JSON or non-array shape returns an empty list rather than crashing
+// the runner.
+function parseAttachedFiles(raw: string | null | undefined): string[] | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.every((p) => typeof p === 'string')) {
+      return parsed;
+    }
+  } catch {
+    /* ignore */
+  }
+  return undefined;
+}
+
+// Type imported for ActiveRun event signature. Matches runner.ts RunnerEvent.
+type SubscriberFn = (eventJson: string) => void;
+
+interface ActiveRun {
+  promise: Promise<void>;
+  subscribers: Set<SubscriberFn>;
+  abortController: AbortController;
+}
+
+// Singleton runner registry — one runChat per chatId, ever. SSE re-attachers
+// (browser refresh, tab open, polling, MCP wait_for_chat) all subscribe to
+// the same in-memory event bus instead of re-firing the runner. Without this,
+// every refresh of the run page used to spawn a fresh doer + 2 reviewers,
+// hammering the LLM CLIs and thrashing system memory. See ROADMAP #17.
+const activeRuns = new Map<string, ActiveRun>();
+
+// Reconstruct a RunnerEvent from a persisted phase_events row. Used to
+// replay past events to a freshly-attached SSE so the run page renders
+// the history without waiting for the next live event. Returns null for
+// rows we can't faithfully reconstruct.
+function phaseEventToRunnerEvent(
+  chatId: string,
+  ev: ReturnType<typeof phaseEvents.list>[number],
+): Record<string, unknown> | null {
+  const baseType =
+    ev.state === 'drafting'
+      ? 'phase_start'
+      : ev.state === 'submitted'
+        ? 'phase_done'
+        : ev.state === 'blocked'
+          ? 'phase_failed'
+          : null;
+  if (!baseType) return null;
+  return {
+    chatId,
+    type: baseType,
+    payload: {
+      phaseIdx: ev.phase_idx,
+      kind: ev.phase_kind,
+      role: ev.role,
+      agent: ev.agent_id ?? undefined,
+      output: ev.output ?? undefined,
+      replay: true,
+    },
+    ts: ev.started_at,
+  };
+}
+
+interface RunWithMultiplexArgs {
+  chatId: string;
+  template: ReturnType<typeof TemplateSchema.parse>;
+  chat: NonNullable<ReturnType<typeof chats.getById>>;
+}
+
+function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
+  const { chatId, template, chat } = args;
+
+  // Explicit cancellation goes through POST /chats/:id/cancel which calls
+  // entry.abortController.abort(). Closing an SSE does NOT abort.
+  const abortController = new AbortController();
+  const subscribers = new Set<SubscriberFn>();
+
+  // Single onEvent for the runChat. Persists side effects exactly once and
+  // fans out to every subscribed SSE. Any subscriber whose write throws is
+  // silently dropped — we never block the runner on a dead client.
+  const onEvent: Parameters<typeof runChat>[0]['onEvent'] = (event) => {
+    const line = `data: ${JSON.stringify(event)}\n\n`;
+    for (const sub of subscribers) {
+      try {
+        sub(line);
+      } catch {
+        /* dead subscriber — leave; the SSE close handler will unsubscribe */
+      }
+    }
+
+    // Persist phase events. Same logic as before, lifted from the inline SSE
+    // handler so it runs once regardless of subscriber count.
+    if (
+      event.type === 'phase_start' ||
+      event.type === 'phase_done' ||
+      event.type === 'phase_failed'
+    ) {
+      const payload = event.payload as Record<string, unknown>;
+      const kind = payload.kind as string;
+      const validKinds = ['plan', 'spec', 'tests', 'implement', 'review', 'verify', 'divergence'];
+      const phaseKind = validKinds.includes(kind)
+        ? (kind as 'plan' | 'spec' | 'tests' | 'implement' | 'review' | 'verify' | 'divergence')
+        : 'plan';
+      phaseEvents.create({
+        chat_id: chatId,
+        phase_idx: (payload.phaseIdx as number) ?? 0,
+        phase_kind: phaseKind,
+        role: (payload.role as 'doer' | 'reviewer') ?? 'doer',
+        agent_id: (payload.agent as string) ?? null,
+        state:
+          event.type === 'phase_start'
+            ? 'drafting'
+            : event.type === 'phase_done'
+              ? 'submitted'
+              : 'blocked',
+        output: (payload.output as string) ?? null,
+        cost_usd: 0,
+        tokens_in: 0,
+        tokens_out: 0,
+        started_at: event.ts,
+        finished_at:
+          event.type === 'phase_done' || event.type === 'phase_failed'
+            ? Date.now()
+            : null,
+      });
+    }
+
+    // Update chats.status on terminal event. Same translation as before:
+    // runner emits status='completed' for the happy path; we map to
+    // 'approved' to fit the chats.status enum.
+    if (event.type === 'chat_done') {
+      const payload = event.payload as Record<string, unknown>;
+      const status = (payload.status as string) ?? 'completed';
+      chats.update(chatId, {
+        status: (status === 'completed' ? 'approved' : status) as
+          | 'drafting'
+          | 'reviewing'
+          | 'approved'
+          | 'merged'
+          | 'blocked'
+          | 'cancelled'
+          | 'failed'
+          | 'no_review',
+        ...(typeof payload.prUrl === 'string' && payload.prUrl.length > 0
+          ? { pr_url: payload.prUrl }
+          : {}),
+        ...(typeof payload.shipError === 'string' && payload.shipError.length > 0
+          ? { ship_error: payload.shipError }
+          : {}),
+        finished_at: Date.now(),
+      });
+    }
+  };
+
+  const promise = runChat({
+    chatId,
+    template,
+    work: chat.work,
+    repoPath: chat.repo_path ?? undefined,
+    attachedFiles: parseAttachedFiles(chat.attached_files),
+    abortSignal: abortController.signal,
+    tmuxMgr,
+    errorDetector,
+    onEvent,
+  }).finally(() => {
+    // Always release the registry slot when the runner exits. Subsequent SSE
+    // attachers fall through to the terminal-state replay branch above.
+    activeRuns.delete(chatId);
+  });
+
+  const entry: ActiveRun = { promise, subscribers, abortController };
+  activeRuns.set(chatId, entry);
+  return entry;
+}
+
 // Error response type
 interface ErrorResponse {
   ok: false;
@@ -157,6 +333,26 @@ async function main() {
         }
       }
 
+      // Read the template's first phase kind so the initial drafting event
+      // reflects the actual pipeline (review / plan / spec / etc.) instead
+      // of always claiming 'plan'. Falls back to 'plan' on any read/parse
+      // error — initial event is informational, not load-bearing for the
+      // runner.
+      let initialPhaseKind: 'plan' | 'spec' | 'tests' | 'implement' | 'review' | 'verify' | 'divergence' = 'plan';
+      try {
+        const tmpl = templates.getById(templateId);
+        if (tmpl) {
+          const parsed = yaml.parse(tmpl.yaml) as { phases?: Array<{ kind?: string }> } | undefined;
+          const firstKind = parsed?.phases?.[0]?.kind;
+          const validKinds = ['plan', 'spec', 'tests', 'implement', 'review', 'verify', 'divergence'] as const;
+          if (typeof firstKind === 'string' && (validKinds as readonly string[]).includes(firstKind)) {
+            initialPhaseKind = firstKind as typeof initialPhaseKind;
+          }
+        }
+      } catch {
+        /* fall through with 'plan' default */
+      }
+
       const chat = chats.create({
         work,
         template_id: templateId,
@@ -171,7 +367,7 @@ async function main() {
       phaseEvents.create({
         chat_id: chat.id,
         phase_idx: 0,
-        phase_kind: 'plan',
+        phase_kind: initialPhaseKind,
         role: 'doer',
         agent_id: null,
         state: 'drafting',
@@ -196,12 +392,23 @@ async function main() {
     Reply: ApiResponse<object>;
   }>('/chats/:id/cancel', async (request) => {
     try {
-      const chat = chats.cancel(request.params.id);
+      const chatId = request.params.id;
+      const chat = chats.cancel(chatId);
 
-      // Kill any tmux sessions associated with this chat
+      // Abort the active runner if there is one. This propagates into the
+      // runChat abortListener which fires chat_done(cancelled) once (latched
+      // by emitChatDone) — including killing any LLM CLI subprocesses via
+      // their AbortSignal. Without this, cancel only flipped the DB row and
+      // the runner kept burning tokens until natural termination.
+      const active = activeRuns.get(chatId);
+      if (active) {
+        active.abortController.abort();
+      }
+
+      // Kill any tmux sessions associated with this chat (legacy transport).
       const allSessions = tmuxMgr.list();
       for (const session of allSessions) {
-        if (session.chatId === request.params.id) {
+        if (session.chatId === chatId) {
           tmuxMgr.kill(session.name);
         }
       }
@@ -239,6 +446,14 @@ async function main() {
         } catch {
           /* best-effort */
         }
+      }
+
+      // 1b. Abort the in-memory runner if one is active for this chat.
+      // Otherwise the runner could keep streaming events and write to a chat
+      // dir that we're about to rm -rf, plus it would re-create the row.
+      const active = activeRuns.get(id);
+      if (active) {
+        active.abortController.abort();
       }
 
       // 2. Kill any tmux sessions tied to this chat.
@@ -337,89 +552,97 @@ async function main() {
         Connection: 'keep-alive',
       });
 
-      // Abort controller for early termination
-      const ac = new AbortController();
-      request.raw.on('close', () => {
-        ac.abort();
-      });
+      // Subscriber for THIS SSE connection. Pushes a pre-serialised JSON
+      // string to the wire; the persistence + status-update side effects
+      // live in the runner-side onEvent (see runWithMultiplex below) and
+      // happen exactly once per event regardless of how many SSEs subscribe.
+      const subscriber: SubscriberFn = (line) => {
+        try {
+          reply.raw.write(line);
+        } catch {
+          /* connection closed mid-write — unsubscribe handles cleanup */
+        }
+      };
 
-      // Run the chat
-      await runChat({
+      // Replay past phase_events from DB so a late-attach run page sees the
+      // history immediately instead of a blank screen. We synthesise the same
+      // RunnerEvent shape the live stream uses (phase_start / phase_done /
+      // phase_failed). This is best-effort — DB doesn't capture phase_progress
+      // or cli_error, so live tail is still richer.
+      const pastEvents = phaseEvents.list(chatId);
+      for (const ev of pastEvents) {
+        const reconstructed = phaseEventToRunnerEvent(chatId, ev);
+        if (reconstructed) {
+          subscriber(`data: ${JSON.stringify(reconstructed)}\n\n`);
+        }
+      }
+
+      // If chat is already terminal, replay is enough — close after sending
+      // a synthetic chat_done so the client knows it's caught up.
+      const TERMINAL: ReadonlyArray<typeof chat.status> = [
+        'approved',
+        'merged',
+        'blocked',
+        'cancelled',
+        'failed',
+        'no_review',
+      ];
+      if (TERMINAL.includes(chat.status)) {
+        subscriber(
+          `data: ${JSON.stringify({
+            chatId,
+            type: 'chat_done',
+            payload: {
+              status: chat.status === 'approved' ? 'completed' : chat.status,
+              verdict: chat.status === 'approved' ? 'approved' : chat.status,
+              ...(chat.pr_url ? { prUrl: chat.pr_url } : {}),
+              ...(chat.ship_error ? { shipError: chat.ship_error } : {}),
+              replay: true,
+            },
+            ts: chat.finished_at ?? Date.now(),
+          })}\n\n`,
+        );
+        reply.raw.end();
+        return;
+      }
+
+      // Either attach to an in-flight runner or fire a fresh one. The
+      // singleton invariant — exactly one runChat per chatId at any time —
+      // is what fixes the load-spike bug. Every other SSE just subscribes.
+      const existing = activeRuns.get(chatId);
+      if (existing) {
+        existing.subscribers.add(subscriber);
+        request.raw.on('close', () => {
+          existing.subscribers.delete(subscriber);
+        });
+        // Wait for the run to finish or this connection to drop. Either way,
+        // we're done with this SSE response.
+        try {
+          await existing.promise;
+        } catch {
+          /* run failed — still close cleanly */
+        }
+        reply.raw.end();
+        return;
+      }
+
+      // No active run — fire one and register. The persistence + status
+      // update are now part of the multiplexed onEvent so they happen exactly
+      // once even when multiple SSEs subscribe.
+      const run = runWithMultiplex({
         chatId,
         template,
-        work: chat.work,
-        repoPath: chat.repo_path ?? undefined,
-        abortSignal: ac.signal,
-        tmuxMgr,
-        errorDetector,
-        onEvent: (event) => {
-          // Write SSE event
-          reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
-
-          // Persist certain events to DB
-          if (
-            event.type === 'phase_start' ||
-            event.type === 'phase_done' ||
-            event.type === 'phase_failed'
-          ) {
-            const payload = event.payload as Record<string, unknown>;
-            const kind = payload.kind as string;
-            const validKinds = ['plan', 'spec', 'tests', 'implement', 'review', 'verify', 'divergence'];
-            const phaseKind = validKinds.includes(kind)
-              ? (kind as 'plan' | 'spec' | 'tests' | 'implement' | 'review' | 'verify' | 'divergence')
-              : 'plan';
-            phaseEvents.create({
-              chat_id: chatId,
-              phase_idx: (payload.phaseIdx as number) ?? 0,
-              phase_kind: phaseKind,
-              role: (payload.role as 'doer' | 'reviewer') ?? 'doer',
-              agent_id: (payload.agent as string) ?? null,
-              state:
-                event.type === 'phase_start'
-                  ? 'drafting'
-                  : event.type === 'phase_done'
-                    ? 'submitted'
-                    : 'blocked',
-              output: (payload.output as string) ?? null,
-              cost_usd: 0,
-              tokens_in: 0,
-              tokens_out: 0,
-              started_at: event.ts,
-              finished_at:
-                event.type === 'phase_done' || event.type === 'phase_failed'
-                  ? Date.now()
-                  : null,
-            });
-          }
-
-          // Update chat status on completion. Persist ship-phase results
-          // (prUrl on merged success, shipError on blocked failure) so the
-          // run page can render a "View PR →" link or the failure reason.
-          if (event.type === 'chat_done') {
-            const payload = event.payload as Record<string, unknown>;
-            const status = (payload.status as string) ?? 'completed';
-            chats.update(chatId, {
-              status: (status === 'completed' ? 'approved' : status) as
-                | 'drafting'
-                | 'reviewing'
-                | 'approved'
-                | 'merged'
-                | 'blocked'
-                | 'cancelled'
-                | 'failed'
-                | 'no_review',
-              ...(typeof payload.prUrl === 'string' && payload.prUrl.length > 0
-                ? { pr_url: payload.prUrl }
-                : {}),
-              ...(typeof payload.shipError === 'string' && payload.shipError.length > 0
-                ? { ship_error: payload.shipError }
-                : {}),
-              finished_at: Date.now(),
-            });
-          }
-        },
+        chat,
       });
-
+      run.subscribers.add(subscriber);
+      request.raw.on('close', () => {
+        run.subscribers.delete(subscriber);
+      });
+      try {
+        await run.promise;
+      } catch {
+        /* run failed — error event already broadcast via onEvent */
+      }
       reply.raw.end();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
@@ -465,7 +688,10 @@ async function main() {
     }
   });
 
-  // Save user template
+  // Save / update template. Preserves source='builtin' on existing builtin
+  // rows so the daemon can still refresh them from disk on next boot. New
+  // rows are always source='user'. Use POST /templates/:id/clone to fork a
+  // builtin into a user-owned copy.
   fastify.post<{
     Body: { id: string; yaml: string };
     Reply: ApiResponse<object>;
@@ -477,14 +703,16 @@ async function main() {
         return errorResponse('validation', 'id and yaml are required');
       }
 
-      // Validate YAML
+      // Validate YAML before write so we don't poison the row.
       try {
         yaml.parse(yamlContent);
       } catch (parseError) {
         return errorResponse('validation', `Invalid YAML: ${parseError}`);
       }
 
-      const template = templates.create(id, yamlContent, 'user');
+      const existing = templates.getById(id);
+      const source: 'builtin' | 'user' = existing?.source === 'builtin' ? 'builtin' : 'user';
+      const template = templates.create(id, yamlContent, source);
 
       return successResponse(template);
     } catch (error) {
@@ -811,7 +1039,17 @@ function seedBuiltinTemplates(): void {
 
     if (!existing) {
       templates.create(id, yamlContent, 'builtin');
-      console.log(`Seeded template: ${id}`);
+      console.log(`[daemon] seeded template: ${id}`);
+      continue;
+    }
+
+    // Mirror the persona seed loop: re-sync builtin rows from disk on every
+    // boot. User-cloned rows (source='user') are NEVER overwritten — those
+    // belong to the user and will be edited via /templates POST. This keeps
+    // YAML source-of-truth aligned with the DB after a chorus upgrade.
+    if (existing.source === 'builtin' && existing.yaml !== yamlContent) {
+      templates.create(id, yamlContent, 'builtin');
+      console.log(`[daemon] refreshed builtin template from disk: ${id}`);
     }
   }
 }

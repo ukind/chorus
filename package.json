@@ -24,7 +24,8 @@
     "start:daemon": "node dist/daemon/index.js",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "build:server": "tsc -p tsconfig.server.json && node -e \"require('fs').mkdirSync('dist/lib/db',{recursive:true});require('fs').copyFileSync('src/lib/db/schema.sql','dist/lib/db/schema.sql')\""
+    "build:server": "tsc -p tsconfig.server.json && node -e \"require('fs').mkdirSync('dist/lib/db',{recursive:true});require('fs').copyFileSync('src/lib/db/schema.sql','dist/lib/db/schema.sql')\"",
+    "postinstall": "node scripts/postinstall.mjs"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.0",
@@ -68,6 +69,7 @@
     "dist",
     ".next",
     "templates",
-    "assets"
+    "assets",
+    "scripts/postinstall.mjs"
   ]
 }

@@ -1,6 +1,6 @@
 id: code-review
 name: Code Review
-description: Single-phase review template. Submit code; up to 4 cross-lineage reviewers critique. Best for quick peer feedback.
+description: Single-phase review template. Claude Opus 4.7 produces; Codex (gpt-5.5) and Gemini 3.1 Pro Preview review independently. Both reviewers must agree.
 author: chorus
 agreementThreshold: 0.66
 onThresholdMet: ask
@@ -21,18 +21,21 @@ phases:
   - id: review
     kind: review
     title: Code Review
-    description: You submit your implementation; reviewers from different LLM lineages critique it independently. Quorum is 3 of 4.
+    description: Claude Opus 4.7 produces the implementation; Codex (gpt-5.5) and Gemini 3.1 Pro Preview critique it independently. Quorum is 2 of 2.
     doer:
-      lineage: any
-      models: []
+      lineage: anthropic
+      models:
+        - claude-opus-4-7
     reviewer:
-      require: 3
+      require: 2
       crossLineage: true
       candidates:
-        - lineage: anthropic
         - lineage: openai
+          models:
+            - gpt-5.5
         - lineage: google
-        - lineage: moonshot
+          models:
+            - gemini-3.1-pro-preview
     inputs:
       include: []
       exclude: []

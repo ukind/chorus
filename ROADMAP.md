@@ -38,6 +38,10 @@ This is the seed of the **template marketplace**: an asset class that didn't exi
 | Squashed migration push to `chorus-codes/chorus` | 0.7 | ⏳ NEXT | piece-by-piece audit using personas |
 | `npm publish @chorus-codes/chorus` | 0.7 | ⏳ NEXT | rotate token after first publish |
 | Cleanup `99xAgency/chorus-ship-e2e` sandbox repo | 0.7 | ⏳ TODO | |
+| Pre-audit cleanup sweep (12 findings fixed in one go) | 0.7 | ✅ DONE | 2026-05-01 — runner abort/done race, silent-empty doer, attached_files wire-up, builtin seed re-sync, version drift, brief wall, daemon logs, more. See "Pre-flagged" section. |
+| `chorus audit <persona> <file>` CLI shorthand | 0.8 | 💭 IDEA | wraps `invoke_persona` MCP call; ~30 lines in `src/cli/index.ts`; saves typing the JSON in editors/conversations |
+| Cockpit edit UI for builtin templates | 0.8 | ⏳ TODO | POST /templates upsert is now safe (preserves source=builtin); editor itself still missing — designed not built |
+| Runner decoupling from SSE — background runChat + event bus replay | 0.8 | ⏳ TODO | surgical fix landed for v0.7 (no auto-abort + chat_done latch); proper fix is fire-on-POST so MCP flows don't sit drafting until a human opens the page |
 | Home dashboard (CLI status, usage, reset windows, cost) | 0.8 | 📐 PLANNED | |
 | Run history + cost aggregates | 0.8 | 📐 PLANNED | |
 | Template marketplace (Stripe + revenue share) | 0.9 | 📐 PLANNED | |
@@ -88,6 +92,8 @@ Each prompt is a *worldview*, not a checklist — single role, list of red flags
 
 - `list_personas()` → `{ personas: [{id, label, oneLiner, recommendedLineage, builtin}] }`
 - `invoke_persona({personaId, brief, repoPath?, files?, template?})` → `{chatId, status, url}` — fires a real chat with the persona's system_prompt prepended to the user's brief.
+
+> ⚠️ **Current limitation — one persona, all voices.** Today `invoke_persona` prepends a *single* persona's system_prompt to the brief, then runs whatever template is chosen. Every voice in every phase of that template sees the same persona overlay. There is no per-phase persona binding yet. So if a template has 3 voices across Discover/Develop/Decide, all 3 voices speak as e.g. Cartographer — you cannot say "Cartographer drives Discover, Sentinel drives Develop, Accountant drives Decide" until **Phase composition (item 4 below)** lands. This is fine for the v0.7 migration audit (one-persona-per-file is enough for findings) but is the headline gap before the marketplace pitch lands. Don't forget.
 
 ### 2. Voices (PLANNED)
 
@@ -154,7 +160,9 @@ Auto-populated from CLI auto-detect on first run. Lineage tagged for diversity s
 
 **Cost surfacing** — per-1M-token costs shown in picker. Template designer later shows "this template will cost ~$X per run" (sum of expected tokens × per-model cost). Avoids the bill-shock failure mode.
 
-### 4. Phase composition (PLANNED)
+### 4. Phase composition (PLANNED) — **unlocks per-phase persona binding**
+
+This is what removes the §1 limitation. Until this ships, `invoke_persona` is a one-persona-overlay-on-all-voices coarse hammer. After this ships, each phase row owns its own `(voice_id, persona_id)` pair, so a template can route Cartographer → Discover, Sentinel → Develop, Accountant → Decide.
 
 Templates become editable sequences:
 
@@ -183,6 +191,44 @@ After v0.7 ships:
 3. Update `package.json` `name` → `@chorus-codes/chorus`, repository + bugs URLs.
 4. `npm publish --access public`. Rotate token after first publish.
 5. Cleanup `99xAgency/chorus-ship-e2e` sandbox repo.
+
+---
+
+## Pre-flagged for migration audit
+
+Drift bugs / risks spotted in passing — most fixed 2026-05-01 in a single sweep before the migration audit even ran (the AUDIT prep itself surfaced 12 findings).
+
+### Fixed 2026-05-01 (post-first-audit sweep)
+
+The first cartographer audit attempt revealed 5 more findings — most caught while the doer was still running, then the system load spiked because the actual root cause (#17) was hammering the LLM CLIs. All 5 fixed before re-running the audit.
+
+- ✅ **#13 Persona-composed brief dominated every chat title** — `mcp__chorus__invoke_persona` writes `# Persona: <Label>\n\n<system_prompt>\n---\n# User request\n\n<brief>` into `chat.work`. Sidebar/run page truncated by char count, so every Cartographer chat looked identical (200 chars of persona prompt). New helper at [`src/lib/chat-title.ts`](src/lib/chat-title.ts) `chatDisplayTitle()` parses the wrapper and returns `[<Persona>] <user request>`. Wired into sidebar, /runs list, and run page heading. Non-persona chats fall through unchanged.
+- ✅ **#15 Phase stepper showed "DONE" while doer was still drafting** — the run-artifacts API ([`src/app/api/run-artifacts/[chatId]/route.ts`](src/app/api/run-artifacts/[chatId]/route.ts)) treated *file existence* as `hasAnswer`, but the runner pre-creates an empty `answer.md` at spawn time so live tail can poll. Now `hasAnswer` requires non-empty content (`answer.trim().length > 0`).
+- ✅ **#16 Duplicate `phase_events` rows for the same phase** — observed 4× drafting + 10× blocked rows on a single chat. Root cause was the same as #17 (multiple concurrent runChats); fixing #17 eliminates it. No additional dedup needed in `phaseEvents.create` — the singleton invariant guarantees each event fires exactly once.
+- ✅ **#17 (CRITICAL) — every SSE re-attach spawned a fresh runChat** — browser refresh, opening the run page in a second tab, MCP `wait_for_chat`, sidebar polling: each one called `GET /chats/:id/stream` which awaited a fresh `runChat()`. With code-review template that's 1 doer + 2 reviewers = 3 LLM CLI subprocesses *per SSE connection*, all writing to the same `answer.md` file, all consuming hundreds of MB. Hit load avg 133 with 8.5G swap full when 4-5 SSEs piled up on the same chat. Fix in [`src/daemon/index.ts`](src/daemon/index.ts): `Map<chatId, ActiveRun>` registry. First SSE wins → fires `runWithMultiplex` which runs `runChat` once and broadcasts events to a `Set<SubscriberFn>`. Subsequent SSEs subscribe to the existing run + replay past events from `phase_events`. Terminal-state chats just replay + close. POST `/chats/:id/cancel` and DELETE `/chats/:id` now also call `entry.abortController.abort()` so cancel kills the actual LLM CLI processes (was previously DB-only).
+- ✅ **Daemon log verified end-to-end** — `[daemon] seeded 10 built-in personas` + `Chorus daemon listening on http://127.0.0.1:7707` now appear in `~/.chorus/logs/daemon.log` (vs previously /dev/null).
+
+---
+
+### Fixed 2026-05-01 (pre-audit sweep)
+
+- ✅ **#1 `seedBuiltinTemplates()` doesn't update existing rows** — [`src/daemon/index.ts`](src/daemon/index.ts) `seedBuiltinTemplates`. Now mirrors the personas seed pattern: re-syncs builtin rows from disk on every daemon boot when YAML differs from DB. User-cloned rows (`source='user'`) are never overwritten.
+- ✅ **#2 `POST /templates` silently demoted builtins to user-source** — [`src/daemon/index.ts`](src/daemon/index.ts) POST /templates handler. Now reads existing row first; if `source='builtin'`, the upsert preserves it. New rows still default to `source='user'`. Combined with #1, YAML source-of-truth is now authoritative for builtins.
+- ✅ **#4 `attached_files` was dead state** — runner now reads chat.attached_files, packs each file (≤64 KB, ≤256 KB total) into a `## Attached files` block, and inlines it into both doer + every reviewer prompt. `invoke_persona({files: [...]})` finally works as documented.
+- ✅ **#5 `readfile()` returns BLOB, Zod rejected** — DB layer at [`src/lib/db/index.ts`](src/lib/db/index.ts) `coerceTemplateYaml` now coerces Buffer→string at the read boundary. Direct SQL writes via `readfile()` no longer poison the daemon.
+- ✅ **#6 Cockpit sidebar version was hardcoded** — [`src/components/app-sidebar.tsx`](src/components/app-sidebar.tsx) now fetches version from `/health` on mount and falls back to `—` when daemon is offline. No more drift between bumps.
+- ✅ **#7 Run page rendered the entire brief as a wall of text** — [`src/components/live-run-real.tsx`](src/components/live-run-real.tsx) `BriefHeading` collapses briefs >200 chars to a one-line summary with "Show full brief" expander.
+- ✅ **#8b Doer reported success on empty output** — [`src/daemon/runner.ts`](src/daemon/runner.ts) `runDoerHeadless`. Returns null when stream ended with no `message_done` AND no accumulated text, regardless of whether an error event fired. Catches CLI exits where stdout was unparseable, abort killed the process early, or the SDK ended silently.
+- ✅ **#8c `phase_failed` events lacked `kind`, fell back to `plan`** — both phase_failed emission sites in [`src/daemon/runner.ts`](src/daemon/runner.ts) now include `phaseIdx`, `kind`, `role`. DB rows now reflect actual pipeline phase, not the schema fallback.
+- ✅ **#9 `POST /chats` hardcoded `phase_kind: 'plan'`** — [`src/daemon/index.ts`](src/daemon/index.ts) now reads `template.phases[0].kind` for the initial drafting event. Falls back to 'plan' only on parse error. Verified live with a `code-review` chat creating `phase_kind: review` correctly.
+- ✅ **#11 Runner only fired when SSE was opened, not on POST /chats** — combined with #12, was the proximate cause of the silent-approval bug. Mitigated by **#12 fix** below; full runner-decoupling deferred to v0.8 (see below).
+- ✅ **#12 Abort/chat_done race overwrote `cancelled` with `approved`** — [`src/daemon/runner.ts`](src/daemon/runner.ts) `emitChatDone` is now a one-way latch: first emission wins. Plus [`src/daemon/index.ts`](src/daemon/index.ts) SSE handler no longer auto-aborts on connection close — closing a tab ≠ cancelling a chat. Explicit cancel still goes through `POST /chats/:id/cancel`. Plus a new `anyPhaseDoerFailed` flag terminates the chat as `failed` (not `approved`) when no doer ever produced real output.
+- ✅ **Daemon stdio was `/dev/null`** — debugging silent failures was impossible. [`src/cli/index.ts`](src/cli/index.ts) `chorus start` now pipes daemon + cockpit stdio to `~/.chorus/logs/{daemon,web}.log`. Confirmed: `[daemon] seeded 10 built-in personas` now visible.
+
+### Deferred — substantial work
+
+- ⏳ **#3 Cockpit UI for editing builtin templates** — `src/app/templates/page.tsx` is still read-only. With #2 now safe (POST won't demote builtins), the missing piece is the editor itself. Designed but not implemented: in-page YAML editor with validate-on-save, "Fork to user template" button, voice/persona/quorum picker (depends on Voices abstraction in v0.7-final). Target: v0.8.
+- ⏳ **Runner decoupling from SSE (#11 properly)** — surgical #12 fix prevents data corruption, but POST /chats still doesn't kick off the runner; only opening the run page does. For MCP-driven flows (`invoke_persona` from Claude Code/Codex/Cursor) this is bad UX — chat sits in `drafting` until a human opens the URL. Proper fix: spawn `runChat` in a background async task on POST /chats; SSE becomes a passive subscriber on a per-chat event bus that replays past events from `phase_events`. Target: v0.8.
 
 ---
 

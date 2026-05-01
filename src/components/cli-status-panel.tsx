@@ -148,7 +148,7 @@ export async function CliStatusPanel() {
           Manage connections →
         </Link>
       </div>
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid grid-cols-1 items-start gap-2 sm:grid-cols-2 lg:grid-cols-3">
         {connectedOrchestrators.map((o) => {
           const lineage = ORCHESTRATOR_TO_LINEAGE[o.name] ?? o.name;
           const health = healthByLineage[lineage] ?? {

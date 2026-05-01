@@ -14,6 +14,9 @@
  * server (that would be circular). It just reads ask.md, writes answer.md.
  */
 
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type {
   AgentShim,
   AgentSpawnOptions,
@@ -23,7 +26,66 @@ import type {
 } from './types.js';
 import { quoteValue, quotePath, validateValue } from './quote.js';
 import { spawnHeadless } from '../headless.js';
-import { parseOpencode, parseOpencodeExit } from './parsers.js';
+import { parseOpencode, parseOpencodeExit, parseKimi } from './parsers.js';
+
+/**
+ * Two ways to talk to Kimi K2.6:
+ *
+ *   - Standalone `kimi` CLI (paid Moonshot subscription) — Claude-Code-
+ *     compatible, supports streaming text deltas. Requires the user to
+ *     have wired `default_model` or a `[models]` block in
+ *     `~/.kimi/config.toml`. Out-of-box config is empty → exits 1 with
+ *     "LLM not set".
+ *
+ *   - `opencode run --format json --model opencode-go/kimi-k2.6` (paid
+ *     OpenCode Go subscription) — same model under the hood, routed
+ *     through OpenCode. JSON-Lines output; one text event per LLM
+ *     message. The fleet and openbridge journals use this path.
+ *
+ * Most users have ONE of the two paid plans, not both. Auto-detect at
+ * shim init: if standalone kimi has a model configured, use it; else
+ * fall back to opencode + opencode-go. Override via env
+ * `CHORUS_KIMI_TRANSPORT=kimi-cli|opencode|auto` (default auto).
+ */
+type KimiTransport = 'kimi-cli' | 'opencode';
+
+let cachedTransport: KimiTransport | null = null;
+
+function detectKimiTransport(): KimiTransport {
+  if (cachedTransport) return cachedTransport;
+
+  const override = process.env.CHORUS_KIMI_TRANSPORT;
+  if (override === 'kimi-cli' || override === 'opencode') {
+    cachedTransport = override;
+    return override;
+  }
+
+  // Probe the standalone kimi config — non-empty `default_model` OR any
+  // `[models.<name>]` table means the user has wired up a real model.
+  const configPath = path.join(os.homedir(), '.kimi', 'config.toml');
+  if (fs.existsSync(configPath)) {
+    try {
+      const body = fs.readFileSync(configPath, 'utf-8');
+      const defaultModel = body.match(/^\s*default_model\s*=\s*["']([^"']+)["']/m);
+      const hasDefault = defaultModel != null && defaultModel[1].length > 0;
+      const hasModelsTable = /^\[models\.[A-Za-z0-9_.-]+\]/m.test(body);
+      if (hasDefault || hasModelsTable) {
+        cachedTransport = 'kimi-cli';
+        return 'kimi-cli';
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+
+  cachedTransport = 'opencode';
+  return 'opencode';
+}
+
+/** Test-only — clear the cached detection so tests can switch env. */
+export function _resetKimiTransportCache(): void {
+  cachedTransport = null;
+}
 
 export const kimiShim: AgentShim = {
   lineage: 'moonshot',
@@ -69,30 +131,46 @@ export const kimiShim: AgentShim = {
   },
 
   /**
-   * Headless mode — runs Kimi K2.6 via the OpenCode CLI + OpenCode Go
-   * subscription, which is the path the fleet/openbridge journals settled
-   * on after the standalone `kimi` binary proved unreliable (its config
-   * file is empty out of the box; users hit "LLM not set" until they
-   * manually wire `[models]` in `~/.kimi/config.toml`).
+   * Headless mode — branches on detected transport (see top-of-file
+   * comment for the kimi-cli vs opencode-go decision tree).
    *
-   * Equivalent of: `opencode run --format json --model opencode-go/kimi-k2.6
-   * "<prompt>"`. Reuses the opencode JSON-blob parsers since the output
-   * format is identical (it IS opencode under the hood). Heartbeat on so
-   * the UI shows progress during the silent one-shot.
+   *   - kimi-cli: streaming `kimi --print --output-format stream-json`,
+   *     parsed via parseKimi (Claude-Code-compatible JSON events).
    *
-   * Model normalisation: templates may say `kimi-k2.6` (plain) or
-   * `opencode-go/kimi-k2.6` (qualified); both resolve to the latter. The
-   * opencode CLI requires the `opencode-go/` prefix to route through the
-   * Go subscription gateway.
+   *   - opencode: one-shot `opencode run --format json --model
+   *     opencode-go/kimi-k2.6 "<prompt>"`, parsed via parseOpencode
+   *     (JSON-Lines, one text event per LLM message).
+   *
+   * Model normalisation: templates pass `kimi-k2.6` (plain). For the
+   * opencode path we prepend `opencode-go/` so the CLI routes through
+   * the Go subscription gateway.
    */
   runHeadless(opts: HeadlessSpawnOptions): AsyncIterable<AgentEvent> {
+    const transport = detectKimiTransport();
+
+    if (transport === 'kimi-cli') {
+      const args = ['--print', '--output-format', 'stream-json'];
+      if (opts.model) args.push('-m', opts.model);
+      const run = spawnHeadless({
+        command: 'kimi',
+        args,
+        cwd: opts.cwd,
+        stdinPayload: opts.promptText,
+        parseLine: parseKimi,
+        cli: 'kimi',
+        timeoutMs: opts.timeoutMs,
+        abortSignal: opts.abortSignal,
+        heartbeat: false,
+      });
+      return run.events;
+    }
+
+    // opencode path — qualify the model with the opencode-go/ prefix.
     const rawModel = opts.model ?? 'kimi-k2.6';
     const model = rawModel.startsWith('opencode-go/')
       ? rawModel
       : `opencode-go/${rawModel}`;
-
     const args = ['run', '--format', 'json', '--model', model, opts.promptText];
-
     const run = spawnHeadless({
       command: 'opencode',
       args,
@@ -104,7 +182,6 @@ export const kimiShim: AgentShim = {
       abortSignal: opts.abortSignal,
       heartbeat: true,
     });
-
     return run.events;
   },
 

@@ -21,6 +21,7 @@ import {
 import { fetchFromDaemon } from "@/lib/api/client";
 import { lineageDot } from "@/lib/lineage-maps";
 import Link from "next/link";
+import { OpencodeFleetCard } from "./opencode-fleet-card";
 
 interface OrchestratorStatus {
   name: string;
@@ -107,6 +108,7 @@ function statusBadge(health: CliHealth): React.ReactNode {
 export async function CliStatusPanel() {
   let orchestrators: OrchestratorStatus[] = [];
   let healths: CliHealth[] = [];
+  let opencodeEnabled: string[] = [];
   try {
     orchestrators = await fetchFromDaemon<OrchestratorStatus[]>("/orchestrators");
   } catch {
@@ -116,6 +118,13 @@ export async function CliStatusPanel() {
     healths = await fetchFromDaemon<CliHealth[]>("/cli/health");
   } catch {
     healths = [];
+  }
+  try {
+    const settings = await fetchFromDaemon<Record<string, unknown>>("/settings");
+    const list = settings["opencode.enabled_models"];
+    if (Array.isArray(list)) opencodeEnabled = list as string[];
+  } catch {
+    /* settings load is best-effort */
   }
 
   const healthByLineage: Record<string, CliHealth> = {};
@@ -147,6 +156,19 @@ export async function CliStatusPanel() {
             status: "unknown" as const,
             updatedAt: 0,
           };
+          // OpenCode card is a client component — supports inline expand
+          // for picking which subscription models are enabled, with each
+          // toggle saving immediately. Other CLIs (single-binary,
+          // single-subscription) keep the static card for now.
+          if (o.name === "opencode") {
+            return (
+              <OpencodeFleetCard
+                key={o.name}
+                health={{ status: health.status, message: health.message }}
+                initialEnabled={opencodeEnabled}
+              />
+            );
+          }
           return (
             <div
               key={o.name}

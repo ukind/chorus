@@ -12,7 +12,7 @@ import yaml from 'yaml';
 
 const PORT = parseInt(process.env.CHORUS_DAEMON_PORT || '7707', 10);
 const HOST = '127.0.0.1';
-const VERSION = '0.5.0-dev.0';
+const VERSION = '0.7.0-dev.0';
 const startTime = Date.now();
 
 // Absolute path to bin/chorus.mjs — used by /orchestrators/:name/connect when
@@ -63,6 +63,20 @@ async function main() {
     origin: ['http://127.0.0.1:5050'],
     credentials: true,
   });
+
+  // Seed built-in personas from prompts/personas/*.md.
+  // Idempotent: built-in rows refresh from the file source of truth on every
+  // startup; user-created rows (builtin=0) are not touched.
+  try {
+    const { seedBuiltinPersonas } = await import('../lib/personas.js');
+    const count = seedBuiltinPersonas();
+    // eslint-disable-next-line no-console
+    console.log(`[daemon] seeded ${count} built-in personas`);
+  } catch (err) {
+    // Non-fatal: daemon still works without personas. Log for diagnostics.
+    // eslint-disable-next-line no-console
+    console.warn('[daemon] persona seed failed:', err instanceof Error ? err.message : err);
+  }
 
   // Health check
   fastify.get<{ Reply: ApiResponse<{ ok: boolean; version: string; uptime: number }> }>(
@@ -479,6 +493,35 @@ async function main() {
     }
   });
 
+  // ─── Personas ──────────────────────────────────────────────────────────
+
+  fastify.get<{ Reply: ApiResponse<object[]> }>('/personas', async () => {
+    try {
+      const { listPersonas } = await import('../lib/personas.js');
+      return successResponse(listPersonas());
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return errorResponse('db_error', message);
+    }
+  });
+
+  fastify.get<{
+    Params: { id: string };
+    Reply: ApiResponse<object>;
+  }>('/personas/:id', async (request) => {
+    try {
+      const { getPersona } = await import('../lib/personas.js');
+      const row = getPersona(request.params.id);
+      if (!row) {
+        return errorResponse('not_found', `Persona ${request.params.id} not found`);
+      }
+      return successResponse(row);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return errorResponse('db_error', message);
+    }
+  });
+
   // List blocked chats
   fastify.get<{
     Reply: ApiResponse<object[]>;
@@ -581,6 +624,23 @@ async function main() {
     try {
       const { detectAllClis } = await import('../lib/cli-detect.js');
       return successResponse(detectAllClis());
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return errorResponse('internal', message);
+    }
+  });
+
+  fastify.post<{
+    Body: { id: string; path: string };
+    Reply: ApiResponse<object>;
+  }>('/onboard/validate-cli-path', async (req) => {
+    try {
+      const { id, path: customPath } = req.body || {};
+      if (!id || typeof customPath !== 'string') {
+        return errorResponse('bad_request', 'id and path are required');
+      }
+      const { validateCliPath } = await import('../lib/cli-detect.js');
+      return successResponse(validateCliPath(id as never, customPath));
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return errorResponse('internal', message);

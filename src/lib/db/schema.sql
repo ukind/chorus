@@ -57,5 +57,20 @@ CREATE TABLE IF NOT EXISTS secrets (
   updated_at INTEGER NOT NULL
 );
 
+-- Personas: a worldview/role a reviewer wears (system prompt + metadata).
+-- Built-ins are seeded from prompts/personas/*.md on daemon startup.
+-- Users can clone a built-in, edit, and save as their own (builtin=0).
+CREATE TABLE IF NOT EXISTS personas (
+  id TEXT PRIMARY KEY,
+  label TEXT NOT NULL,
+  one_liner TEXT NOT NULL,
+  system_prompt TEXT NOT NULL,
+  recommended_lineage TEXT,
+  builtin INTEGER NOT NULL DEFAULT 0,
+  forked_from TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_chats_status ON chats(status);
 CREATE INDEX IF NOT EXISTS idx_phase_events_chat ON phase_events(chat_id, phase_idx);

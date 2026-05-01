@@ -2,7 +2,7 @@
 
 /**
  * Chorus MCP stdio server.
- * Exposes 7 tools to orchestrators (Claude Code, Codex, Cursor).
+ * Exposes 9 tools to orchestrators (Claude Code, Codex, Cursor).
  * Each tool calls the daemon REST API on http://127.0.0.1:7707.
  */
 
@@ -16,6 +16,8 @@ import {
   resumeChat,
   cancelChat,
   listTemplates,
+  listPersonas,
+  invokePersona,
   CreateChatSchema,
   WaitForChatSchema,
   GetChatStatusSchema,
@@ -23,11 +25,13 @@ import {
   ResumeChatSchema,
   CancelChatSchema,
   ListTemplatesSchema,
+  ListPersonasSchema,
+  InvokePersonaSchema,
 } from "./tools.js";
 
 const mcpServer = new McpServer({
   name: "chorus",
-  version: "0.5.0",
+  version: "0.7.0",
 });
 
 /**
@@ -150,6 +154,36 @@ mcpServer.registerTool(
   },
   async (input) => {
     const result = await listTemplates(input);
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(result) }],
+    };
+  }
+);
+
+mcpServer.registerTool(
+  "list_personas",
+  {
+    description:
+      "List all reviewer personas (built-in and user-defined). Each persona is a worldview/role: e.g. Sentinel (security), Cartographer (cross-platform), Translator (UX). Use to discover the personaId for invoke_persona.",
+    inputSchema: ListPersonasSchema,
+  },
+  async (input) => {
+    const result = await listPersonas(input);
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(result) }],
+    };
+  }
+);
+
+mcpServer.registerTool(
+  "invoke_persona",
+  {
+    description:
+      "Fire a chat that wears a chosen persona. The persona's system prompt is prepended to your brief so the reviewer audits with that worldview (security / cross-platform / UX / cost / etc.). Use list_personas to discover ids. Returns chatId, status, and URL — work runs async.",
+    inputSchema: InvokePersonaSchema,
+  },
+  async (input) => {
+    const result = await invokePersona(input);
     return {
       content: [{ type: "text" as const, text: JSON.stringify(result) }],
     };

@@ -36,6 +36,22 @@ export function getDb(): Database.Database {
     if (!has('repo_path')) dbInstance.exec(`ALTER TABLE chats ADD COLUMN repo_path TEXT`);
     if (!has('pr_url')) dbInstance.exec(`ALTER TABLE chats ADD COLUMN pr_url TEXT`);
     if (!has('ship_error')) dbInstance.exec(`ALTER TABLE chats ADD COLUMN ship_error TEXT`);
+
+    // Personas table — added in v0.7. Idempotent CREATE so DBs that
+    // pre-date this version pick it up without a manual migration.
+    dbInstance.exec(`
+      CREATE TABLE IF NOT EXISTS personas (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        one_liner TEXT NOT NULL,
+        system_prompt TEXT NOT NULL,
+        recommended_lineage TEXT,
+        builtin INTEGER NOT NULL DEFAULT 0,
+        forked_from TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `);
   }
   return dbInstance;
 }
@@ -426,6 +442,77 @@ export const secrets = {
         .extend({ meta: z.string().nullable() })
         .parse(row)
     );
+  },
+};
+
+// Persona schemas + ops
+const PersonaRowSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  one_liner: z.string(),
+  system_prompt: z.string(),
+  recommended_lineage: z.string().nullable(),
+  builtin: z.coerce.boolean(),
+  forked_from: z.string().nullable(),
+  created_at: z.number().int(),
+  updated_at: z.number().int(),
+});
+
+export type PersonaRow = z.infer<typeof PersonaRowSchema>;
+
+export interface PersonaUpsertInput {
+  id: string;
+  label: string;
+  one_liner: string;
+  system_prompt: string;
+  recommended_lineage?: string | null;
+  builtin?: boolean;
+  forked_from?: string | null;
+}
+
+export const personas = {
+  upsert(input: PersonaUpsertInput): PersonaRow {
+    const db = getDb();
+    const now = Date.now();
+    const existing = personas.getById(input.id);
+
+    const stmt = db.prepare(`
+      INSERT OR REPLACE INTO personas
+        (id, label, one_liner, system_prompt, recommended_lineage, builtin, forked_from, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    stmt.run(
+      input.id,
+      input.label,
+      input.one_liner,
+      input.system_prompt,
+      input.recommended_lineage ?? null,
+      input.builtin ? 1 : 0,
+      input.forked_from ?? null,
+      existing?.created_at ?? now,
+      now,
+    );
+
+    return personas.getById(input.id)!;
+  },
+
+  list(): PersonaRow[] {
+    const db = getDb();
+    const rows = db.prepare('SELECT * FROM personas ORDER BY label ASC').all() as unknown[];
+    return rows.map((row) => PersonaRowSchema.parse(row));
+  },
+
+  getById(id: string): PersonaRow | null {
+    const db = getDb();
+    const row = db.prepare('SELECT * FROM personas WHERE id = ?').get(id) as unknown;
+    if (!row) return null;
+    return PersonaRowSchema.parse(row);
+  },
+
+  delete(id: string): void {
+    const db = getDb();
+    db.prepare('DELETE FROM personas WHERE id = ?').run(id);
   },
 };
 

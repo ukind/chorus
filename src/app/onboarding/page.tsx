@@ -12,7 +12,9 @@ import {
   updatePermissions,
   type SandboxProfile,
   detectInstalledClis,
+  validateCliPath,
   type CliDetection,
+  type DetectableCliId,
 } from "@/lib/api/settings";
 import { cn } from "@/lib/utils";
 
@@ -93,6 +95,10 @@ export default function OnboardingPage() {
   const [autoApprovePrompts, setAutoApprovePrompts] = useState<boolean>(true);
   const [networkAccess, setNetworkAccess] = useState<boolean>(false);
   const [detection, setDetection] = useState<Record<string, CliDetection>>({});
+  const [manualOpen, setManualOpen] = useState<Set<string>>(new Set());
+  const [manualPath, setManualPath] = useState<Record<string, string>>({});
+  const [manualError, setManualError] = useState<Record<string, string>>({});
+  const [manualBusy, setManualBusy] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     detectInstalledClis()
@@ -119,6 +125,54 @@ export default function OnboardingPage() {
       else next.add(id);
       return next;
     });
+  };
+
+  const toggleManual = (id: string) => {
+    setManualOpen((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+    setManualError((prev) => ({ ...prev, [id]: "" }));
+  };
+
+  const submitManualPath = async (id: DetectableCliId) => {
+    const value = (manualPath[id] || "").trim();
+    if (!value) {
+      setManualError((prev) => ({ ...prev, [id]: "Enter a full path to the binary." }));
+      return;
+    }
+    setManualBusy((prev) => new Set(prev).add(id));
+    setManualError((prev) => ({ ...prev, [id]: "" }));
+    try {
+      const result = await validateCliPath(id, value);
+      if (result.found) {
+        setDetection((prev) => ({ ...prev, [id]: result }));
+        setSelectedClis((prev) => new Set(prev).add(id));
+        setManualOpen((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+      } else {
+        setManualError((prev) => ({
+          ...prev,
+          [id]: "Couldn't run that path. Check it points to the actual binary.",
+        }));
+      }
+    } catch {
+      setManualError((prev) => ({
+        ...prev,
+        [id]: "Validation failed. Is the daemon running?",
+      }));
+    } finally {
+      setManualBusy((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
   };
 
   const updateApiKey = (provider: string, value: string) => {
@@ -209,42 +263,122 @@ export default function OnboardingPage() {
             {CLIS.map((cli) => {
               const checked = selectedClis.has(cli.id);
               const probe = detection[cli.id];
+              const detectable = cli.id !== "cursor" && cli.id !== "windsurf";
+              const showManual = detectable && !probe?.found && manualOpen.has(cli.id);
+              const isBusy = manualBusy.has(cli.id);
+
               return (
-                <button
-                  key={cli.id}
-                  type="button"
-                  onClick={() => toggleCli(cli.id)}
-                  className={cn(
-                    "flex w-full items-center gap-3 rounded-lg border p-4 text-left transition",
-                    checked
-                      ? "border-primary/50 bg-primary/10"
-                      : "border-border bg-card hover:border-muted-foreground/30",
-                  )}
-                >
-                  <div
+                <div key={cli.id} className="space-y-1">
+                  <button
+                    type="button"
+                    onClick={() => toggleCli(cli.id)}
                     className={cn(
-                      "grid h-5 w-5 shrink-0 place-items-center rounded border transition",
+                      "flex w-full items-center gap-3 rounded-lg border p-4 text-left transition",
                       checked
-                        ? "border-primary bg-primary text-primary-foreground"
-                        : "border-border",
+                        ? "border-primary/50 bg-primary/10"
+                        : "border-border bg-card hover:border-muted-foreground/30",
                     )}
                   >
-                    {checked && <Check className="h-3 w-3" />}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 text-sm font-medium">
-                      <span>{cli.label}</span>
-                      {probe?.found && (
-                        <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-emerald-500">
-                          installed
-                        </span>
+                    <div
+                      className={cn(
+                        "grid h-5 w-5 shrink-0 place-items-center rounded border transition",
+                        checked
+                          ? "border-primary bg-primary text-primary-foreground"
+                          : "border-border",
                       )}
+                    >
+                      {checked && <Check className="h-3 w-3" />}
                     </div>
-                    <div className="truncate text-xs text-muted-foreground">
-                      {probe?.found && probe.path ? probe.path : cli.hint}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 text-sm font-medium">
+                        <span>{cli.label}</span>
+                        {probe?.found && (
+                          <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-emerald-500">
+                            installed
+                          </span>
+                        )}
+                      </div>
+                      <div className="truncate text-xs text-muted-foreground">
+                        {probe?.found && probe.path ? probe.path : cli.hint}
+                      </div>
                     </div>
-                  </div>
-                </button>
+                  </button>
+
+                  {detectable && !probe?.found && (
+                    <div className="pl-8">
+                      <button
+                        type="button"
+                        onClick={() => toggleManual(cli.id)}
+                        className="text-[11px] text-muted-foreground hover:text-foreground transition"
+                      >
+                        {showManual ? "Cancel" : "Don't see it? Set path manually →"}
+                      </button>
+                    </div>
+                  )}
+
+                  {showManual && (
+                    <div className="ml-8 mt-1 space-y-2 rounded-md border border-border bg-card/50 p-3">
+                      <p className="text-[11px] leading-relaxed text-muted-foreground">
+                        Paste the full path to the <code className="rounded bg-muted px-1">{
+                          cli.id === "claude-code" ? "claude" :
+                          cli.id === "codex-cli" ? "codex" :
+                          cli.id === "gemini-cli" ? "gemini" :
+                          cli.id === "opencode-cli" ? "opencode" :
+                          "kimi"
+                        }</code> binary. On macOS/Linux, run{" "}
+                        <code className="rounded bg-muted px-1">which {
+                          cli.id === "claude-code" ? "claude" :
+                          cli.id === "codex-cli" ? "codex" :
+                          cli.id === "gemini-cli" ? "gemini" :
+                          cli.id === "opencode-cli" ? "opencode" :
+                          "kimi"
+                        }</code> in your terminal to find it. On Windows, use{" "}
+                        <code className="rounded bg-muted px-1">where</code> instead.
+                      </p>
+                      <div className="flex gap-2">
+                        <Input
+                          value={manualPath[cli.id] ?? ""}
+                          onChange={(e) =>
+                            setManualPath((prev) => ({ ...prev, [cli.id]: e.target.value }))
+                          }
+                          placeholder="/usr/local/bin/claude or C:\\Users\\you\\AppData\\Roaming\\npm\\claude.cmd"
+                          className="flex-1 font-mono text-xs"
+                          spellCheck={false}
+                          autoComplete="off"
+                        />
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          disabled={isBusy}
+                          onClick={() => submitManualPath(cli.id as DetectableCliId)}
+                        >
+                          {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Verify"}
+                        </Button>
+                      </div>
+                      {manualError[cli.id] && (
+                        <p className="text-[11px] text-destructive">{manualError[cli.id]}</p>
+                      )}
+                      <details className="text-[11px] text-muted-foreground">
+                        <summary className="cursor-pointer hover:text-foreground">
+                          Not installed yet? How to add it to PATH
+                        </summary>
+                        <div className="mt-2 space-y-1 leading-relaxed">
+                          <p>
+                            <strong>macOS / Linux:</strong> add{" "}
+                            <code className="rounded bg-muted px-1">export PATH="$HOME/.local/bin:$PATH"</code>{" "}
+                            to <code>~/.zshrc</code> or <code>~/.bashrc</code>, then{" "}
+                            <code className="rounded bg-muted px-1">source ~/.zshrc</code>.
+                          </p>
+                          <p>
+                            <strong>Windows:</strong> Settings → System → About → Advanced system
+                            settings → Environment Variables → edit <code>Path</code> for your user.
+                          </p>
+                          <p>After updating PATH, restart Chorus and re-run onboarding.</p>
+                        </div>
+                      </details>
+                    </div>
+                  )}
+                </div>
               );
             })}
           </div>

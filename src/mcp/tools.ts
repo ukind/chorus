@@ -107,6 +107,16 @@ export const CancelChatSchema = z.object({
 
 export const ListTemplatesSchema = z.object({});
 
+export const ListPersonasSchema = z.object({});
+
+export const InvokePersonaSchema = z.object({
+  personaId: z.string().min(1, "personaId is required"),
+  brief: z.string().min(1, "brief is required"),
+  files: z.array(z.string()).optional(),
+  template: z.string().optional().default("code-review"),
+  repoPath: z.string().optional(),
+});
+
 // ─── Output schemas ─────────────────────────────────────────────────────
 
 const ChatRefSchema = z.object({
@@ -143,6 +153,33 @@ const TemplateSchema = z.object({
   description: z.string(),
   lineages: z.array(z.string()).optional(),
 });
+
+const PersonaSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  oneLiner: z.string(),
+  recommendedLineage: z.string().nullable().optional(),
+  builtin: z.boolean(),
+});
+
+interface DaemonPersonaRow {
+  id: string;
+  label: string;
+  one_liner: string;
+  system_prompt: string;
+  recommended_lineage: string | null;
+  builtin: boolean | number;
+}
+
+function personaRowToRef(row: DaemonPersonaRow) {
+  return {
+    id: row.id,
+    label: row.label,
+    oneLiner: row.one_liner,
+    recommendedLineage: row.recommended_lineage,
+    builtin: Boolean(row.builtin),
+  };
+}
 
 // ─── Tools ──────────────────────────────────────────────────────────────
 
@@ -276,4 +313,60 @@ export async function listTemplates(input: unknown) {
 
   const templates = z.array(TemplateSchema).parse(rows.map(parseTemplateRow));
   return { templates };
+}
+
+/**
+ * List all personas (built-in + user-defined).
+ * Returns enough metadata for a picker — full system prompt is fetched
+ * via /personas/:id when needed.
+ */
+export async function listPersonas(input: unknown) {
+  ListPersonasSchema.parse(input);
+
+  const result = await daemonFetch<unknown>("/personas");
+  const rows = Array.isArray(result)
+    ? (result as DaemonPersonaRow[])
+    : ((result as Record<string, unknown>).personas as DaemonPersonaRow[]) ?? [];
+
+  const personas = z.array(PersonaSchema).parse(rows.map(personaRowToRef));
+
+  return { personas };
+}
+
+/**
+ * Fire a chat that wears a chosen persona.
+ *
+ * The persona's `system_prompt` is prepended to the user's brief so the
+ * downstream CLI sees both the worldview and the request. Voice routing is
+ * handled by the existing template machinery (template's `doer.lineage`
+ * decides which CLI runs); v0.7 keeps voice selection implicit via template
+ * choice and v0.8 will add explicit per-phase voice override.
+ */
+export async function invokePersona(input: unknown) {
+  const parsed = InvokePersonaSchema.parse(input);
+
+  // Pull full persona so we have the system_prompt.
+  const persona = await daemonFetch<DaemonPersonaRow>(
+    `/personas/${encodeURIComponent(parsed.personaId)}`,
+  );
+
+  const composedBrief = [
+    `# Persona: ${persona.label}`,
+    persona.system_prompt.trim(),
+    `---`,
+    `# User request`,
+    parsed.brief.trim(),
+  ].join("\n\n");
+
+  const result = await daemonFetch<DaemonChatRow>("/chats", {
+    method: "POST",
+    body: JSON.stringify({
+      work: composedBrief,
+      templateId: parsed.template,
+      files: parsed.files,
+      repoPath: parsed.repoPath,
+    }),
+  });
+
+  return ChatRefSchema.parse(chatRowToRef(result));
 }

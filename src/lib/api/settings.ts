@@ -15,14 +15,32 @@ export async function getPermissions(): Promise<PermissionSettings> {
   return fetchFromDaemon<PermissionSettings>("/settings/permissions");
 }
 
+export type DetectableCliId =
+  | "claude-code"
+  | "codex-cli"
+  | "gemini-cli"
+  | "opencode-cli"
+  | "kimi-cli";
+
 export interface CliDetection {
-  id: "claude-code" | "codex-cli" | "gemini-cli" | "opencode-cli" | "kimi-cli";
+  id: DetectableCliId;
   found: boolean;
   path?: string;
+  source?: "path" | "fallback" | "manual";
 }
 
 export async function detectInstalledClis(): Promise<CliDetection[]> {
   return fetchFromDaemon<CliDetection[]>("/onboard/detect-clis");
+}
+
+export async function validateCliPath(
+  id: DetectableCliId,
+  path: string,
+): Promise<CliDetection> {
+  return fetchFromDaemon<CliDetection>("/onboard/validate-cli-path", {
+    method: "POST",
+    body: JSON.stringify({ id, path }),
+  });
 }
 
 export async function updatePermissions(

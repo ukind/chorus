@@ -43,6 +43,23 @@ program
   .description('Driver-agnostic multi-LLM peer review for code decisions')
   .version(pkg.version);
 
+// Show a quick-start banner before the standard help so first-time users see
+// the two-step setup even when npm's global install hides postinstall stdout.
+program.addHelpText(
+  'beforeAll',
+  () => {
+    const chorusDir = path.join(os.homedir(), '.chorus');
+    if (!fs.existsSync(chorusDir)) {
+      return `\n  Quick start (first run):\n    chorus init    register MCP with your editors, seed templates, detect CLIs\n    chorus start   bring up the daemon + cockpit on http://127.0.0.1:5050\n`;
+    }
+    const daemonPid = path.join(chorusDir, 'daemon.pid');
+    if (!fs.existsSync(daemonPid)) {
+      return `\n  Daemon not running. Start it with:\n    chorus start\n`;
+    }
+    return '';
+  }
+);
+
 // Command: chorus init
 program
   .command('init')

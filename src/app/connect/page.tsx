@@ -1,46 +1,99 @@
-import { AlertCircle, Clock } from "lucide-react";
-import Link from "next/link";
 import { AppShell } from "@/components/app-shell";
-import { Badge } from "@/components/ui/badge";
 import {
-  listBlocked,
   listOrchestrators,
   DaemonError,
   type OrchestratorStatus,
 } from "@/lib/api";
 import { OrchestratorCard } from "@/components/orchestrator-card";
+import { OpencodeFleetCard } from "@/components/opencode-fleet-card";
+import { LineageFleetCard } from "@/components/lineage-fleet-card";
+import {
+  UI_LINEAGE_AVAILABLE_MODELS,
+  UI_LINEAGE_DEFAULT_MODEL,
+  type UILineage,
+} from "@/lib/lineage-maps";
+import { fetchFromDaemon } from "@/lib/api/client";
 
 export const dynamic = "force-dynamic";
 
+interface CliHealth {
+  lineage: string;
+  status: "healthy" | "quota_exhausted" | "auth_invalid" | "rate_limited" | "unknown";
+  message?: string;
+}
+
 interface PageData {
-  blocked: Awaited<ReturnType<typeof listBlocked>>;
   orchestrators: OrchestratorStatus[];
+  settings: Record<string, unknown>;
+  healths: Record<string, CliHealth>;
   error: string | null;
 }
 
 async function getPageData(): Promise<PageData> {
   try {
-    const [blocked, orchestrators] = await Promise.all([
-      listBlocked().catch(() => []),
+    const [orchestrators, settings, healths] = await Promise.all([
       listOrchestrators().catch(() => []),
+      fetchFromDaemon<Record<string, unknown>>("/settings").catch(() => ({})),
+      fetchFromDaemon<CliHealth[]>("/cli/health").catch(() => []),
     ]);
-    return { blocked, orchestrators, error: null };
+    const healthByLineage: Record<string, CliHealth> = {};
+    for (const h of healths) healthByLineage[h.lineage] = h;
+    return { orchestrators, settings, healths: healthByLineage, error: null };
   } catch (err) {
     return {
-      blocked: [],
       orchestrators: [],
+      settings: {},
+      healths: {},
       error:
         err instanceof DaemonError ? err.message : "Failed to reach the daemon",
     };
   }
 }
 
+const LINEAGE_TO_DAEMON: Record<UILineage, string> = {
+  claude: "anthropic",
+  codex: "openai",
+  gemini: "google",
+  opencode: "opencode",
+  kimi: "moonshot",
+};
+
+const LINEAGE_LABEL: Record<UILineage, string> = {
+  claude: "Claude Code",
+  codex: "Codex CLI",
+  gemini: "Gemini CLI",
+  opencode: "OpenCode",
+  kimi: "Kimi CLI",
+};
+
 export default async function ConnectPage() {
-  const { blocked, orchestrators, error } = await getPageData();
+  const { orchestrators, settings, healths, error } = await getPageData();
+
+  function readEnabled(uiLineage: UILineage): string[] {
+    const key = `${uiLineage}.enabled_models`;
+    const raw = settings[key];
+    if (Array.isArray(raw)) return raw as string[];
+    const def = UI_LINEAGE_DEFAULT_MODEL[uiLineage];
+    return def ? [def] : [];
+  }
+
+  function healthFor(uiLineage: UILineage) {
+    const daemon = LINEAGE_TO_DAEMON[uiLineage];
+    const h = healths[daemon] ?? healths[uiLineage];
+    return {
+      status: (h?.status ?? "unknown") as CliHealth["status"],
+      message: h?.message,
+    };
+  }
+
+  const opencodeEnabled = (() => {
+    const raw = settings["opencode.enabled_models"];
+    return Array.isArray(raw) ? (raw as string[]) : [];
+  })();
 
   return (
     <AppShell>
-      <div className="mx-auto w-full max-w-4xl px-4 py-6 sm:px-6 sm:py-8 md:px-8 md:py-10">
+      <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 sm:py-8 md:px-8 md:py-10">
         {error && (
           <div className="mb-6 rounded-lg border border-destructive/50 bg-destructive/10 p-4">
             <p className="text-sm text-destructive">{error}</p>
@@ -74,51 +127,45 @@ export default async function ConnectPage() {
           )}
         </section>
 
-        <section>
+        {/* Models per CLI — same fleet-card pattern as the home page,
+            mirrored here as the canonical place to manage which models
+            chorus may use as voices. Toggles persist immediately. */}
+        <section className="mb-10">
           <div className="mb-4">
             <p className="text-xs uppercase tracking-wider text-muted-foreground">
-              Inbox
+              Voices
             </p>
             <h2 className="mt-1 text-2xl font-semibold tracking-tight">
-              Waiting for your input
+              Models per CLI
             </h2>
             <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-              Chats blocked on a question, awaiting your decision.
+              Click a card to expand. Templates and the New Chat dialog only
+              offer models you&apos;ve enabled here.
             </p>
           </div>
-
-          {blocked.length === 0 ? (
-            <div className="rounded-lg border border-border bg-card/30 p-8 text-center">
-              <AlertCircle className="mx-auto mb-3 h-8 w-8 text-muted-foreground/50" />
-              <p className="text-sm text-muted-foreground">
-                No chats waiting for your input
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {blocked.map((chat) => (
-                <Link
-                  key={chat.id}
-                  href={`/runs/${chat.id}`}
-                  className="flex items-center gap-3 rounded-md border border-border bg-card/40 px-4 py-3 transition hover:border-muted-foreground/30 hover:bg-card/60"
-                >
-                  <Clock className="h-4 w-4 text-muted-foreground" />
-                  <div className="min-w-0 flex-1">
-                    <div className="line-clamp-1 text-sm font-medium text-foreground">
-                      Chat {chat.id}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      {chat.status} · template {chat.templateId}
-                    </div>
-                  </div>
-                  <Badge variant="outline" className="border-border text-[10px]">
-                    {chat.status}
-                  </Badge>
-                </Link>
-              ))}
-            </div>
-          )}
+          <div className="grid grid-cols-1 items-start gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {(["claude", "codex", "gemini", "kimi"] as const).map((ui) => {
+              const available = UI_LINEAGE_AVAILABLE_MODELS[ui];
+              if (!available) return null;
+              return (
+                <LineageFleetCard
+                  key={ui}
+                  lineage={LINEAGE_TO_DAEMON[ui]}
+                  label={LINEAGE_LABEL[ui]}
+                  settingsKey={`${ui}.enabled_models`}
+                  available={available}
+                  initialEnabled={readEnabled(ui)}
+                  health={healthFor(ui)}
+                />
+              );
+            })}
+            <OpencodeFleetCard
+              health={healthFor("opencode")}
+              initialEnabled={opencodeEnabled}
+            />
+          </div>
         </section>
+
       </div>
     </AppShell>
   );

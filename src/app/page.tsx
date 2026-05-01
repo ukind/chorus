@@ -57,7 +57,7 @@ export default async function HomePage() {
 
   return (
     <AppShell>
-      <div className="mx-auto w-full max-w-5xl px-4 py-6 sm:px-6 sm:py-8 md:px-8 md:py-10">
+      <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 sm:py-8 md:px-8 md:py-10">
         {error && (
           <div className="mb-8 rounded-lg border border-destructive/50 bg-destructive/10 p-4">
             <p className="text-sm font-medium text-destructive">
@@ -176,7 +176,7 @@ function ActiveHome({ chats }: ActiveHomeProps) {
           </Link>
         </div>
         <div className="space-y-2">
-          {chats.slice(0, 5).map((chat) => (
+          {chats.slice(0, 3).map((chat) => (
             <Link
               key={chat.id}
               href={`/runs/${chat.id}`}

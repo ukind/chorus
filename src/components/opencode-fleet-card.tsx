@@ -123,6 +123,7 @@ export function OpencodeFleetCard({ health, initialEnabled }: OpencodeFleetCardP
                             type="button"
                             disabled={saving}
                             onClick={() => toggleModel(m)}
+                            title={m}
                             className={cn(
                               "flex items-center gap-2 rounded border px-2 py-1.5 text-left text-[11px] transition disabled:opacity-60",
                               sel

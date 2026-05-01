@@ -167,7 +167,7 @@ function NewChatPageInner() {
   if (loadError) {
     return (
       <AppShell>
-        <div className="mx-auto w-full max-w-4xl px-4 py-6 sm:px-6 sm:py-8 md:px-8 md:py-10">
+        <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 sm:py-8 md:px-8 md:py-10">
           <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4">
             <p className="text-sm text-destructive">Error loading templates</p>
             <p className="mt-1 text-xs text-muted-foreground">{loadError}</p>
@@ -180,7 +180,7 @@ function NewChatPageInner() {
   if (!template) {
     return (
       <AppShell>
-        <div className="mx-auto w-full max-w-4xl px-4 py-12 text-sm text-muted-foreground sm:px-6 md:px-8">
+        <div className="mx-auto w-full max-w-6xl px-4 py-12 text-sm text-muted-foreground sm:px-6 md:px-8">
           Loading templates…
         </div>
       </AppShell>
@@ -189,7 +189,7 @@ function NewChatPageInner() {
 
   return (
     <AppShell>
-      <div className="mx-auto w-full max-w-4xl px-4 py-6 sm:px-6 sm:py-8 md:px-8 md:py-10">
+      <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 sm:py-8 md:px-8 md:py-10">
         <PageHeader
           eyebrow="New chat"
           title="Paste a task. Pick a template. Watch the council think."

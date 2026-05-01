@@ -102,7 +102,7 @@ export function LineageFleetCard({
       {open && (
         <div className="space-y-2 border-t border-border bg-card/50 p-3">
           {saveError && <p className="text-[11px] text-destructive">{saveError}</p>}
-          <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-1">
             {available.map((m) => {
               const sel = enabled.includes(m);
               return (
@@ -111,6 +111,7 @@ export function LineageFleetCard({
                   type="button"
                   disabled={saving}
                   onClick={() => toggleModel(m)}
+                  title={m}
                   className={cn(
                     "flex items-center gap-2 rounded border px-2 py-1.5 text-left text-[11px] transition disabled:opacity-60",
                     sel

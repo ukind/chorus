@@ -20,6 +20,11 @@ import type {
 } from "@/lib/mock-data";
 import { PhaseEditor } from "@/components/phase-editor";
 import { cn } from "@/lib/utils";
+import {
+  UI_LINEAGE_BRAND,
+  UI_LINEAGE_DEFAULT_MODEL,
+  UI_LINEAGE_LABEL,
+} from "@/lib/lineage-maps";
 
 const CATEGORIES: { id: Template["category"]; label: string }[] = [
   { id: "review", label: "Review" },
@@ -34,12 +39,15 @@ const LINEAGES: {
   defaultModel: string;
   dot: string;
   ring: string;
-}[] = [
-  { id: "claude", label: "Claude", defaultModel: "claude-opus-4-7", dot: "bg-violet-400", ring: "ring-violet-400/40" },
-  { id: "codex", label: "Codex", defaultModel: "gpt-5.5", dot: "bg-orange-400", ring: "ring-orange-400/40" },
-  { id: "gemini", label: "Gemini", defaultModel: "gemini-3.1-pro-preview", dot: "bg-blue-400", ring: "ring-blue-400/40" },
-  { id: "opencode", label: "OpenCode", defaultModel: "kimi-k2.6", dot: "bg-emerald-400", ring: "ring-emerald-400/40" },
-];
+}[] = (
+  ["claude", "codex", "gemini", "opencode"] as const
+).map((id) => ({
+  id,
+  label: UI_LINEAGE_LABEL[id],
+  defaultModel: UI_LINEAGE_DEFAULT_MODEL[id],
+  dot: UI_LINEAGE_BRAND[id].dot,
+  ring: UI_LINEAGE_BRAND[id].ring,
+}));
 
 interface FormState {
   name: string;

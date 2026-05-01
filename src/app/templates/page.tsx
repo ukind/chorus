@@ -9,13 +9,11 @@ import { CodeBlock } from "@/components/code-block";
 import { NewTemplateDialog } from "@/components/new-template-dialog";
 import { listTemplates, DaemonError } from "@/lib/api";
 import { Template } from "@/lib/types";
+import { UI_LINEAGE_BRAND } from "@/lib/lineage-maps";
 
-const LINEAGE_DOT: Record<string, string> = {
-  codex: "bg-orange-400",
-  gemini: "bg-blue-400",
-  opencode: "bg-emerald-400",
-  claude: "bg-violet-400",
-};
+const LINEAGE_DOT: Record<string, string> = Object.fromEntries(
+  Object.entries(UI_LINEAGE_BRAND).map(([k, v]) => [k, v.dot]),
+);
 
 const CATEGORIES = [
   { id: "all", label: "All" },

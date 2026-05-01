@@ -27,6 +27,11 @@ import type {
   TemplatePhase,
 } from "@/lib/mock-data";
 import { cn } from "@/lib/utils";
+import {
+  UI_LINEAGE_BRAND,
+  UI_LINEAGE_DEFAULT_MODEL,
+  UI_LINEAGE_LABEL,
+} from "@/lib/lineage-maps";
 
 // ─── Types & constants ───────────────────────────────────────────────
 
@@ -54,20 +59,11 @@ const KINDS: { id: PhaseKind; label: string }[] = [
   { id: "recon", label: "Recon" },
 ];
 
-const LINEAGES: { id: ReviewerLineage; label: string; dot: string }[] = [
-  { id: "claude", label: "Claude", dot: "bg-violet-400" },
-  { id: "codex", label: "Codex", dot: "bg-orange-400" },
-  { id: "gemini", label: "Gemini", dot: "bg-blue-400" },
-  { id: "opencode", label: "OpenCode", dot: "bg-emerald-400" },
-];
+const LINEAGES: { id: ReviewerLineage; label: string; dot: string }[] = (
+  ["claude", "codex", "gemini", "opencode"] as const
+).map((id) => ({ id, label: UI_LINEAGE_LABEL[id], dot: UI_LINEAGE_BRAND[id].dot }));
 
-const DEFAULT_MODELS: Record<ReviewerLineage, string> = {
-  claude: "claude-opus-4-7",
-  codex: "gpt-5.5",
-  gemini: "gemini-3.1-pro-preview",
-  opencode: "kimi-k2.6",
-  kimi: "kimi-k2.6",
-};
+const DEFAULT_MODELS: Record<ReviewerLineage, string> = UI_LINEAGE_DEFAULT_MODEL;
 
 // ─── Public API ──────────────────────────────────────────────────────
 

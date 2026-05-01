@@ -100,3 +100,50 @@ export function uiLineageDefaultModel(lineage: string | undefined): string | und
   if (!lineage) return undefined;
   return UI_LINEAGE_DEFAULT_MODEL[lineage as UILineage];
 }
+
+/**
+ * Per-CLI brand identity. ONE place to adjust colors so the violet=Claude,
+ * blue=Gemini, etc. mapping never drifts across the run page, template
+ * editor, sidebar, and connect surfaces. Add new CLIs here, not in callers.
+ */
+export interface LineageBrand {
+  /** 400-shade for solid dots/swatches. */
+  dot: string;
+  /** 500-shade for ring/border accents. */
+  ring: string;
+  /** Subtle vertical gradient applied to participant cards. */
+  gradient: string;
+}
+
+export const UI_LINEAGE_BRAND: Record<UILineage, LineageBrand> = {
+  claude: {
+    dot: "bg-violet-400",
+    ring: "ring-violet-400/40",
+    gradient: "bg-gradient-to-b from-violet-500/15 to-card",
+  },
+  codex: {
+    dot: "bg-orange-400",
+    ring: "ring-orange-400/40",
+    gradient: "bg-gradient-to-b from-orange-500/15 to-card",
+  },
+  gemini: {
+    dot: "bg-blue-400",
+    ring: "ring-blue-400/40",
+    gradient: "bg-gradient-to-b from-blue-500/15 to-card",
+  },
+  opencode: {
+    dot: "bg-emerald-400",
+    ring: "ring-emerald-400/40",
+    gradient: "bg-gradient-to-b from-emerald-500/15 to-card",
+  },
+  kimi: {
+    dot: "bg-pink-400",
+    ring: "ring-pink-400/40",
+    gradient: "bg-gradient-to-b from-pink-500/15 to-card",
+  },
+};
+
+export function uiLineageGradient(lineage: string | undefined): string {
+  if (!lineage) return "bg-card";
+  return UI_LINEAGE_BRAND[lineage as UILineage]?.gradient ?? "bg-card";
+}

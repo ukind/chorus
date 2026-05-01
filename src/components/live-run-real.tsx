@@ -499,53 +499,6 @@ export function LiveRunReal({
             </div>
           )}
 
-          {/* Progress strip — counts phases for multi-phase templates,
-              rounds for single-phase + multi-round (e.g. bug-diagnose).
-              Hidden only when the run is genuinely a single shot. */}
-          {(() => {
-            const maxRounds = template?.maxRounds ?? 1;
-            const isTerminal_ =
-              status === "approved" ||
-              status === "merged" ||
-              status === "no_review" ||
-              status === "blocked" ||
-              status === "failed" ||
-              status === "cancelled";
-            const showByRounds = totalPhases <= 1 && maxRounds > 1;
-            const showByPhases = totalPhases > 1;
-            if (!showByPhases && !showByRounds) return null;
-            const total = showByPhases ? totalPhases : maxRounds;
-            // Phases always run all the way through, so a terminal run pins
-            // the count to total. Rounds finish early on agreement, so the
-            // count must reflect what actually happened (rounds.length).
-            const completed = showByPhases
-              ? Math.min(completedPhaseCount, totalPhases)
-              : Math.min(Math.max(rounds.length, 1), maxRounds);
-            const display = showByPhases && isTerminal_ ? total : completed;
-            const label = showByPhases
-              ? `${display} / ${total} phases`
-              : `Round ${display} / ${total}`;
-            return (
-            <div className="flex items-center gap-4">
-              <div className="flex flex-1 items-center gap-2">
-                <div className="flex h-1 flex-1 overflow-hidden rounded-full bg-muted">
-                  <div
-                    className={`transition-[width] duration-700 ease-out ${
-                      status === "approved" ? "bg-emerald-400" : "bg-primary"
-                    }`}
-                    style={{
-                      width: `${(display / total) * 100}%`,
-                    }}
-                  />
-                </div>
-                <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
-                  {label}
-                </span>
-              </div>
-            </div>
-            );
-          })()}
-
           {/* Phase stepper — one button per template phase, centered. */}
           {template?.phases && template.phases.length > 0 && (
             <div className="flex justify-center">
@@ -564,6 +517,49 @@ export function LiveRunReal({
               />
             </div>
           )}
+
+          {/* Progress strip — sits under the stepper so it reads as
+              "this stepper's progress". Counts phases for multi-phase
+              templates, rounds for single-phase + multi-round
+              (e.g. bug-diagnose). Hidden when the run is a single shot. */}
+          {(() => {
+            const maxRounds = template?.maxRounds ?? 1;
+            const isTerminal_ =
+              status === "approved" ||
+              status === "merged" ||
+              status === "no_review" ||
+              status === "blocked" ||
+              status === "failed" ||
+              status === "cancelled";
+            const showByRounds = totalPhases <= 1 && maxRounds > 1;
+            const showByPhases = totalPhases > 1;
+            if (!showByPhases && !showByRounds) return null;
+            const total = showByPhases ? totalPhases : maxRounds;
+            const completed = showByPhases
+              ? Math.min(completedPhaseCount, totalPhases)
+              : Math.min(Math.max(rounds.length, 1), maxRounds);
+            const display = showByPhases && isTerminal_ ? total : completed;
+            const label = showByPhases
+              ? `${display} / ${total} phases`
+              : `Round ${display} / ${total}`;
+            return (
+              <div className="mx-auto flex w-full max-w-xs items-center gap-2">
+                <div className="flex h-1 flex-1 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className={`transition-[width] duration-700 ease-out ${
+                      status === "approved" ? "bg-emerald-400" : "bg-primary"
+                    }`}
+                    style={{
+                      width: `${(display / total) * 100}%`,
+                    }}
+                  />
+                </div>
+                <span className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground">
+                  {label}
+                </span>
+              </div>
+            );
+          })()}
         </div>
       </div>
 

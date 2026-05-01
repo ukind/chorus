@@ -43,17 +43,17 @@ export function ParticipantCard({
 
   return (
     <div
-      className={`flex flex-col overflow-hidden rounded-lg border transition-colors ${
+      className={`flex flex-col overflow-hidden rounded-lg border transition-[opacity,border-color,box-shadow] duration-300 ${
         LINEAGE_GRADIENT[participant.lineage] ?? "bg-card"
       } ${
         state === "done"
           ? "border-emerald-500/30"
           : state === "working"
-            ? "border-primary/40 animate-pulse-soft"
+            ? "border-primary/60 shadow-[0_0_0_1px_rgba(124,58,237,0.25),0_0_24px_-6px_rgba(124,58,237,0.45)] animate-pulse-soft"
             : state === "errored"
               ? "border-destructive/40"
               : state === "pending"
-                ? "border-border/50"
+                ? "border-border/40 opacity-50 grayscale-[0.6]"
                 : "border-border"
       }`}
     >
@@ -66,7 +66,7 @@ export function ParticipantCard({
           />
           <span className="font-medium capitalize text-foreground">{participant.role}</span>
           <span className="text-muted-foreground">·</span>
-          <span className="uppercase tracking-wider text-muted-foreground">
+          <span className="text-xs uppercase tracking-wider text-muted-foreground">
             {uiLineageLabel(participant.lineage)}
           </span>
           {participant.model && (

@@ -186,29 +186,37 @@ export function parseKimi(line: string): AgentEvent[] {
 
 // ─── OpenCode (opencode run --format json) ─────────────────────────────────
 //
-// OpenCode `run --format json` is one-shot: emits a single JSON blob at the
-// end with the final message. Returns [] on every line; the shim's `onExit`
-// handler parses the full blob and emits a single `message_done`.
-//
-// Heartbeat events are emitted by spawnHeadless when `heartbeat: true` so
-// the UI knows the agent is alive during the silent run.
-export function parseOpencode(_line: string): AgentEvent[] {
-  return [];
+// OpenCode `run --format json` (v1.14+) emits JSON Lines — one event per
+// line: step_start, text, tool calls, step-finish. The text events carry
+// the LLM output under `part.text` and are what the runner cares about.
+// parseOpencode emits text_delta for each text event; parseOpencodeExit
+// is a fallback for older builds that emit a single JSON blob.
+export function parseOpencode(line: string): AgentEvent[] {
+  const obj = tryJson(line) as Record<string, unknown> | undefined;
+  if (!obj || obj.type !== 'text') return [];
+  const part = obj.part as Record<string, unknown> | undefined;
+  const text = part && typeof part.text === 'string' ? part.text : '';
+  if (text.length === 0) return [];
+  return [{ type: 'text_delta', text }];
 }
 
 /**
- * OpenCode on-exit handler — parse the final JSON blob into message_done.
- * Called by spawnHeadless once the process exits.
+ * OpenCode on-exit handler — fallback for non-JSON-Lines stdout. With
+ * `--format json` on opencode 1.14+, parseOpencode already pulled out the
+ * text events, so this is a no-op in that case. Older builds (or a
+ * single-blob fallback shape) still resolve here.
  */
 export function parseOpencodeExit(fullStdout: string): AgentEvent[] {
-  const obj = tryJson(fullStdout) as Record<string, unknown> | undefined;
-  if (!obj) {
-    // Not JSON — treat the whole stdout as the final text. Better than no
-    // message at all on a malformed exit.
-    if (fullStdout.trim().length === 0) return [];
-    return [{ type: 'message_done', finalText: fullStdout }];
+  if (fullStdout.trim().length === 0) return [];
+  // If the stdout starts with a JSON-Lines stream, parseOpencode already
+  // handled it — don't double-emit.
+  const firstLine = fullStdout.split('\n').find((l) => l.trim().length > 0);
+  if (firstLine) {
+    const probe = tryJson(firstLine) as Record<string, unknown> | undefined;
+    if (probe && typeof probe.type === 'string') return [];
   }
-  // Common shapes: {message:"..."} or {result:"..."} or {output:"..."}.
+  const obj = tryJson(fullStdout) as Record<string, unknown> | undefined;
+  if (!obj) return [{ type: 'message_done', finalText: fullStdout }];
   const text =
     (typeof obj.message === 'string' && obj.message) ||
     (typeof obj.result === 'string' && obj.result) ||

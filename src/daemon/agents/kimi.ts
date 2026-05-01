@@ -23,7 +23,7 @@ import type {
 } from './types.js';
 import { quoteValue, quotePath, validateValue } from './quote.js';
 import { spawnHeadless } from '../headless.js';
-import { parseKimi } from './parsers.js';
+import { parseOpencode, parseOpencodeExit } from './parsers.js';
 
 export const kimiShim: AgentShim = {
   lineage: 'moonshot',
@@ -69,28 +69,40 @@ export const kimiShim: AgentShim = {
   },
 
   /**
-   * Headless mode (`kimi --print --output-format stream-json`).
+   * Headless mode — runs Kimi K2.6 via the OpenCode CLI + OpenCode Go
+   * subscription, which is the path the fleet/openbridge journals settled
+   * on after the standalone `kimi` binary proved unreliable (its config
+   * file is empty out of the box; users hit "LLM not set" until they
+   * manually wire `[models]` in `~/.kimi/config.toml`).
    *
-   * Kimi is intentionally Claude-Code-compatible (Moonshot designed it that
-   * way) so we reuse parseClaude via parseKimi. Phase B verification:
-   * capture real kimi --print output to confirm the format hasn't drifted.
-   * The watcher + recoverKeys we shipped in PR 1 are belt-and-suspenders
-   * for the case where it has.
+   * Equivalent of: `opencode run --format json --model opencode-go/kimi-k2.6
+   * "<prompt>"`. Reuses the opencode JSON-blob parsers since the output
+   * format is identical (it IS opencode under the hood). Heartbeat on so
+   * the UI shows progress during the silent one-shot.
+   *
+   * Model normalisation: templates may say `kimi-k2.6` (plain) or
+   * `opencode-go/kimi-k2.6` (qualified); both resolve to the latter. The
+   * opencode CLI requires the `opencode-go/` prefix to route through the
+   * Go subscription gateway.
    */
   runHeadless(opts: HeadlessSpawnOptions): AsyncIterable<AgentEvent> {
-    const args = ['--print', '--output-format', 'stream-json'];
-    if (opts.model) args.push('-m', opts.model);
+    const rawModel = opts.model ?? 'kimi-k2.6';
+    const model = rawModel.startsWith('opencode-go/')
+      ? rawModel
+      : `opencode-go/${rawModel}`;
+
+    const args = ['run', '--format', 'json', '--model', model, opts.promptText];
 
     const run = spawnHeadless({
-      command: 'kimi',
+      command: 'opencode',
       args,
       cwd: opts.cwd,
-      stdinPayload: opts.promptText,
-      parseLine: parseKimi,
+      parseLine: parseOpencode,
+      onExit: (fullStdout) => parseOpencodeExit(fullStdout),
       cli: 'kimi',
       timeoutMs: opts.timeoutMs,
       abortSignal: opts.abortSignal,
-      heartbeat: false,
+      heartbeat: true,
     });
 
     return run.events;

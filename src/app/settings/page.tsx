@@ -1,7 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { getTransport, updateTransport, type Transport } from "@/lib/api/settings";
+import {
+  getTransport,
+  updateTransport,
+  type Transport,
+  getBillingMode,
+  updateBillingMode,
+  type BillingMode,
+} from "@/lib/api/settings";
 import {
   Activity,
   AlertTriangle,
@@ -22,10 +29,12 @@ import {
   Send,
   Loader2,
   Info,
+  CreditCard,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { PageHeader } from "@/components/page-header";
 
 type AutoApprove = "auto" | "ask" | "block";
 type Role = "driver" | "reviewer";
@@ -174,48 +183,39 @@ export default function SettingsPage() {
   return (
     <AppShell>
       <div className="mx-auto w-full max-w-4xl px-4 py-6 sm:px-6 sm:py-8 md:px-8 md:py-10">
-        <div className="mb-6 flex items-start justify-between gap-4">
-          <div>
-            <p className="text-xs uppercase tracking-wider text-muted-foreground">
-              Settings
-            </p>
-            <h1 className="mt-1 text-2xl font-semibold tracking-tight">
-              Workspace
-            </h1>
-            <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-              Defaults applied to every chat. Templates can override these
-              per-run. The MCP server can read & patch this config — your main
-              Claude can configure Chorus for you.
-            </p>
-          </div>
-          {/* Form / YAML toggle */}
-          <div className="flex shrink-0 rounded-md border border-border bg-card p-0.5">
-            <button
-              type="button"
-              onClick={() => setView("form")}
-              className={`flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-xs font-medium transition ${
-                view === "form"
-                  ? "bg-primary/15 text-foreground"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              <Wrench className="h-3.5 w-3.5" />
-              Form
-            </button>
-            <button
-              type="button"
-              onClick={() => setView("yaml")}
-              className={`flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-xs font-medium transition ${
-                view === "yaml"
-                  ? "bg-primary/15 text-foreground"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              <Code2 className="h-3.5 w-3.5" />
-              YAML
-            </button>
-          </div>
-        </div>
+        <PageHeader
+          eyebrow="Settings"
+          title="Workspace"
+          subtitle="Defaults applied to every chat. Templates can override these per-run. The MCP server can read & patch this config — your main Claude can configure Chorus for you."
+          action={
+            <div className="flex rounded-md border border-border bg-card p-0.5">
+              <button
+                type="button"
+                onClick={() => setView("form")}
+                className={`flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-xs font-medium transition ${
+                  view === "form"
+                    ? "bg-primary/15 text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Wrench className="h-3.5 w-3.5" />
+                Form
+              </button>
+              <button
+                type="button"
+                onClick={() => setView("yaml")}
+                className={`flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-xs font-medium transition ${
+                  view === "yaml"
+                    ? "bg-primary/15 text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Code2 className="h-3.5 w-3.5" />
+                YAML
+              </button>
+            </div>
+          }
+        />
 
         {view === "yaml" ? (
           <YamlEditor yaml={yaml} />
@@ -349,6 +349,9 @@ function FormView(p: FormViewProps) {
 
       {/* Transport: headless vs tmux */}
       <TransportSection />
+
+      {/* Billing mode: subscription vs API */}
+      <BillingModeSection />
 
       {/* Permissions — split by role */}
       <Section
@@ -983,6 +986,102 @@ function TransportSection() {
         Tip: set <code className="rounded bg-muted px-1">CHORUS_TRANSPORT=tmux</code> in
         your environment to override per-shell without changing this setting.
       </p>
+    </Section>
+  );
+}
+
+/**
+ * Billing-mode toggle. Tells chorus how the user pays for the underlying
+ * CLIs so the cost preview on /new can render honestly:
+ *
+ * - api          → show $ estimate at spot rates
+ * - subscription → show "Subscription quota" + token count, no $
+ * - mixed        → show worst-case $ with caveat
+ *
+ * Stored as a single setting; v0.8 will refine into per-lineage overrides.
+ */
+function BillingModeSection() {
+  const [current, setCurrent] = useState<BillingMode | null>(null);
+  const [descriptions, setDescriptions] = useState<
+    Record<BillingMode, { label: string; description: string }> | undefined
+  >(undefined);
+  const [pending, setPending] = useState<BillingMode | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getBillingMode()
+      .then((res) => {
+        if (cancelled) return;
+        setCurrent(res.mode);
+        setDescriptions(res.descriptions);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : "Could not load billing mode.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const onPick = (m: BillingMode): void => {
+    if (current === m || pending) return;
+    setPending(m);
+    setError(null);
+    updateBillingMode({ mode: m })
+      .then((res) => setCurrent(res.mode))
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : "Save failed.");
+      })
+      .finally(() => setPending(null));
+  };
+
+  return (
+    <Section
+      icon={<CreditCard className="h-4 w-4" />}
+      title="Billing mode"
+      subtitle="How you pay for the AI CLIs chorus drives. Affects what the cost preview shows on the new-chat page — defaults to API rates so the number stays honest until you tell us otherwise."
+    >
+      {error && (
+        <div className="mb-3 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+          {error}
+        </div>
+      )}
+      <div className="grid gap-2">
+        {(["api", "subscription", "mixed"] as const).map((m) => {
+          const active = current === m;
+          const isPending = pending === m;
+          const meta = descriptions?.[m];
+          return (
+            <button
+              key={m}
+              type="button"
+              onClick={() => onPick(m)}
+              disabled={pending !== null || current === null}
+              className={`flex flex-col gap-1 rounded-lg border p-3 text-left transition ${
+                active
+                  ? "border-primary/50 bg-primary/10"
+                  : "border-border bg-card hover:border-muted-foreground/30"
+              } ${pending !== null ? "opacity-60" : ""}`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium">
+                  {meta?.label ?? m}
+                </span>
+                {active && (
+                  <span className="rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-primary">
+                    {isPending ? "saving…" : "active"}
+                  </span>
+                )}
+              </div>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                {meta?.description ?? ""}
+              </p>
+            </button>
+          );
+        })}
+      </div>
     </Section>
   );
 }

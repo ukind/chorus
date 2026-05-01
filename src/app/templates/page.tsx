@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Code2 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { PageHeader } from "@/components/page-header";
+import { CodeBlock } from "@/components/code-block";
 import { NewTemplateDialog } from "@/components/new-template-dialog";
 import { listTemplates, DaemonError } from "@/lib/api";
 import { Template } from "@/lib/types";
@@ -68,21 +69,12 @@ export default function TemplatesPage() {
   return (
     <AppShell>
       <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 sm:py-8 md:px-8 md:py-10">
-        <div className="mb-6 flex items-center justify-between">
-          <div>
-            <p className="text-xs uppercase tracking-wider text-muted-foreground">
-              Templates
-            </p>
-            <h1 className="mt-1 text-2xl font-semibold tracking-tight">
-              Reusable workflows for the council.
-            </h1>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Each template defines the driver, reviewers, prompts, and quorum
-              rule for a kind of task. Fork, edit, share.
-            </p>
-          </div>
-          <NewTemplateDialog />
-        </div>
+        <PageHeader
+          eyebrow="Templates"
+          title="Reusable workflows for the council."
+          subtitle="Each template defines the driver, reviewers, prompts, and quorum rule for a kind of task. Fork, edit, share."
+          action={<NewTemplateDialog />}
+        />
 
         <div className="mb-4 flex items-center gap-1 border-b border-border">
           {CATEGORIES.map((c) => (
@@ -176,20 +168,14 @@ export default function TemplatesPage() {
 
           {/* YAML preview */}
           {selected ? (
-            <Card className="min-w-0 overflow-hidden bg-card p-0">
-              <div className="flex items-center justify-between border-b border-border bg-card/60 px-4 py-2.5">
-                <div className="flex min-w-0 items-center gap-2 font-mono text-[11px] text-muted-foreground">
-                  <Code2 className="h-3 w-3 shrink-0" />
-                  <span className="truncate">{selected.id}.yaml</span>
-                </div>
-              </div>
-              <pre className="max-h-[60vh] overflow-auto px-5 py-4 font-mono text-xs leading-relaxed text-muted-foreground">
-                {selected.yaml}
-              </pre>
-              <div className="border-t border-border bg-card/60 px-4 py-2.5 text-[11px] text-muted-foreground">
-                by {selected.authorHandle}
-              </div>
-            </Card>
+            <CodeBlock
+              filename={`${selected.id}.yaml`}
+              charCount={selected.yaml.length}
+              maxHeightClassName="max-h-[60vh]"
+              footer={<span>by {selected.authorHandle}</span>}
+            >
+              {selected.yaml}
+            </CodeBlock>
           ) : (
             <Card className="bg-card p-4 text-center text-muted-foreground">
               <p>Select a template to view details</p>

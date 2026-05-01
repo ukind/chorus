@@ -10,6 +10,11 @@ import {
   Settings,
   Plus,
   ListChecks,
+  Search,
+  Command,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Users,
 } from "lucide-react";
 import { TriadLogo } from "@/components/triad-logo";
 import { listChats, DaemonError } from "@/lib/api";
@@ -27,6 +32,7 @@ const NAV: NavItem[] = [
   { href: "/", label: "Home", icon: LayoutDashboard },
   { href: "/runs", label: "Runs", icon: ListChecks },
   { href: "/templates", label: "Templates", icon: Layers },
+  { href: "/personas", label: "Personas", icon: Users },
   { href: "/connect", label: "Connect", icon: Plug },
 ];
 
@@ -47,13 +53,17 @@ const STATUS_DOT: Record<Chat["status"], string> = {
 
 interface SidebarBodyProps {
   onNavigate?: () => void;
+  /** True when sidebar is collapsed to icons-only (~56px wide). */
+  collapsed?: boolean;
+  /** Toggle collapsed state. Optional — undefined hides the toggle button. */
+  onToggleCollapsed?: () => void;
 }
 
 /**
  * Inner sidebar content — used by both the desktop fixed sidebar
  * and the mobile Sheet overlay (see MobileNav).
  */
-export function SidebarBody({ onNavigate }: SidebarBodyProps) {
+export function SidebarBody({ onNavigate, collapsed = false, onToggleCollapsed }: SidebarBodyProps) {
   const pathname = usePathname();
   const [chats, setChats] = useState<Chat[]>([]);
   const [chatsState, setChatsState] = useState<"loading" | "ready" | "error">(
@@ -108,7 +118,7 @@ export function SidebarBody({ onNavigate }: SidebarBodyProps) {
     let interval: ReturnType<typeof setInterval> | null = null;
     const start = () => {
       if (interval) return;
-      interval = setInterval(fetchChats, 5000);
+      interval = setInterval(fetchChats, 12000);
     };
     const stop = () => {
       if (interval) {
@@ -145,19 +155,42 @@ export function SidebarBody({ onNavigate }: SidebarBodyProps) {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Brand */}
-      <div className="flex h-14 items-center gap-2 border-b border-border px-4">
-        <div className="grid h-7 w-7 place-items-center rounded-md bg-primary/15 text-primary">
+      {/* Brand row — logo + name + version + collapse toggle. When collapsed,
+          only the logo + toggle render so the row stays a single icon column. */}
+      <div className="flex h-14 items-center gap-2 border-b border-border px-3">
+        <div className="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-primary/15 text-primary">
           <TriadLogo className="h-[18px] w-[18px]" />
         </div>
-        <span className="text-sm font-semibold tracking-tight">Chorus</span>
-        <span className="ml-auto rounded-md border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
-          {daemonVersion ? `v${daemonVersion.replace(/^v/, "").replace(/-dev\.\d+$/, "")}` : "—"}
-        </span>
+        {!collapsed && (
+          <>
+            <span className="text-sm font-semibold tracking-tight">Chorus</span>
+            <span className="ml-auto rounded-md border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+              {daemonVersion ? `v${daemonVersion.replace(/^v/, "").replace(/-dev\.\d+$/, "")}` : "—"}
+            </span>
+          </>
+        )}
+        {onToggleCollapsed && (
+          <button
+            type="button"
+            onClick={onToggleCollapsed}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            className={cn(
+              "rounded p-1 text-muted-foreground transition hover:bg-accent hover:text-foreground",
+              collapsed && "ml-auto",
+            )}
+          >
+            {collapsed ? (
+              <PanelLeftOpen className="h-3.5 w-3.5" />
+            ) : (
+              <PanelLeftClose className="h-3.5 w-3.5" />
+            )}
+          </button>
+        )}
       </div>
 
-      {/* Primary nav (global) */}
-      <nav className="px-2 py-3">
+      {/* Primary nav (global). Collapsed mode strips labels and tightens
+          padding so each item is a square icon button. */}
+      <nav className={cn("py-3", collapsed ? "px-1.5" : "px-2")}>
         <ul className="flex flex-col gap-0.5">
           {NAV.map((item) => {
             const Icon = item.icon;
@@ -166,15 +199,17 @@ export function SidebarBody({ onNavigate }: SidebarBodyProps) {
                 <Link
                   href={item.href}
                   onClick={onNavigate}
+                  title={collapsed ? item.label : undefined}
                   className={cn(
-                    "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
+                    "flex items-center rounded-md text-sm transition-colors",
+                    collapsed ? "justify-center px-2 py-2" : "gap-2 px-2 py-1.5",
                     isActive(item.href)
                       ? "bg-accent text-foreground"
                       : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
                   )}
                 >
-                  <Icon className="h-4 w-4" />
-                  <span>{item.label}</span>
+                  <Icon className="h-4 w-4 shrink-0" />
+                  {!collapsed && <span>{item.label}</span>}
                 </Link>
               </li>
             );
@@ -182,31 +217,52 @@ export function SidebarBody({ onNavigate }: SidebarBodyProps) {
         </ul>
       </nav>
 
-      {/* Recent chats list */}
+      {/* Recent chats — Search + New chat sit ABOVE the scrollable list and
+          stay sticky as the list grows. New chats appear at the top of the
+          list (server returns chats ordered by created_at DESC). Hidden
+          entirely in collapsed mode. */}
+      {collapsed ? (
+        <div className="min-h-0 flex-1" />
+      ) : (
       <div className="flex min-h-0 flex-1 flex-col border-t border-border">
-        <div className="flex items-center justify-between px-4 pb-1.5 pt-3">
-          <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-            Recent
-          </span>
+        {/* Sticky header: Search + New chat + Recent label */}
+        <div className="flex shrink-0 flex-col gap-2 bg-card/40 px-3 py-3">
+          <button
+            type="button"
+            className="flex h-8 w-full items-center gap-2 overflow-hidden rounded-md border border-border bg-card px-2.5 text-xs text-muted-foreground transition hover:border-muted-foreground/40 hover:text-foreground"
+            aria-label="Search"
+          >
+            <Search className="h-3 w-3 shrink-0" />
+            <span className="truncate whitespace-nowrap">Search…</span>
+            <kbd className="ml-auto flex shrink-0 items-center gap-0.5 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">
+              <Command className="h-3 w-3" />K
+            </kbd>
+          </button>
           <Link
             href="/new"
             onClick={onNavigate}
-            className="rounded p-0.5 text-muted-foreground transition hover:bg-accent hover:text-foreground"
-            title="New chat"
             aria-label="New chat"
+            className="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground transition hover:bg-primary/90"
           >
             <Plus className="h-3.5 w-3.5" />
+            <span>New chat</span>
           </Link>
+          <div className="mt-1 px-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            Recent
+          </div>
         </div>
 
-        <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+        <nav className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
           {chatsState === "loading" ? (
             <div className="px-2 py-4 text-xs text-muted-foreground">
               Loading…
             </div>
           ) : chatsState === "error" ? (
             <div className="px-2 py-4 text-xs text-muted-foreground">
-              Daemon unreachable.
+              Can&apos;t reach Chorus. Try restarting it from your terminal:{" "}
+              <code className="rounded bg-muted/40 px-1 font-mono text-[10px] text-foreground/80">
+                chorus start
+              </code>
             </div>
           ) : chats.length === 0 ? (
             <div className="px-2 py-4 text-xs text-muted-foreground">
@@ -253,9 +309,10 @@ export function SidebarBody({ onNavigate }: SidebarBodyProps) {
           )}
         </nav>
       </div>
+      )}
 
-      {/* Footer nav (global) */}
-      <div className="border-t border-border px-2 py-3">
+      {/* Footer nav (global) — same collapsed treatment as primary nav. */}
+      <div className={cn("border-t border-border py-3", collapsed ? "px-1.5" : "px-2")}>
         <ul className="flex flex-col gap-0.5">
           {FOOTER_NAV.map((item) => {
             const Icon = item.icon;
@@ -264,15 +321,17 @@ export function SidebarBody({ onNavigate }: SidebarBodyProps) {
                 <Link
                   href={item.href}
                   onClick={onNavigate}
+                  title={collapsed ? item.label : undefined}
                   className={cn(
-                    "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
+                    "flex items-center rounded-md text-sm transition-colors",
+                    collapsed ? "justify-center px-2 py-2" : "gap-2 px-2 py-1.5",
                     isActive(item.href)
                       ? "bg-accent text-foreground"
                       : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
                   )}
                 >
-                  <Icon className="h-4 w-4" />
-                  <span>{item.label}</span>
+                  <Icon className="h-4 w-4 shrink-0" />
+                  {!collapsed && <span>{item.label}</span>}
                 </Link>
               </li>
             );
@@ -286,11 +345,47 @@ export function SidebarBody({ onNavigate }: SidebarBodyProps) {
 /**
  * Desktop sidebar — hidden on mobile (md and up only).
  * Mobile users get the same content via MobileNav (Sheet overlay).
+ *
+ * Collapse state persists across reloads via localStorage. Width transitions
+ * smoothly (200ms) for a Linear/Raycast feel.
  */
+const COLLAPSED_KEY = "chorus.sidebar.collapsed";
+
 export function AppSidebar() {
+  const [collapsed, setCollapsed] = useState(false);
+
+  // Hydrate from localStorage on mount. Default false (expanded) on first
+  // visit so new users see the full sidebar before discovering the toggle.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const stored = window.localStorage.getItem(COLLAPSED_KEY);
+      if (stored === "1") setCollapsed(true);
+    } catch {
+      /* localStorage unavailable — fall through with default */
+    }
+  }, []);
+
+  const toggle = () => {
+    setCollapsed((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(COLLAPSED_KEY, next ? "1" : "0");
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  };
+
   return (
-    <aside className="hidden h-screen w-60 shrink-0 flex-col border-r border-border bg-card/30 md:flex">
-      <SidebarBody />
+    <aside
+      className={cn(
+        "hidden h-screen shrink-0 flex-col border-r border-border bg-card/30 transition-[width] duration-200 ease-out md:flex",
+        collapsed ? "w-14" : "w-60",
+      )}
+    >
+      <SidebarBody collapsed={collapsed} onToggleCollapsed={toggle} />
     </aside>
   );
 }

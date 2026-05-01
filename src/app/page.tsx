@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { ArrowRight, Plus, Sparkles, Users } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { CliStatusPanel } from "@/components/cli-status-panel";
+import { PageHeader } from "@/components/page-header";
 
 export const dynamic = "force-dynamic";
 
@@ -115,10 +116,10 @@ function EmptyHero() {
       <div className="grid h-12 w-12 place-items-center rounded-lg bg-primary/15 text-primary">
         <Users className="h-6 w-6" />
       </div>
-      <h1 className="mt-5 text-2xl font-semibold tracking-tight sm:text-3xl">
+      <h1 className="mt-5 text-2xl font-semibold tracking-tight">
         Many voices, one chorus.
       </h1>
-      <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted-foreground sm:text-base">
+      <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">
         Paste a task, pick a template, and watch 2–4 LLMs of different lineages
         peer-review the work before you ship.
       </p>
@@ -148,23 +149,19 @@ interface ActiveHomeProps {
 function ActiveHome({ chats }: ActiveHomeProps) {
   return (
     <>
-      <header className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <p className="text-xs uppercase tracking-wider text-muted-foreground">
-            Today
-          </p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">
-            What should the council look at?
-          </h1>
-        </div>
-        <Link
-          href="/new"
-          className="inline-flex h-10 items-center justify-center gap-2 self-start rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:bg-primary/90 sm:self-auto"
-        >
-          <Plus className="h-4 w-4" />
-          New chat
-        </Link>
-      </header>
+      <PageHeader
+        eyebrow="Today"
+        title="What should the council look at?"
+        action={
+          <Link
+            href="/new"
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:bg-primary/90"
+          >
+            <Plus className="h-4 w-4" />
+            New chat
+          </Link>
+        }
+      />
 
       <section>
         <div className="mb-3 flex items-baseline justify-between">

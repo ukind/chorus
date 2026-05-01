@@ -52,7 +52,7 @@ export default async function ConnectPage() {
             <p className="text-xs uppercase tracking-wider text-muted-foreground">
               Editors
             </p>
-            <h2 className="mt-1 text-xl font-semibold tracking-tight sm:text-2xl">
+            <h2 className="mt-1 text-2xl font-semibold tracking-tight">
               Where Chorus is reachable
             </h2>
             <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
@@ -79,7 +79,7 @@ export default async function ConnectPage() {
             <p className="text-xs uppercase tracking-wider text-muted-foreground">
               Inbox
             </p>
-            <h2 className="mt-1 text-xl font-semibold tracking-tight sm:text-2xl">
+            <h2 className="mt-1 text-2xl font-semibold tracking-tight">
               Waiting for your input
             </h2>
             <p className="mt-2 max-w-2xl text-sm text-muted-foreground">

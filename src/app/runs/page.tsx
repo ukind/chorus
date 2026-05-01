@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
+import { PageHeader } from "@/components/page-header";
 import { listChats, DaemonError } from "@/lib/api";
 import { chatDisplayTitle } from "@/lib/chat-title";
 
@@ -26,17 +27,11 @@ export default async function RunsListPage() {
   return (
     <AppShell>
       <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 sm:py-8 md:px-8 md:py-10">
-        <div className="mb-8">
-          <p className="text-xs uppercase tracking-wider text-muted-foreground">
-            History
-          </p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight">
-            All chats
-          </h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Browse previous runs and their outcomes.
-          </p>
-        </div>
+        <PageHeader
+          eyebrow="History"
+          title="All chats"
+          subtitle="Browse previous runs and their outcomes."
+        />
 
         {error && (
           <div className="mb-4 rounded-lg border border-destructive/50 bg-destructive/10 p-4">

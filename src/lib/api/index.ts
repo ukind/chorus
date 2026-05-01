@@ -4,3 +4,4 @@ export * from "./chats";
 export * from "./templates";
 export * from "./settings";
 export * from "./orchestrators";
+export * from "./personas";

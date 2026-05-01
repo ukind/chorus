@@ -49,7 +49,7 @@ emits SSE events to the cockpit, and aggregates verdicts. Tested on:
 
 ### Templates (4 built-in)
 
-`bug-diagnose`, `code-review` (now includes Kimi as 4th reviewer for 3-of-4 quorum),
+`bug-diagnose`, `code-review` (Claude doer + Codex and Gemini reviewers, 2-of-2 quorum),
 `architect-review`, `red-green`.
 
 ### Sandbox profiles

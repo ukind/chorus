@@ -140,7 +140,7 @@ export default function OnboardingPage() {
   const submitManualPath = async (id: DetectableCliId) => {
     const value = (manualPath[id] || "").trim();
     if (!value) {
-      setManualError((prev) => ({ ...prev, [id]: "Enter a full path to the binary." }));
+      setManualError((prev) => ({ ...prev, [id]: "Enter the full path to the CLI program (e.g. /usr/local/bin/claude)." }));
       return;
     }
     setManualBusy((prev) => new Set(prev).add(id));
@@ -243,7 +243,7 @@ export default function OnboardingPage() {
             <p className="text-xs uppercase tracking-wider text-muted-foreground">
               Welcome to Chorus
             </p>
-            <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">
+            <h1 className="text-2xl font-semibold tracking-tight">
               Connect at least one model to begin
             </h1>
           </div>

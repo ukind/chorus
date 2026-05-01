@@ -19,6 +19,7 @@ import {
   Plug,
 } from "lucide-react";
 import { fetchFromDaemon } from "@/lib/api/client";
+import { lineageDot } from "@/lib/lineage-maps";
 import Link from "next/link";
 
 interface OrchestratorStatus {
@@ -35,14 +36,6 @@ interface CliHealth {
   resetAt?: number;
   updatedAt: number;
 }
-
-const LINEAGE_DOT: Record<string, string> = {
-  anthropic: "bg-violet-400",
-  openai: "bg-orange-400",
-  google: "bg-blue-400",
-  opencode: "bg-emerald-400",
-  moonshot: "bg-pink-400",
-};
 
 // Map orchestrator name → underlying lineage tag for health lookup.
 const ORCHESTRATOR_TO_LINEAGE: Record<string, string> = {
@@ -160,7 +153,7 @@ export async function CliStatusPanel() {
               className="flex items-center gap-3 rounded-lg border border-border bg-card p-3"
             >
               <span
-                className={`h-2 w-2 shrink-0 rounded-full ${LINEAGE_DOT[lineage] ?? "bg-muted"}`}
+                className={`h-2 w-2 shrink-0 rounded-full ${lineageDot(lineage)}`}
               />
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-medium">{o.label}</div>

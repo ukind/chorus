@@ -25,6 +25,37 @@
 import { execFileSync, spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
+
+/**
+ * Sanitise git/gh stderr before persisting it into the chat row's ship_error
+ * column or surfacing in the cockpit. The raw output may include the user's
+ * home directory, ssh key paths, and full local repo paths — none of which
+ * a non-author cockpit viewer should see. We:
+ *   - replace HOME with `~`
+ *   - replace any /Users/<name>/ or /home/<name>/ with `~/`
+ *   - strip lines that mention `id_rsa`, `id_ed25519`, etc. entirely
+ *   - cap at 600 chars so a runaway stderr can't blow up the DB row
+ */
+export function sanitizeStderr(raw: string): string {
+  if (!raw) return '';
+  const home = os.homedir();
+  let s = raw;
+  if (home && home.length > 3) {
+    s = s.split(home).join('~');
+  }
+  // Unix homedirs.
+  s = s.replace(/\/(?:Users|home)\/[^/\s:'"]+/g, '~');
+  // Windows homedirs (C:\Users\foo\... or D:\Users\foo\...). Case-insensitive.
+  s = s.replace(/[A-Za-z]:\\Users\\[^\\\s:'"]+/g, '~');
+  s = s
+    .split('\n')
+    .filter((line) => !/\bid_(?:rsa|ed25519|ecdsa|dsa)\b/i.test(line))
+    .join('\n');
+  s = s.trim();
+  if (s.length > 600) s = s.slice(0, 600) + '… [truncated]';
+  return s;
+}
 
 export interface GitContext {
   /** Absolute path to the repo. */
@@ -103,7 +134,7 @@ export function detectGitContext(repoPath: string, baseBranchOverride?: string):
     return {
       ok: false,
       reason: 'gh_not_authed',
-      detail: `gh not authenticated. Run \`gh auth login\` first. (${ghAuth.stderr.trim().split('\n')[0] ?? ''})`,
+      detail: `gh not authenticated. Run \`gh auth login\` first. (${sanitizeStderr(ghAuth.stderr).split('\n')[0] ?? ''})`,
     };
   }
 
@@ -208,7 +239,7 @@ export function runShipPhase(opts: ShipOptions): ShipResult {
     return {
       ok: false,
       stage: 'branch_create_failed',
-      detail: `git checkout -B ${branch} failed: ${branchCreate.stderr.trim()}`,
+      detail: `git checkout -B ${branch} failed: ${sanitizeStderr(branchCreate.stderr)}`,
     };
   }
 
@@ -225,7 +256,7 @@ export function runShipPhase(opts: ShipOptions): ShipResult {
     return {
       ok: false,
       stage: 'commit_failed',
-      detail: `git add -A failed: ${stage.stderr.trim()}`,
+      detail: `git add -A failed: ${sanitizeStderr(stage.stderr)}`,
     };
   }
 
@@ -235,7 +266,7 @@ export function runShipPhase(opts: ShipOptions): ShipResult {
     return {
       ok: false,
       stage: 'commit_failed',
-      detail: `git commit failed: ${commit.stderr.trim()}`,
+      detail: `git commit failed: ${sanitizeStderr(commit.stderr)}`,
     };
   }
 
@@ -245,7 +276,7 @@ export function runShipPhase(opts: ShipOptions): ShipResult {
     return {
       ok: false,
       stage: 'push_failed',
-      detail: `git push failed: ${push.stderr.trim()}`,
+      detail: `git push failed: ${sanitizeStderr(push.stderr)}`,
     };
   }
 
@@ -277,7 +308,7 @@ export function runShipPhase(opts: ShipOptions): ShipResult {
     return {
       ok: false,
       stage: 'pr_create_failed',
-      detail: `gh pr create failed: ${prCreate.stderr.trim() || prCreate.stdout.trim()}`,
+      detail: `gh pr create failed: ${sanitizeStderr(prCreate.stderr) || sanitizeStderr(prCreate.stdout)}`,
     };
   }
 

@@ -23,12 +23,22 @@
 
 import { settings } from '../db';
 import { z } from 'zod';
+import { platform } from 'os';
 
 export type Transport = 'headless' | 'tmux';
 
 const TransportSchema = z.enum(['headless', 'tmux']);
 
 const TRANSPORT_KEY = 'transport';
+
+/**
+ * tmux is a Unix-only userland tool — Windows hosts have no equivalent and
+ * the spawn would fail with "tmux: not found". Headless transport works
+ * everywhere, so we silently force-downgrade tmux→headless on Windows
+ * regardless of stored setting or env override. Documented for the cockpit
+ * settings page so the toggle can grey out when this returns true.
+ */
+export const TMUX_AVAILABLE: boolean = platform() !== 'win32';
 
 /**
  * v0.5 default is 'headless' — the migration target. Existing users who had
@@ -42,17 +52,26 @@ export const DEFAULT_TRANSPORT: Transport = 'headless';
 export function getTransport(): Transport {
   // Env override takes precedence — operator escape hatch.
   const envOverride = process.env.CHORUS_TRANSPORT;
+  let resolved: Transport;
   if (envOverride === 'headless' || envOverride === 'tmux') {
-    return envOverride;
+    resolved = envOverride;
+  } else {
+    const raw = settings.get(TRANSPORT_KEY);
+    const parsed = TransportSchema.safeParse(raw);
+    resolved = parsed.success ? parsed.data : DEFAULT_TRANSPORT;
   }
-
-  const raw = settings.get(TRANSPORT_KEY);
-  const parsed = TransportSchema.safeParse(raw);
-  return parsed.success ? parsed.data : DEFAULT_TRANSPORT;
+  // Cross-platform safety net — see TMUX_AVAILABLE doc.
+  if (resolved === 'tmux' && !TMUX_AVAILABLE) return 'headless';
+  return resolved;
 }
 
 export function setTransport(value: Transport): Transport {
   TransportSchema.parse(value);
+  if (value === 'tmux' && !TMUX_AVAILABLE) {
+    throw new Error(
+      'tmux transport is not available on Windows — headless transport works for everything tmux does plus more.',
+    );
+  }
   settings.set(TRANSPORT_KEY, value);
   return getTransport();
 }

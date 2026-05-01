@@ -25,11 +25,14 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "build:server": "tsc -p tsconfig.server.json && node -e \"require('fs').mkdirSync('dist/lib/db',{recursive:true});require('fs').copyFileSync('src/lib/db/schema.sql','dist/lib/db/schema.sql')\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "postinstall": "node scripts/postinstall.mjs"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.0",
-    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@modelcontextprotocol/sdk": "~1.29.0",
     "better-sqlite3": "^11.3.0",
     "chokidar": "^5.0.0",
     "class-variance-authority": "^0.7.1",
@@ -55,11 +58,13 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@vitest/coverage-v8": "^2.1.0",
     "eslint": "^9",
     "eslint-config-next": "16.2.4",
     "tailwindcss": "^4",
     "tsx": "^4.19.0",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^2.1.0"
   },
   "engines": {
     "node": ">=20"

@@ -371,172 +371,6 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
   }
 }
 
-/**
- * Headless transport doer: spawn the CLI in --print mode, consume the
- * AgentEvent stream, persist incrementally to answer.md so the existing
- * artifacts API + run page (which polls answer.md every 4s) sees live
- * progress without UI changes.
- *
- * Returns the same shape as runDoer for drop-in consumption by the phase loop.
- */
-async function runDoerHeadless(args: {
-  shim: AgentShim;
-  chatId: string;
-  phase: Phase;
-  round: number;
-  agentName: string;
-  askContent: string;
-  answerFile: string;
-  /** Doer's working dir — repoPath when chat targets a real repo, else scratch. */
-  doerCwd: string;
-  abortSignal: AbortSignal;
-  onEvent: (e: RunnerEvent) => void;
-}): Promise<{ content: string; full: boolean } | null> {
-  const { shim, chatId, phase, round, agentName, askContent, answerFile, doerCwd, abortSignal, onEvent } =
-    args;
-
-  if (!shim.runHeadless) {
-    // Defensive — caller should have checked. Fail closed.
-    return null;
-  }
-
-  const perms = getPermissions();
-  let accumulated = '';
-  let finalText: string | undefined;
-  let errored = false;
-
-  // Initialize answer.md so the artifacts endpoint sees the file mid-stream.
-  fs.writeFileSync(answerFile, '');
-
-  const stream = shim.runHeadless({
-    cwd: doerCwd,
-    promptText: askContent,
-    model: phase.doer.models?.[0],
-    sandbox: perms.sandboxProfile,
-    autoApprove: perms.autoApprovePrompts,
-    networkAccess: perms.networkAccess,
-    abortSignal,
-    timeoutMs: 10 * 60 * 1000,
-  });
-
-  try {
-    for await (const event of stream) {
-      if (event.type === 'text_delta') {
-        accumulated += event.text;
-        // Append-write so the file grows monotonically — run page polling
-        // sees progress without races. Sync write is fine; deltas are small.
-        fs.appendFileSync(answerFile, event.text);
-        onEvent({
-          chatId,
-          type: 'phase_progress',
-          payload: {
-            phaseId: phase.id,
-            round,
-            role: 'doer',
-            agent: agentName,
-            output: accumulated.slice(-500),
-          },
-          ts: Date.now(),
-        });
-      } else if (event.type === 'tool_call_start') {
-        onEvent({
-          chatId,
-          type: 'phase_progress',
-          payload: {
-            phaseId: phase.id,
-            round,
-            role: 'doer',
-            agent: agentName,
-            tool: event.tool,
-          },
-          ts: Date.now(),
-        });
-      } else if (event.type === 'progress') {
-        // Heartbeat from non-streaming CLIs — surface so UI knows we're alive.
-        onEvent({
-          chatId,
-          type: 'phase_progress',
-          payload: {
-            phaseId: phase.id,
-            round,
-            role: 'doer',
-            agent: agentName,
-            elapsedMs: event.elapsedMs,
-          },
-          ts: Date.now(),
-        });
-      } else if (event.type === 'message_done') {
-        finalText = event.finalText;
-        // Authoritative final write. Only append the ## DONE sentinel if the
-        // model didn't already write one (some models include it in their
-        // response when the prompt asks for it — duplicate sentinels look
-        // sloppy in the artifact viewer).
-        const needsSentinel = !/\n##\s*DONE\s*\n?$/i.test(event.finalText.trimEnd());
-        const finalContent = needsSentinel
-          ? `${event.finalText}\n\n## DONE\n`
-          : event.finalText.endsWith('\n')
-            ? event.finalText
-            : `${event.finalText}\n`;
-        fs.writeFileSync(answerFile, finalContent);
-      } else if (event.type === 'error') {
-        errored = true;
-        onEvent({
-          chatId,
-          type: 'cli_error',
-          payload: {
-            phaseId: phase.id,
-            round,
-            role: 'doer',
-            agent: agentName,
-            error: { kind: event.kind, message: event.message, lineage: phase.doer.lineage },
-          },
-          ts: Date.now(),
-        });
-      }
-    }
-  } catch (err) {
-    errored = true;
-    onEvent({
-      chatId,
-      type: 'cli_error',
-      payload: {
-        phaseId: phase.id,
-        round,
-        role: 'doer',
-        agent: agentName,
-        error: {
-          kind: 'stream_failure',
-          message: err instanceof Error ? err.message : String(err),
-          lineage: phase.doer.lineage,
-        },
-      },
-      ts: Date.now(),
-    });
-  }
-
-  if (errored && finalText === undefined && accumulated.length === 0) {
-    return null;
-  }
-
-  // Prefer the authoritative finalText from message_done when non-empty
-  // (Claude carries the full result there). Fall back to accumulated
-  // deltas when message_done was empty (Gemini's result line is stats-only)
-  // or absent (CLI exited unexpectedly).
-  const content = finalText && finalText.length > 0 ? finalText : accumulated;
-
-  // Treat "stream ended with no content AND no message_done" as a failure even
-  // when the parser didn't emit an explicit error event. This catches CLI
-  // exits where stdout was unparseable, the process was killed early by an
-  // abort, or the SDK ended the stream silently — all of which previously
-  // returned `{content: '', full: false}` which the phase loop happily
-  // accepted as a successful empty doer answer.
-  if (finalText === undefined && content.trim().length === 0) {
-    return null;
-  }
-
-  return { content, full: finalText !== undefined || accumulated.length > 0 };
-}
-
 async function runDoer(
   chatDir: string,
   chatId: string,
@@ -706,6 +540,8 @@ async function runDoer(
  * the ship phase to embed doer output in the PR body. Returns undefined
  * if no doer output exists (shouldn't happen since ship runs after success).
  */
+// StreamFileWriter moved to ./runner/stream-file-writer.ts; re-exported above.
+
 function readLastDoerAnswer(chatDir: string): string | undefined {
   if (!fs.existsSync(chatDir)) return undefined;
   // Walk rounds in reverse (highest first). Within each round pick the
@@ -768,37 +604,51 @@ async function runReviewers(
     outcome: 'agreed' | 'disagreed' | 'failed';
   }[] = [];
 
-  const reviewPromises = phase.reviewer.candidates.map((candidate, idx) =>
-    runReviewer(
-      chatDir,
-      chatId,
-      phase,
-      phaseIdx,
-      round,
-      idx,
-      doerOutput,
-      work,
-      filesBlock,
-      tmuxMgr,
-      errorDetector,
-      onEvent,
-      abortSignal,
-    )
-      .then((res) => {
+  // Cap concurrent reviewer subprocesses per chat. Templates with 4+ reviewer
+  // candidates would otherwise spawn the full set in parallel — which in
+  // practice means simultaneous LLM-CLI subprocesses each holding a shim
+  // child + stream parser, plus per-chat cwd. At load=133 last week the
+  // root cause was unbounded fan-out across re-attached SSE sessions; we
+  // also want a per-chat ceiling so a single big template doesn't melt the
+  // host on its own.
+  const REVIEWER_CONCURRENCY = 3;
+  const candidates = phase.reviewer.candidates;
+  let cursor = 0;
+  async function worker(): Promise<void> {
+    while (true) {
+      const idx = cursor++;
+      if (idx >= candidates.length) return;
+      const candidate = candidates[idx];
+      try {
+        const res = await runReviewer(
+          chatDir,
+          chatId,
+          phase,
+          phaseIdx,
+          round,
+          idx,
+          doerOutput,
+          work,
+          filesBlock,
+          tmuxMgr,
+          errorDetector,
+          onEvent,
+          abortSignal,
+        );
         reviews.push({
           reviewer: `${candidate.lineage}-${idx}`,
           outcome: res === null ? 'failed' : res ? 'agreed' : 'disagreed',
         });
-      })
-      .catch(() => {
+      } catch {
         reviews.push({
           reviewer: `${candidate.lineage}-${idx}`,
           outcome: 'failed',
         });
-      }),
-  );
-
-  await Promise.all(reviewPromises);
+      }
+    }
+  }
+  const workerCount = Math.min(REVIEWER_CONCURRENCY, candidates.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
   const agreedCount = reviews.filter((r) => r.outcome === 'agreed').length;
   const failedCount = reviews.filter((r) => r.outcome === 'failed').length;
@@ -815,154 +665,37 @@ async function runReviewers(
   return { agreed, summary, allFailed };
 }
 
+// Headless reviewer execution moved to ./runner/reviewer.ts; re-exported above.
+
 /**
- * Headless transport reviewer. Mirrors runDoerHeadless but returns the
- * boolean | null verdict shape that runReviewers expects:
- *   true  = reviewer approved (answer text contains "approve" / "good")
- *   false = reviewer disagreed
- *   null  = reviewer never produced a valid answer
+ * Extract an approve/disagree/null verdict from a reviewer's free-form text.
+ *
+ * The prior heuristic was `text.includes('approve') || text.includes('good')`
+ * which produced two failure modes that bit us in the first audit run:
+ *   1. False positive: any reviewer that mentioned "good practice" or "the
+ *      approach is good" anywhere in a critical review was scored as approved.
+ *   2. False negative-as-disagreement: an empty / near-empty reviewer response
+ *      (e.g. Gemini emitting only "## DONE") was scored as disagreed because
+ *      the words weren't present. But empty != disagreed — the reviewer
+ *      simply didn't engage. Treating it as disagreement triggered useless
+ *      extra rounds.
+ *
+ * New rules:
+ *   - Strip the ## DONE sentinel and any trailing whitespace.
+ *   - If less than 80 chars of substantive content remain, return null
+ *     (failed — caller treats as no-review).
+ *   - Look at the LAST 400 chars (where verdicts typically live) for explicit
+ *     keywords: "request changes" / "disagree" / "reject" / "blocker" win
+ *     first (negative dominates), then "approve" / "lgtm".
+ *   - If neither pattern fires, return null (ambiguous → failed).
+ *
+ * The right long-term fix is a structured `## VERDICT: APPROVE|REQUEST_CHANGES`
+ * footer in the reviewer prompt + strict parser. Tracked in ROADMAP #23.
  */
-async function runReviewerHeadless(args: {
-  shim: AgentShim;
-  chatId: string;
-  phase: Phase;
-  round: number;
-  reviewerIdx: number;
-  candidateLineage: string;
-  candidateModel?: string;
-  agentName: string;
-  askContent: string;
-  answerFile: string;
-  reviewerDir: string;
-  abortSignal: AbortSignal;
-  onEvent: (e: RunnerEvent) => void;
-}): Promise<boolean | null> {
-  const {
-    shim,
-    chatId,
-    phase,
-    round,
-    reviewerIdx,
-    candidateLineage,
-    candidateModel,
-    agentName,
-    askContent,
-    answerFile,
-    reviewerDir,
-    abortSignal,
-    onEvent,
-  } = args;
-
-  if (!shim.runHeadless) return null;
-
-  const perms = getPermissions();
-  let accumulated = '';
-  let finalText: string | undefined;
-  let errored = false;
-
-  fs.writeFileSync(answerFile, '');
-
-  const stream = shim.runHeadless({
-    cwd: reviewerDir,
-    promptText: askContent,
-    model: candidateModel,
-    sandbox: perms.sandboxProfile,
-    autoApprove: perms.autoApprovePrompts,
-    networkAccess: perms.networkAccess,
-    abortSignal,
-    timeoutMs: 10 * 60 * 1000,
-  });
-
-  try {
-    for await (const event of stream) {
-      if (event.type === 'text_delta') {
-        accumulated += event.text;
-        fs.appendFileSync(answerFile, event.text);
-        onEvent({
-          chatId,
-          type: 'phase_progress',
-          payload: {
-            phaseId: phase.id,
-            round,
-            role: 'reviewer',
-            agent: `${agentName}-${reviewerIdx}`,
-            output: accumulated.slice(-500),
-          },
-          ts: Date.now(),
-        });
-      } else if (event.type === 'tool_call_start') {
-        onEvent({
-          chatId,
-          type: 'phase_progress',
-          payload: {
-            phaseId: phase.id,
-            round,
-            role: 'reviewer',
-            agent: `${agentName}-${reviewerIdx}`,
-            tool: event.tool,
-          },
-          ts: Date.now(),
-        });
-      } else if (event.type === 'progress') {
-        onEvent({
-          chatId,
-          type: 'phase_progress',
-          payload: {
-            phaseId: phase.id,
-            round,
-            role: 'reviewer',
-            agent: `${agentName}-${reviewerIdx}`,
-            elapsedMs: event.elapsedMs,
-          },
-          ts: Date.now(),
-        });
-      } else if (event.type === 'message_done') {
-        finalText = event.finalText;
-        fs.writeFileSync(answerFile, `${event.finalText}\n\n## DONE\n`);
-      } else if (event.type === 'error') {
-        errored = true;
-        onEvent({
-          chatId,
-          type: 'cli_error',
-          payload: {
-            phaseId: phase.id,
-            round,
-            role: 'reviewer',
-            agent: `${agentName}-${reviewerIdx}`,
-            error: { kind: event.kind, message: event.message, lineage: candidateLineage },
-          },
-          ts: Date.now(),
-        });
-      }
-    }
-  } catch (err) {
-    errored = true;
-    onEvent({
-      chatId,
-      type: 'cli_error',
-      payload: {
-        phaseId: phase.id,
-        round,
-        role: 'reviewer',
-        agent: `${agentName}-${reviewerIdx}`,
-        error: {
-          kind: 'stream_failure',
-          message: err instanceof Error ? err.message : String(err),
-          lineage: candidateLineage,
-        },
-      },
-      ts: Date.now(),
-    });
-  }
-
-  const content = finalText && finalText.length > 0 ? finalText : accumulated;
-  if (errored && content.trim().length === 0) return null;
-  if (content.trim().length === 0) return null;
-
-  // Same verdict heuristic as the tmux reviewer path.
-  const lower = content.toLowerCase();
-  return lower.includes('approve') || lower.includes('good');
-}
+// verdictFromReviewerText was extracted to ./runner/verdict.ts; re-export
+// from this module so MCP and other consumers keep working.
+import { verdictFromReviewerText } from './runner/verdict.js';
+export { verdictFromReviewerText };
 
 async function runReviewer(
   chatDir: string,
@@ -1131,10 +864,7 @@ async function runReviewer(
       // Watcher resolved on timeout/silence with no real answer.
       return null;
     }
-    const approved =
-      result.content.toLowerCase().includes('approve') ||
-      result.content.toLowerCase().includes('good');
-    return approved;
+    return verdictFromReviewerText(result.content);
   } catch {
     // Timed out or watcher errored — no valid answer produced.
     return null;
@@ -1143,155 +873,21 @@ async function runReviewer(
   }
 }
 
-// Per-file cap and total cap when inlining attached files into a prompt.
-// Numbers chosen to keep prompts comfortably within Anthropic / OpenAI / Google
-// 1M-token budgets while still surfacing realistic source files. Hardcoded
-// for now; if template authors need larger payloads we'd lift these into
-// template config (template.inputs.maxFileBytes / maxTotalBytes).
-const ATTACHED_FILE_MAX_BYTES = 64 * 1024;
-const ATTACHED_FILES_TOTAL_BYTES = 256 * 1024;
+// Pure prompt-construction helpers live in ./runner/prompt-builder.ts so
+// they can be unit-tested without standing up the full runner. Import
+// here and re-export so the rest of this file (and external callers via
+// require('./runner.js')) keep working.
+import {
+  packAttachedFiles,
+  buildAsk,
+  buildReviewerAsk,
+} from './runner/prompt-builder.js';
+export { packAttachedFiles, buildAsk, buildReviewerAsk };
 
-function packAttachedFiles(paths: string[] | undefined, repoPath: string | undefined): string {
-  if (!paths || paths.length === 0) return '';
-
-  const chunks: string[] = [];
-  let totalBytes = 0;
-
-  for (const rel of paths) {
-    const abs = path.isAbsolute(rel) ? rel : path.join(repoPath ?? process.cwd(), rel);
-    const display = path.isAbsolute(rel) ? path.relative(repoPath ?? process.cwd(), abs) || abs : rel;
-
-    if (!fs.existsSync(abs)) {
-      chunks.push(`### \`${display}\` — _file not found, skipping_`);
-      continue;
-    }
-
-    let body: string;
-    try {
-      const stat = fs.statSync(abs);
-      if (!stat.isFile()) {
-        chunks.push(`### \`${display}\` — _not a regular file, skipping_`);
-        continue;
-      }
-      body = fs.readFileSync(abs, 'utf-8');
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      chunks.push(`### \`${display}\` — _read error: ${msg}_`);
-      continue;
-    }
-
-    const truncated = body.length > ATTACHED_FILE_MAX_BYTES;
-    const slice = truncated ? body.slice(0, ATTACHED_FILE_MAX_BYTES) : body;
-    const remainingBudget = ATTACHED_FILES_TOTAL_BYTES - totalBytes;
-
-    if (slice.length > remainingBudget) {
-      chunks.push(`### \`${display}\` — _skipped: would exceed ${ATTACHED_FILES_TOTAL_BYTES}-byte total cap_`);
-      continue;
-    }
-
-    totalBytes += slice.length;
-    const ext = path.extname(display).slice(1) || '';
-    chunks.push(`### \`${display}\`${truncated ? ` (truncated to ${ATTACHED_FILE_MAX_BYTES} bytes)` : ''}\n\`\`\`${ext}\n${slice}\n\`\`\``);
-  }
-
-  if (chunks.length === 0) return '';
-  return ['## Attached files', '', ...chunks, ''].join('\n');
-}
-
-function buildAsk(
-  phase: Phase,
-  phaseIdx: number,
-  round: number,
-  work: string,
-  inputs: Phase['inputs'],
-  filesBlock: string
-): string {
-  const lines: string[] = [];
-
-  lines.push(`# Chorus task — round ${round}, phase ${phase.id}`);
-  lines.push('');
-  lines.push('## Your role');
-  lines.push('doer');
-  lines.push('');
-  lines.push('## What to do');
-  lines.push(phase.title);
-  if (phase.description) {
-    lines.push('');
-    lines.push(phase.description);
-  }
-  lines.push('');
-  lines.push('## The user\'s request');
-  lines.push(work);
-  lines.push('');
-
-  if (filesBlock) {
-    lines.push(filesBlock);
-  }
-
-  if (inputs.include && inputs.include.length > 0) {
-    lines.push('## Inputs (from prior phases)');
-    for (const includePhaseId of inputs.include) {
-      lines.push(`- Phase ${includePhaseId}: (link to answer.md)`);
-    }
-    lines.push('');
-  }
-
-  if (inputs.exclude && inputs.exclude.length > 0) {
-    lines.push('## Excluded (do NOT read)');
-    for (const excludePhaseId of inputs.exclude) {
-      lines.push(`- Phase ${excludePhaseId}: explicitly blocked`);
-    }
-    lines.push('');
-  }
-
-  lines.push('## How to respond');
-  lines.push('Write your full answer and end with: ## DONE');
-
-  return lines.join('\n');
-}
-
-function buildReviewerAsk(
-  phase: Phase,
-  phaseIdx: number,
-  round: number,
-  work: string,
-  doerOutput: string,
-  filesBlock: string
-): string {
-  const lines: string[] = [];
-
-  lines.push(`# Chorus review — round ${round}, phase ${phase.id}`);
-  lines.push('');
-  lines.push('## Your role');
-  lines.push('reviewer');
-  lines.push('');
-  lines.push('## What to review');
-  lines.push(phase.title);
-  if (phase.description) {
-    lines.push('');
-    lines.push(phase.description);
-  }
-  lines.push('');
-  lines.push('## The user\'s request');
-  lines.push(work);
-  lines.push('');
-
-  if (filesBlock) {
-    lines.push(filesBlock);
-  }
-
-  lines.push('## Artifact to review');
-  lines.push('```');
-  lines.push(doerOutput.slice(0, 2000));
-  if (doerOutput.length > 2000) {
-    lines.push('... (truncated)');
-  }
-  lines.push('```');
-  lines.push('');
-  lines.push('## Your verdict');
-  lines.push(
-    'Do you approve? Answer: approve or request changes, end with: ## DONE'
-  );
-
-  return lines.join('\n');
-}
+// Streaming hot paths now live in their own modules. runner.ts keeps the
+// orchestration (runChat, runDoer, runReviewer, runReviewers) so the
+// closure on registry / tmuxMgr / errorDetector stays coherent.
+import { runDoerHeadless } from './runner/doer.js';
+import { runReviewerHeadless } from './runner/reviewer.js';
+import { StreamFileWriter } from './runner/stream-file-writer.js';
+export { runDoerHeadless, runReviewerHeadless, StreamFileWriter };

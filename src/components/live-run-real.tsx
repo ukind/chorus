@@ -21,73 +21,20 @@ import {
   CheckCircle2,
   AlertTriangle,
   Loader2,
-  Pause,
   Trash2,
   X,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { PhaseStepper, type PhaseState } from "@/components/phase-stepper";
-import { chatDisplayTitle } from "@/lib/chat-title";
 import type { Template, ReviewerLineage } from "@/lib/types";
+import { BriefHeading } from "./run-viewer/brief-heading";
+import { RoundView } from "./run-viewer/round-view";
+import type {
+  ParticipantSnapshot,
+  RoundSnapshot,
+} from "./run-viewer/types";
 import type { TemplatePhase as MockTemplatePhase } from "@/lib/mock-data";
-
-interface ParticipantSnapshot {
-  participant: string; // dir name e.g. "doer-claude-code", "reviewer-codex-cli-0"
-  role: "doer" | "reviewer";
-  agentName: string; // e.g. "claude-code", "codex-cli"
-  lineage: ReviewerLineage;
-  hasAnswer: boolean;
-  answer?: string;
-  findingsPreview?: string[]; // first 4 lines of the answer for the card stream area
-}
-
-interface RoundSnapshot {
-  round: number;
-  participants: ParticipantSnapshot[];
-}
-
-// Renders the chat brief at the top of the run page. Long briefs (persona
-// system_prompt + user request + inlined files) used to render as a wall of
-// text dominating the viewport. Now collapses to a one-line summary by
-// default with a "Show full brief" expander, mirroring how Linear / GitHub
-// handle long PR titles.
-const BRIEF_COLLAPSED_CHARS = 200;
-
-function BriefHeading({ work }: { work: string }) {
-  const [expanded, setExpanded] = useState(false);
-  // Display the de-personaed title by default; the full prompt (system_prompt
-  // + user request + attached files) is still available via Show full brief
-  // for debugging.
-  const displayTitle = chatDisplayTitle(work);
-  const isLong = displayTitle.length > BRIEF_COLLAPSED_CHARS || work !== displayTitle;
-  const summary = displayTitle.length > BRIEF_COLLAPSED_CHARS
-    ? `${displayTitle.slice(0, BRIEF_COLLAPSED_CHARS).replace(/\s+\S*$/, "")}…`
-    : displayTitle;
-
-  if (!isLong) {
-    return (
-      <h1 className="mt-2 break-words text-xl font-semibold tracking-tight">
-        {displayTitle}
-      </h1>
-    );
-  }
-
-  return (
-    <div className="mt-2">
-      <h1 className="break-words text-xl font-semibold tracking-tight">
-        {expanded ? work : summary}
-      </h1>
-      <button
-        type="button"
-        onClick={() => setExpanded((e) => !e)}
-        className="mt-1 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-      >
-        {expanded ? "Show less" : "Show full brief"}
-      </button>
-    </div>
-  );
-}
 
 interface Props {
   chatId: string;
@@ -102,20 +49,26 @@ interface Props {
   initialShipError?: string;
 }
 
-const LINEAGE_DOT: Record<string, string> = {
-  claude: "bg-violet-400",
-  codex: "bg-orange-400",
-  gemini: "bg-blue-400",
-  opencode: "bg-emerald-400",
-  kimi: "bg-pink-400",
+// Used when synthesising placeholder participants — picks a sensible CLI
+// name for the lineage in case the real spawn hasn't happened yet.
+const AGENT_LABEL: Record<string, string> = {
+  claude: "claude-code",
+  codex: "codex-cli",
+  gemini: "gemini-cli",
+  opencode: "opencode-cli",
+  kimi: "kimi-cli",
 };
 
-const LINEAGE_LABEL: Record<string, string> = {
-  claude: "Claude",
-  codex: "Codex",
-  gemini: "Gemini",
-  opencode: "OpenCode",
-  kimi: "Kimi",
+// Templates use runtime lineage names ("anthropic", "openai", "google", ...)
+// while the cockpit UI displays Linear-style brand names ("claude", "codex",
+// "gemini", ...). This map translates between them so placeholder reviewer
+// cards match the visual lineage of real spawns.
+const TEMPLATE_TO_UI_LINEAGE: Record<string, ReviewerLineage> = {
+  anthropic: "claude",
+  openai: "codex",
+  google: "gemini",
+  opencode: "opencode",
+  moonshot: "kimi",
 };
 
 const STATUS_LABEL: Record<string, { text: string; color: string }> = {
@@ -203,6 +156,9 @@ export function LiveRunReal({
 
   // Periodic refresh of artifacts from disk (cheap server fetch). The SSE
   // stream tells us *when* something changed; this fetches the new content.
+  // 8s instead of 4s because each refresh is a same-origin proxy + filesystem
+  // read of every artifact in the chat dir; at 4s a 10-minute run did 150
+  // round-trips, most of them unchanged. SSE deltas drive the live ticker.
   useEffect(() => {
     if (isTerminal) return;
     const refresh = async () => {
@@ -215,7 +171,7 @@ export function LiveRunReal({
         // ignore — next tick retries
       }
     };
-    const id = setInterval(refresh, 4000);
+    const id = setInterval(refresh, 8000);
     return () => clearInterval(id);
   }, [chatId, isTerminal]);
 
@@ -312,69 +268,139 @@ export function LiveRunReal({
 
   const meta = STATUS_LABEL[status] ?? { text: status.toUpperCase(), color: "muted" };
   const totalPhases = template?.phases?.length ?? 1;
-  // Best-effort phase count: rounds with at least one done participant.
-  const completedPhaseCount = useMemo(
-    () =>
-      rounds.length > 0 && rounds[rounds.length - 1].participants.some((p) => p.hasAnswer)
-        ? Math.min(rounds.length, totalPhases)
-        : 0,
-    [rounds, totalPhases],
-  );
+
+  // Phase completion is now driven by the chat's terminal status, not by
+  // disk snapshots. The previous "any participant has an answer → phase
+  // done" heuristic flipped the stepper to DONE the moment the doer wrote
+  // its first byte, even though reviewers were still running and consensus
+  // wasn't reached. With status-driven logic the phase only goes "done"
+  // when the chat itself is in an approved-equivalent terminal state.
+  const completedPhaseCount = useMemo(() => {
+    if (status === "approved" || status === "merged") return totalPhases;
+    if (status === "no_review" || status === "blocked") return totalPhases;
+    if (status === "failed" || status === "cancelled") return 0;
+    return 0; // drafting / reviewing — stepper stays on "active"
+  }, [status, totalPhases]);
+
+  // Enrich rounds with model lookups + placeholder reviewer slots from the
+  // template config. Without this, reviewer cards only appear once the
+  // runner has spawned their dirs — leaving the doer card alone in the
+  // viewport for the first 30-60s of a run with no hint that 2 reviewers
+  // are about to chime in. Now we render placeholder cards from the start.
+  const enrichedRounds = useMemo<RoundSnapshot[]>(() => {
+    if (!template?.phases?.length) return rounds;
+    const phase = template.phases[0];
+    // Build expected slots from template config: 1 doer + N reviewers.
+    type Slot = {
+      role: "doer" | "reviewer";
+      lineage: ReviewerLineage;
+      model?: string;
+      reviewerIdx?: number;
+    };
+    const toUiLineage = (templateLineage: string): ReviewerLineage =>
+      TEMPLATE_TO_UI_LINEAGE[templateLineage] ?? (templateLineage as ReviewerLineage);
+    const expectedSlots: Slot[] = [
+      {
+        role: "doer",
+        lineage: toUiLineage(phase.doer.lineage),
+        model: phase.doer.models?.[0],
+      },
+      // Use the structured candidatesWithModels field added to the parser
+      // so we keep the model assignment per slot. The legacy `candidates`
+      // string array is still emitted for connection-status grids that
+      // don't care about models.
+      ...(phase.reviewer?.candidatesWithModels ?? []).map((c, idx) => ({
+        role: "reviewer" as const,
+        lineage: toUiLineage(c.lineage),
+        model: c.models?.[0],
+        reviewerIdx: idx,
+      })),
+    ];
+
+    return rounds.map((round) => {
+      const enrichedParticipants: ParticipantSnapshot[] = [];
+      const seen = new Set<string>();
+      for (const slot of expectedSlots) {
+        const slotKey = slot.role === "doer"
+          ? `doer-${slot.lineage}`
+          : `reviewer-${slot.lineage}-${slot.reviewerIdx}`;
+        // Find a real participant matching this slot
+        const real = round.participants.find((p) => {
+          if (slot.role === "doer") return p.role === "doer" && p.lineage === slot.lineage;
+          // Reviewer match: same lineage + same idx (parsed from dir name)
+          if (p.role !== "reviewer") return false;
+          if (p.lineage !== slot.lineage) return false;
+          const idxFromName = parseInt(p.participant.match(/-(\d+)$/)?.[1] ?? "0", 10);
+          return idxFromName === slot.reviewerIdx;
+        });
+        if (real) {
+          enrichedParticipants.push({ ...real, model: slot.model });
+          seen.add(real.participant);
+        } else {
+          // Synthesise a pending placeholder so the user sees the slot
+          enrichedParticipants.push({
+            participant: slotKey,
+            role: slot.role,
+            agentName: AGENT_LABEL[slot.lineage] ?? slot.lineage,
+            lineage: slot.lineage,
+            hasAnswer: false,
+            model: slot.model,
+            pending: true,
+          });
+        }
+      }
+      // Append any unexpected participants (shouldn't happen, defensive)
+      for (const p of round.participants) {
+        if (!seen.has(p.participant)) enrichedParticipants.push(p);
+      }
+      return { ...round, participants: enrichedParticipants };
+    });
+  }, [rounds, template]);
 
   // Find the most recent round to show prominently. Older rounds collapse below.
-  const latestRound = rounds[rounds.length - 1];
-  const olderRounds = rounds.slice(0, -1);
+  const latestRound = enrichedRounds[enrichedRounds.length - 1];
+  const olderRounds = enrichedRounds.slice(0, -1);
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header */}
-      <div className="border-b border-border bg-card/30 px-4 py-5 sm:px-8">
-        <div className="mx-auto flex max-w-6xl flex-col gap-4">
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Link
-              href="/runs"
-              className="flex items-center gap-1 transition hover:text-foreground"
-            >
-              <ArrowLeft className="h-3 w-3" />
-              {projectName ?? "Runs"}
-            </Link>
-            <span>/</span>
-            <span className="font-mono text-[10px]">{chatId}</span>
+      {/* Compact sticky header — single row with breadcrumb, status, title,
+          and actions. Brief expands on click for full prompt inspection.
+          Phase stepper + ship-result banners moved into the body so the
+          header stays under ~80px and reviewer cards fill the viewport. */}
+      <div className="sticky top-0 z-20 border-b border-border bg-card/80 backdrop-blur-sm px-4 py-2 sm:px-8">
+        <div className="flex w-full items-center gap-3">
+          {/* Breadcrumb back link — tightened */}
+          <Link
+            href="/runs"
+            className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground transition hover:text-foreground"
+          >
+            <ArrowLeft className="h-3 w-3" />
+            <span className="hidden sm:inline">{projectName ?? "Runs"}</span>
+          </Link>
+
+          {/* Status dot — text label dropped as redundant with phase stepper.
+              Tooltip carries the long form for screen readers / hover. */}
+          <span
+            title={meta.text}
+            className={`h-2 w-2 shrink-0 rounded-full ${STATUS_DOT_COLOR[meta.color]} ${
+              isTerminal ? "" : "animate-pulse-soft"
+            }`}
+          />
+
+          {/* Template badge dropped — phase stepper already shows the phase
+              name ("Code Review") below. Was duplicated information. */}
+
+          {/* Title — single-line ellipsis, click to expand */}
+          <div className="min-w-0 flex-1">
+            <BriefHeading work={work} />
           </div>
 
-          <div className="flex items-start justify-between gap-6">
-            <div className="flex-1 min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <span
-                  className={`h-2 w-2 rounded-full ${STATUS_DOT_COLOR[meta.color]} ${
-                    isTerminal ? "" : "animate-pulse-soft"
-                  }`}
-                />
-                <span
-                  className={`text-xs font-medium uppercase tracking-wider ${STATUS_TEXT_COLOR[meta.color]}`}
-                >
-                  {meta.text}
-                </span>
-                {template?.name && (
-                  <Badge
-                    variant="outline"
-                    className="border-border font-mono text-[10px]"
-                  >
-                    {template.name}
-                  </Badge>
-                )}
-              </div>
-              <BriefHeading work={work} />
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <button
-                type="button"
-                disabled={isTerminal}
-                className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <Pause className="h-3.5 w-3.5" />
-                Pause
-              </button>
+          {/* Actions */}
+          <div className="flex shrink-0 items-center gap-2">
+              {/* Pause button removed — was decorative, no backend support
+                  for mid-run pause. Resume after pause requires session
+                  state we don't have today. Will reintroduce when the
+                  daemon gains real pause/resume in v0.8. */}
               <button
                 type="button"
                 disabled={isTerminal}
@@ -393,7 +419,7 @@ export function LiveRunReal({
                 onClick={async () => {
                   if (
                     !window.confirm(
-                      "Delete this chat? Removes the row, phase events, and the on-disk artifacts directory. Cannot be undone.",
+                      "Delete this chat permanently? This removes all reviewer output and history. You cannot undo this.",
                     )
                   ) {
                     return;
@@ -407,7 +433,7 @@ export function LiveRunReal({
                       router.push("/runs");
                       router.refresh();
                     } else {
-                      window.alert("Delete failed. Daemon may be down.");
+                      window.alert("Couldn't delete this chat — Chorus didn't respond. Try restarting it from your terminal: chorus start");
                       setDeleting(false);
                     }
                   } catch {
@@ -421,8 +447,14 @@ export function LiveRunReal({
                 {deleting ? "Deleting…" : "Delete"}
               </button>
             </div>
-          </div>
+        </div>
+      </div>
 
+      {/* Secondary header — phase stepper, progress, ship-result banners.
+          Lives in the scroll area, not in the sticky header, so reviewer
+          cards get the full viewport once the user starts scrolling. */}
+      <div className="border-b border-border bg-card/20 px-4 py-3 sm:px-8">
+        <div className="mx-auto flex w-full flex-col gap-3">
           {/* Ship-phase outcome banner — green PR link when merged, amber
               error context when blocked. Only renders on terminal states. */}
           {prUrl && (
@@ -462,51 +494,59 @@ export function LiveRunReal({
             </div>
           )}
 
-          {/* Progress strip */}
-          <div className="flex items-center gap-4">
-            <div className="flex flex-1 items-center gap-2">
-              <div className="flex h-1 flex-1 overflow-hidden rounded-full bg-muted">
-                <div
-                  className={`transition-[width] duration-700 ease-out ${
-                    status === "approved" ? "bg-emerald-400" : "bg-primary"
-                  }`}
-                  style={{
-                    width: `${
-                      (Math.max(completedPhaseCount, status === "approved" ? totalPhases : 0) /
-                        totalPhases) *
-                      100
-                    }%`,
-                  }}
-                />
+          {/* Progress strip — only meaningful for multi-phase templates.
+              For single-phase (code-review, bug-diagnose) the stepper alone
+              already shows ACTIVE / DONE; the bar was visual noise. */}
+          {totalPhases > 1 && (
+            <div className="flex items-center gap-4">
+              <div className="flex flex-1 items-center gap-2">
+                <div className="flex h-1 flex-1 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className={`transition-[width] duration-700 ease-out ${
+                      status === "approved" ? "bg-emerald-400" : "bg-primary"
+                    }`}
+                    style={{
+                      width: `${
+                        (Math.max(completedPhaseCount, status === "approved" ? totalPhases : 0) /
+                          totalPhases) *
+                        100
+                      }%`,
+                    }}
+                  />
+                </div>
+                <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
+                  {Math.min(completedPhaseCount, totalPhases)} / {totalPhases} phases
+                </span>
               </div>
-              <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
-                {Math.min(completedPhaseCount, totalPhases)} / {totalPhases} phases
-              </span>
             </div>
-          </div>
+          )}
 
-          {/* Phase stepper — one button per template phase */}
+          {/* Phase stepper — one button per template phase, centered. */}
           {template?.phases && template.phases.length > 0 && (
-            <PhaseStepper
-              phases={template.phases as unknown as MockTemplatePhase[]}
-              activeIndex={Math.min(completedPhaseCount, totalPhases - 1)}
-              states={template.phases.map((_, i): PhaseState => {
-                if (status === "approved") return "done";
-                if (status === "no_review") return i < completedPhaseCount ? "done" : "blocked";
-                if (status === "failed" || status === "cancelled")
-                  return i < completedPhaseCount ? "done" : "skipped";
-                if (i < completedPhaseCount) return "done";
-                if (i === completedPhaseCount) return "active";
-                return "pending";
-              })}
-            />
+            <div className="flex justify-center">
+              <PhaseStepper
+                phases={template.phases as unknown as MockTemplatePhase[]}
+                activeIndex={Math.min(completedPhaseCount, totalPhases - 1)}
+                states={template.phases.map((_, i): PhaseState => {
+                  if (status === "approved") return "done";
+                  if (status === "no_review") return i < completedPhaseCount ? "done" : "blocked";
+                  if (status === "failed" || status === "cancelled")
+                    return i < completedPhaseCount ? "done" : "skipped";
+                  if (i < completedPhaseCount) return "done";
+                  if (i === completedPhaseCount) return "active";
+                  return "pending";
+                })}
+              />
+            </div>
           )}
         </div>
       </div>
 
-      {/* Body */}
+      {/* Body — full-width container. Reviewer outputs are text-heavy and
+          benefit from the extra horizontal space. The 6xl cap was inherited
+          from a marketing-style layout that doesn't fit a tool surface. */}
       <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-8">
-        <div className="mx-auto max-w-6xl space-y-8">
+        <div className="mx-auto w-full space-y-8">
           {rounds.length === 0 && (
             <div className="rounded-lg border border-dashed border-border p-12 text-center text-sm text-muted-foreground">
               Waiting for first phase to start…
@@ -519,6 +559,7 @@ export function LiveRunReal({
               isLatest
               activeFor={lineageMatchActive}
               liveTails={liveTails}
+              chatTerminal={isTerminal}
             />
           )}
 
@@ -537,6 +578,7 @@ export function LiveRunReal({
                       round={r}
                       activeFor={() => false}
                       liveTails={{}}
+                      chatTerminal={isTerminal}
                     />
                   ))}
               </div>
@@ -548,153 +590,3 @@ export function LiveRunReal({
   );
 }
 
-function RoundView({
-  round,
-  isLatest,
-  activeFor,
-  liveTails,
-}: {
-  round: RoundSnapshot;
-  isLatest?: boolean;
-  activeFor: (p: ParticipantSnapshot) => boolean;
-  liveTails: Record<string, string>;
-}) {
-  return (
-    <section>
-      <h2 className="mb-3 text-xs uppercase tracking-wider text-muted-foreground">
-        Round {round.round}
-        {isLatest && (
-          <span className="ml-2 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-            current
-          </span>
-        )}
-      </h2>
-      <div className="grid gap-4 sm:grid-cols-2">
-        {round.participants.map((p) => (
-          <ParticipantCard
-            key={p.participant}
-            participant={p}
-            isActive={activeFor(p)}
-            liveTail={liveTails[`${p.role}:${p.lineage}`]}
-          />
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function ParticipantCard({
-  participant,
-  isActive,
-  liveTail,
-}: {
-  participant: ParticipantSnapshot;
-  isActive: boolean;
-  liveTail?: string;
-}) {
-  const [showFull, setShowFull] = useState(false);
-
-  const state: "working" | "done" | "idle" = participant.hasAnswer
-    ? "done"
-    : isActive || (liveTail && liveTail.length > 0)
-      ? "working"
-      : "idle";
-
-  return (
-    <div
-      className={`flex flex-col overflow-hidden rounded-lg border bg-card transition-colors ${
-        state === "done"
-          ? "border-emerald-500/30"
-          : state === "working"
-            ? "border-primary/40"
-            : "border-border"
-      }`}
-    >
-      <div className="flex items-center justify-between gap-2 border-b border-border bg-card/60 px-4 py-3">
-        <div className="flex items-center gap-2">
-          <span
-            className={`h-2 w-2 rounded-full ${LINEAGE_DOT[participant.lineage] ?? "bg-muted"} ${
-              state === "working" ? "animate-pulse-soft" : ""
-            }`}
-          />
-          <span className="text-sm font-semibold capitalize">{participant.role}</span>
-          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-            {LINEAGE_LABEL[participant.lineage] ?? participant.lineage}
-          </span>
-        </div>
-        <StateBadge state={state} />
-      </div>
-
-      <div className="flex-1 px-4 py-3 font-mono text-xs leading-relaxed text-muted-foreground">
-        {participant.findingsPreview && participant.findingsPreview.length > 0 ? (
-          participant.findingsPreview.map((line, i) => (
-            <div key={i} className="py-0.5 text-foreground/90">
-              {line}
-            </div>
-          ))
-        ) : liveTail && liveTail.length > 0 ? (
-          // Live tail from headless transport — last ~500 chars of streaming
-          // output. Shows the agent typing in real time, no 4s polling lag.
-          <pre className="whitespace-pre-wrap break-words text-foreground/85">
-            {liveTail}
-          </pre>
-        ) : state === "working" ? (
-          <div className="text-muted-foreground">Working…</div>
-        ) : (
-          <div className="text-muted-foreground/70">No output yet.</div>
-        )}
-      </div>
-
-      {participant.answer && (
-        <>
-          <button
-            type="button"
-            onClick={() => setShowFull((s) => !s)}
-            className="border-t border-border bg-card/40 px-4 py-2 text-left text-[10px] uppercase tracking-wider text-muted-foreground transition hover:text-foreground"
-          >
-            {showFull ? "Hide full answer" : `Show full answer (${participant.answer.length.toLocaleString()} chars)`}
-          </button>
-          {showFull && (
-            <pre className="overflow-x-auto whitespace-pre-wrap break-words border-t border-border bg-background px-4 py-3 text-xs leading-relaxed text-foreground">
-              {participant.answer}
-            </pre>
-          )}
-        </>
-      )}
-
-      <div className="flex items-center justify-between gap-3 border-t border-border bg-card/60 px-4 py-2 font-mono text-[10px] text-muted-foreground">
-        <span>{participant.agentName}</span>
-        <span>{participant.hasAnswer ? `${(participant.answer?.length ?? 0).toLocaleString()} B` : "—"}</span>
-      </div>
-    </div>
-  );
-}
-
-function StateBadge({ state }: { state: "working" | "done" | "errored" | "idle" }) {
-  switch (state) {
-    case "done":
-      return (
-        <span className="flex items-center gap-1 rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-400">
-          <CheckCircle2 className="h-3 w-3" /> DONE
-        </span>
-      );
-    case "errored":
-      return (
-        <span className="flex items-center gap-1 rounded-md bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">
-          <AlertTriangle className="h-3 w-3" /> ERRORED
-        </span>
-      );
-    case "working":
-      return (
-        <span className="flex items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-          <Loader2 className="h-3 w-3 animate-spin" /> WORKING
-        </span>
-      );
-    default:
-      return (
-        <span className="rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-          IDLE
-        </span>
-      );
-  }
-}

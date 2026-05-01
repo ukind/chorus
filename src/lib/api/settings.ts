@@ -83,6 +83,26 @@ export async function updateTransport(
   });
 }
 
+export type BillingMode = "api" | "subscription" | "mixed";
+
+export interface BillingSettings {
+  mode: BillingMode;
+  descriptions?: Record<BillingMode, { label: string; description: string }>;
+}
+
+export async function getBillingMode(): Promise<BillingSettings> {
+  return fetchFromDaemon<BillingSettings>("/settings/billing");
+}
+
+export async function updateBillingMode(
+  patch: { mode: BillingMode },
+): Promise<BillingSettings> {
+  return fetchFromDaemon<BillingSettings>("/settings/billing", {
+    method: "PUT",
+    body: JSON.stringify(patch),
+  });
+}
+
 export async function listSecrets(): Promise<Secret[]> {
   return fetchFromDaemon<Secret[]>("/secrets");
 }

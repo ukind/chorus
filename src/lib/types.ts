@@ -101,10 +101,28 @@ export interface DoerSlot {
   models: string[];
 }
 
+/**
+ * One reviewer slot inside a phase. Lineage is the family of CLI to invoke
+ * (claude, codex, gemini, …); models lists the specific model IDs the doer
+ * should try in priority order. Empty `models` means "lineage default."
+ */
+export interface ReviewerCandidate {
+  lineage: ReviewerLineage;
+  models: string[];
+}
+
 export interface ReviewerRule {
   require: number;
   crossLineage: boolean;
+  /** Lineages only — kept for legacy callers and the connection-status grid. */
   candidates: ReviewerLineage[];
+  /**
+   * Same candidates with the model assignment from the YAML preserved.
+   * Run page reads this so each placeholder reviewer card can show its
+   * model badge ("gpt-5.5") before the CLI has actually spawned. Index-
+   * aligned with `candidates`.
+   */
+  candidatesWithModels: ReviewerCandidate[];
 }
 
 export interface PhaseInputs {

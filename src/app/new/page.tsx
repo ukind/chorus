@@ -14,7 +14,9 @@ import { AppShell } from "@/components/app-shell";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { listTemplates, createChat, DaemonError } from "@/lib/api";
+import { getBillingMode, type BillingMode } from "@/lib/api/settings";
 import { Template } from "@/lib/types";
+import { PageHeader } from "@/components/page-header";
 
 export default function NewChatPage() {
   return (
@@ -50,6 +52,19 @@ function NewChatPageInner() {
       );
   }, []);
 
+  // Billing mode controls how the cost preview is rendered. Defaults to 'api'
+  // until the daemon answers, so users on subscriptions see the conservative
+  // dollar estimate briefly on first paint, then the truthful "subscription
+  // quota" badge once the request resolves.
+  const [billingMode, setBillingMode] = useState<BillingMode>("api");
+  useEffect(() => {
+    getBillingMode()
+      .then((b) => setBillingMode(b.mode))
+      .catch(() => {
+        /* leave default 'api' */
+      });
+  }, []);
+
   const templateId =
     params.get("template") ?? templates[0]?.id ?? "";
   const [prompt, setPrompt] = useState("");
@@ -58,20 +73,31 @@ function NewChatPageInner() {
   const template = templates.find((t) => t.id === templateId) ?? templates[0];
 
   // Cost estimate: rough heuristic based on prompt length + attachments + reviewer count.
+  // Two refinements over the v0.6 version:
+  //   1. Multiplies by template.maxRounds so users see the worst-case cost
+  //      when reviewers disagree and trigger retries (was ignoring this).
+  //   2. Returns a `usdRangeMax` for the upper bound so the UI can render a
+  //      range like "$0.30 – $0.90 (with retries)" instead of a misleading
+  //      single number.
+  // Subscription mode is applied at render time, not here — keep the dollar
+  // math pure so it stays correct for users on API mode.
   const costEstimate = useMemo(() => {
     const reviewerCount =
       template?.phases?.[0]?.reviewer?.candidates?.length ?? 3;
+    const maxRounds = Math.max(1, template?.maxRounds ?? 1);
     const promptTokens = Math.ceil(prompt.length / 4);
     const attachTokens = attachments.length * 1500;
     const baseTokens = 800; // template prompt boilerplate
     const inputTokens = promptTokens + attachTokens + baseTokens;
     const outputTokens = 1200; // estimate per reviewer
     const perReviewerUsd = (inputTokens * 0.000003 + outputTokens * 0.000015);
-    const total = perReviewerUsd * reviewerCount;
+    const single = perReviewerUsd * reviewerCount;
     return {
-      usd: total,
+      usd: single,
+      usdRangeMax: single * maxRounds,
       inputTokens,
       reviewerCount,
+      maxRounds,
     };
   }, [prompt, attachments, template]);
 
@@ -102,10 +128,15 @@ function NewChatPageInner() {
     setAttachments((prev) => prev.filter((a) => a.id !== id));
   }
 
+  // Cost-cap gate uses the worst-case (with retries) projection so a chat
+  // doesn't sneak under the cap on the headline number then exceed it on the
+  // first round of disagreement. Skipped entirely in subscription mode where
+  // the user isn't paying per call.
   const overCap = Boolean(
-    template?.costCapUsd &&
+    billingMode !== "subscription" &&
+      template?.costCapUsd &&
       template.costCapUsd > 0 &&
-      costEstimate.usd > template.costCapUsd,
+      costEstimate.usdRangeMax > template.costCapUsd,
   );
 
   const [yoloMode, setYoloMode] = useState(false);
@@ -159,14 +190,10 @@ function NewChatPageInner() {
   return (
     <AppShell>
       <div className="mx-auto w-full max-w-4xl px-4 py-6 sm:px-6 sm:py-8 md:px-8 md:py-10">
-        <div className="mb-6">
-          <p className="text-xs uppercase tracking-wider text-muted-foreground">
-            New chat
-          </p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight">
-            Paste a task. Pick a template. Watch the council think.
-          </h1>
-        </div>
+        <PageHeader
+          eyebrow="New chat"
+          title="Paste a task. Pick a template. Watch the council think."
+        />
 
         {createError && (
           <div className="mb-4 rounded-lg border border-destructive/50 bg-destructive/10 p-4">
@@ -308,20 +335,34 @@ function NewChatPageInner() {
               )}
             </div>
             <div className="flex items-center justify-between gap-3 sm:justify-end">
-              {/* Cost preview */}
-              <div
-                className={`flex items-center gap-1.5 font-mono text-[10px] ${
-                  overCap ? "text-rose-300" : "text-muted-foreground"
-                }`}
-                title={`~${costEstimate.inputTokens.toLocaleString()} input tokens × ${costEstimate.reviewerCount} reviewers`}
-              >
-                <DollarSign className="h-3 w-3" />~${costEstimate.usd.toFixed(3)} est
-                {template.costCapUsd > 0 && (
-                  <span className="text-muted-foreground/60">
-                    / cap ${template.costCapUsd.toFixed(2)}
-                  </span>
-                )}
-              </div>
+              {/* Cost preview — subscription users see "Subscription quota"
+                  with token count; API users see a low–high range that
+                  reflects the maxRounds retry multiplier. */}
+              {billingMode === "subscription" ? (
+                <div
+                  className="flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground"
+                  title={`~${costEstimate.inputTokens.toLocaleString()} input tokens × ${costEstimate.reviewerCount} reviewers — counts against your CLI subscription quota, not billed per call`}
+                >
+                  Subscription quota · ~{costEstimate.inputTokens.toLocaleString()} tok
+                </div>
+              ) : (
+                <div
+                  className={`flex items-center gap-1.5 font-mono text-[10px] ${
+                    overCap ? "text-rose-300" : "text-muted-foreground"
+                  }`}
+                  title={`~${costEstimate.inputTokens.toLocaleString()} input tokens × ${costEstimate.reviewerCount} reviewers; up to ${costEstimate.maxRounds} round${costEstimate.maxRounds > 1 ? "s" : ""} on disagreement`}
+                >
+                  <DollarSign className="h-3 w-3" />
+                  {costEstimate.maxRounds > 1
+                    ? `~$${costEstimate.usd.toFixed(3)} – $${costEstimate.usdRangeMax.toFixed(3)} est`
+                    : `~$${costEstimate.usd.toFixed(3)} est`}
+                  {template.costCapUsd > 0 && (
+                    <span className="text-muted-foreground/60">
+                      / cap ${template.costCapUsd.toFixed(2)}
+                    </span>
+                  )}
+                </div>
+              )}
 
               <button
                 type="button"

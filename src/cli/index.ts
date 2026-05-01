@@ -93,6 +93,33 @@ program.addHelpText(
   }
 );
 
+/**
+ * Detect which reviewer CLIs (claude/codex/gemini/opencode/kimi) are usable
+ * on the host. Returns the list of human-friendly names that passed the
+ * full detect-and-verify probe. Used by `chorus init` to warn when zero
+ * are installed — the cockpit would otherwise look healthy but every run
+ * would hang on first dispatch.
+ */
+async function detectReviewerClis(): Promise<string[]> {
+  try {
+    const { detectAllClis } = await import('../lib/cli-detect.js');
+    const all = detectAllClis();
+    const labelMap: Record<string, string> = {
+      'claude-code': 'claude',
+      'codex-cli': 'codex',
+      'gemini-cli': 'gemini',
+      'opencode-cli': 'opencode',
+      'kimi-cli': 'kimi',
+    };
+    return all
+      .filter((d) => d.found)
+      .map((d) => labelMap[d.id] ?? d.id);
+  } catch {
+    // detect crash — treat as "we can't tell", don't block init
+    return ['(detection failed)'];
+  }
+}
+
 // Command: chorus init
 program
   .command('init')
@@ -150,6 +177,27 @@ program
       // Skipped if user passes --no-register; restricted via --connect <list>.
       if (opts.register !== false) {
         await runOrchestratorAutoConnect(opts.connect);
+      }
+
+      // Reviewer-CLI presence check — separate from orchestrator wiring above.
+      // Without at least one of claude/codex/gemini/opencode/kimi installed,
+      // Chorus has nothing to dispatch chats to. Used to be silent; now we
+      // surface it so the user doesn't reach the cockpit and wonder why
+      // every run hangs.
+      const reviewerClis = await detectReviewerClis();
+      if (reviewerClis.length === 0) {
+        console.log('');
+        console.log(`  ${c.yellow('!')} ${c.bold(c.yellow('No AI CLIs detected on this machine.'))}`);
+        console.log(c.dim('    Chorus needs at least one of:'));
+        console.log(c.dim('      claude    — https://docs.anthropic.com/en/docs/claude-code'));
+        console.log(c.dim('      codex     — https://github.com/openai/codex'));
+        console.log(c.dim('      gemini    — https://github.com/google-gemini/gemini-cli'));
+        console.log(c.dim('      opencode  — https://opencode.ai'));
+        console.log(c.dim('      kimi      — https://github.com/MoonshotAI/kimi-cli'));
+        console.log(c.dim('    Install at least one, then re-run `chorus init`.'));
+      } else {
+        console.log('');
+        console.log(`  ${sym.ok} ${c.dim('AI CLIs ready:')} ${c.cyan(reviewerClis.join(', '))}`);
       }
 
       console.log('');
@@ -235,7 +283,14 @@ program
         const oldPid = parseInt(fs.readFileSync(pidFile, 'utf-8'), 10);
 
         try {
-          execSync(`kill -0 ${oldPid}`, { stdio: 'ignore' });
+          // Cross-platform liveness probe. process.kill(pid, 0) throws if no
+          // process with that pid exists; works on Windows/macOS/Linux unlike
+          // the unix-only `kill -0` shell command we used to invoke here.
+          if (Number.isFinite(oldPid) && oldPid > 0) {
+            process.kill(oldPid, 0);
+          } else {
+            throw new Error('invalid pid');
+          }
           console.log('');
           console.log(header(sym.ok, 'Chorus is already running', `daemon PID ${oldPid}`));
           printCockpitAccessHint();
@@ -305,7 +360,21 @@ program
           webChild.unref();
         }
       } else {
-        console.log(c.yellow('  ! cockpit UI build not found — daemon API still available on 7707'));
+        // Loud, actionable error — the previous yellow warning was easy to
+        // miss and left users at a blank cockpit URL with no idea why. We
+        // keep the daemon running (MCP + API still work) but make the
+        // remediation steps obvious.
+        console.log('');
+        console.log(c.red('  ✗ Cockpit UI not found.'));
+        if (fs.existsSync(path.join(packageRoot, 'src'))) {
+          console.log(c.dim('    This looks like a dev checkout. Build it once:'));
+          console.log(`    ${c.bold('pnpm install && pnpm build')}`);
+        } else {
+          console.log(c.dim('    The published install should ship a built UI. Try reinstalling:'));
+          console.log(`    ${c.bold('npm install -g chorus')}`);
+        }
+        console.log(c.dim('    The daemon API is still up on port 7707 if you only need MCP.'));
+        console.log('');
       }
 
       // Unref so parent doesn't wait

@@ -1,6 +1,6 @@
 import Fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
-import { chats, phaseEvents, templates, settings, secrets } from '../lib/db';
+import { chats, phaseEvents, templates } from '../lib/db';
 import { TmuxManagerImpl } from './tmux.js';
 import { startReaper } from './reaper.js';
 import { runChat } from './runner.js';
@@ -9,6 +9,20 @@ import { TemplateSchema } from '../lib/template-schema.js';
 import fs from 'fs';
 import path from 'path';
 import yaml from 'yaml';
+import {
+  successResponse,
+  errorResponse,
+  type ApiResponse,
+} from './api-response.js';
+import {
+  registerTemplateRoutes,
+  registerPersonaRoutes,
+} from './routes/templates-personas.js';
+import {
+  registerSettingsRoutes,
+  registerSecretRoutes,
+} from './routes/settings.js';
+import { registerSystemRoutes } from './routes/system.js';
 
 const PORT = parseInt(process.env.CHORUS_DAEMON_PORT || '7707', 10);
 const HOST = '127.0.0.1';
@@ -24,6 +38,15 @@ const CHORUS_BIN_PATH = path.resolve(__dirname, '..', '..', 'bin', 'chorus.mjs')
 let tmuxMgr: TmuxManagerImpl;
 let stopReaper: (() => void) | null = null;
 const errorDetector = new ErrorDetector();
+
+// Permissive chatId validator — the runner uses ULIDs (26-char Base32) but we
+// keep older fixtures and the MCP create_chat surface in mind, so allow any
+// short alphanumeric/dash string. Belt-and-braces against unbounded user
+// input becoming a filesystem path or log file name (DoS via 100MB id).
+const CHAT_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+export function isValidChatId(value: unknown): value is string {
+  return typeof value === 'string' && CHAT_ID_RE.test(value);
+}
 
 // chat.attached_files is stored as a JSON-encoded string[]. Parse defensively
 // — bad JSON or non-array shape returns an empty list rather than crashing
@@ -56,6 +79,37 @@ interface ActiveRun {
 // every refresh of the run page used to spawn a fresh doer + 2 reviewers,
 // hammering the LLM CLIs and thrashing system memory. See ROADMAP #17.
 const activeRuns = new Map<string, ActiveRun>();
+
+// Parsed-template cache. Every SSE attach used to re-yaml.parse + zod.parse
+// the template row, which is hot when 5+ tabs are watching the same run on a
+// long chat. Keyed by (templateId, updated_at) so an upsert through
+// POST /templates naturally invalidates without an explicit bust call.
+type ParsedTemplate = ReturnType<typeof TemplateSchema.parse>;
+const templateCache = new Map<string, { stamp: number; parsed: ParsedTemplate }>();
+
+// Soft cap so the cache can't grow unbounded under a runaway template
+// upsert workload. 50 is well above the realistic working set (10 builtins +
+// a handful of user clones) and trims oldest-first via Map insertion order.
+const TEMPLATE_CACHE_MAX = 50;
+
+export function getParsedTemplate(
+  templateId: string,
+  yamlText: string,
+  stamp: number,
+): ParsedTemplate {
+  const hit = templateCache.get(templateId);
+  if (hit && hit.stamp === stamp) return hit.parsed;
+  const parsed = TemplateSchema.parse(yaml.parse(yamlText));
+  templateCache.set(templateId, { stamp, parsed });
+  // Evict oldest entries when we cross the cap. Map iteration order is
+  // insertion order in JS, so the first key is the oldest.
+  while (templateCache.size > TEMPLATE_CACHE_MAX) {
+    const oldest = templateCache.keys().next().value;
+    if (oldest === undefined) break;
+    templateCache.delete(oldest);
+  }
+  return parsed;
+}
 
 // Reconstruct a RunnerEvent from a persisted phase_events row. Used to
 // replay past events to a freshly-attached SSE so the run page renders
@@ -201,37 +255,23 @@ function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
   return entry;
 }
 
-// Error response type
-interface ErrorResponse {
-  ok: false;
-  error: {
-    code: string;
-    message: string;
-  };
-}
-
-interface SuccessResponse<T> {
-  ok: true;
-  data: T;
-}
-
-type ApiResponse<T> = SuccessResponse<T> | ErrorResponse;
-
-function errorResponse(code: string, message: string): ErrorResponse {
-  return {
-    ok: false,
-    error: { code, message },
-  };
-}
-
-function successResponse<T>(data: T): SuccessResponse<T> {
-  return {
-    ok: true,
-    data,
-  };
-}
-
 async function main() {
+  // Eager DB probe: trying to open the sqlite file at startup catches
+  // permission errors, schema-migration crashes, and missing-init issues
+  // *before* the first HTTP request fails opaquely. Without this, the
+  // cockpit would just show "db_error" with no clue for the user.
+  try {
+    chats.list({ limit: 1 });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // eslint-disable-next-line no-console
+    console.error(
+      `\n[chorus] Could not open database. Run \`chorus init\` first, ` +
+        `or check permissions on ~/.chorus/chorus.db.\n  detail: ${msg}\n`,
+    );
+    process.exit(1);
+  }
+
   const fastify = Fastify({ logger: false });
 
   // CORS
@@ -293,6 +333,9 @@ async function main() {
     Reply: ApiResponse<object>;
   }>('/chats/:id', async (request) => {
     try {
+      if (!isValidChatId(request.params.id)) {
+        return errorResponse('validation', 'invalid chat id');
+      }
       const chat = chats.getById(request.params.id);
 
       if (!chat) {
@@ -322,14 +365,17 @@ async function main() {
 
       // Validate repoPath if supplied — must be an absolute path to an
       // existing directory. Stricter checks (is-a-repo, gh-authed) happen
-      // when the ship phase runs, not at chat creation time.
+      // when the ship phase runs, not at chat creation time. We resolve to
+      // canonical form first to neutralise `/foo/../etc/passwd` traversal
+      // tricks, and use path.isAbsolute so Windows paths (`C:\`, UNC) pass.
       if (repoPath !== undefined) {
-        if (typeof repoPath !== 'string' || !repoPath.startsWith('/')) {
+        if (typeof repoPath !== 'string' || !path.isAbsolute(repoPath)) {
           return errorResponse('validation', 'repoPath must be an absolute path');
         }
+        const resolved = path.resolve(repoPath);
         const fsModule = await import('fs');
-        if (!fsModule.existsSync(repoPath)) {
-          return errorResponse('validation', `repoPath does not exist: ${repoPath}`);
+        if (!fsModule.existsSync(resolved)) {
+          return errorResponse('validation', `repoPath does not exist: ${resolved}`);
         }
       }
 
@@ -431,6 +477,9 @@ async function main() {
   }>('/chats/:id', async (request) => {
     try {
       const id = request.params.id;
+      if (!isValidChatId(id)) {
+        return errorResponse('validation', 'invalid chat id');
+      }
       const existing = chats.getById(id);
       if (!existing) {
         return successResponse({ id, deleted: false, reason: 'not_found' });
@@ -519,6 +568,11 @@ async function main() {
   }>('/chats/:id/stream', async (request, reply) => {
     const chatId = request.params.id;
 
+    if (!isValidChatId(chatId)) {
+      reply.code(400);
+      return { error: 'invalid chat id' };
+    }
+
     try {
       const chat = chats.getById(chatId);
 
@@ -533,11 +587,15 @@ async function main() {
         return { error: 'template not found' };
       }
 
-      // Parse template YAML
+      // Parse template YAML (cached by templateId + updated_at so SSE
+      // re-attaches don't re-parse on every browser refresh).
       let template;
       try {
-        const parsed = yaml.parse(tmplRow.yaml);
-        template = TemplateSchema.parse(parsed);
+        template = getParsedTemplate(
+          tmplRow.id,
+          tmplRow.yaml,
+          tmplRow.updated_at,
+        );
       } catch (parseError) {
         reply.code(400);
         return {
@@ -652,326 +710,13 @@ async function main() {
     }
   });
 
-  // List templates
-  fastify.get<{
-    Reply: ApiResponse<object[]>;
-  }>('/templates', async () => {
-    try {
-      const list = templates.list();
-
-      return successResponse(list);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('db_error', message);
-    }
-  });
-
-  // Get one template
-  fastify.get<{
-    Params: { id: string };
-    Reply: ApiResponse<object>;
-  }>('/templates/:id', async (request) => {
-    try {
-      const template = templates.getById(request.params.id);
-
-      if (!template) {
-        return errorResponse('not_found', `Template ${request.params.id} not found`);
-      }
-
-      // Parse YAML to JSON
-      const parsed = yaml.parse(template.yaml);
-
-      return successResponse({ ...template, parsed });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('db_error', message);
-    }
-  });
-
-  // Save / update template. Preserves source='builtin' on existing builtin
-  // rows so the daemon can still refresh them from disk on next boot. New
-  // rows are always source='user'. Use POST /templates/:id/clone to fork a
-  // builtin into a user-owned copy.
-  fastify.post<{
-    Body: { id: string; yaml: string };
-    Reply: ApiResponse<object>;
-  }>('/templates', async (request) => {
-    try {
-      const { id, yaml: yamlContent } = request.body;
-
-      if (!id || !yamlContent) {
-        return errorResponse('validation', 'id and yaml are required');
-      }
-
-      // Validate YAML before write so we don't poison the row.
-      try {
-        yaml.parse(yamlContent);
-      } catch (parseError) {
-        return errorResponse('validation', `Invalid YAML: ${parseError}`);
-      }
-
-      const existing = templates.getById(id);
-      const source: 'builtin' | 'user' = existing?.source === 'builtin' ? 'builtin' : 'user';
-      const template = templates.create(id, yamlContent, source);
-
-      return successResponse(template);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('db_error', message);
-    }
-  });
-
-  // ─── Personas ──────────────────────────────────────────────────────────
-
-  fastify.get<{ Reply: ApiResponse<object[]> }>('/personas', async () => {
-    try {
-      const { listPersonas } = await import('../lib/personas.js');
-      return successResponse(listPersonas());
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('db_error', message);
-    }
-  });
-
-  fastify.get<{
-    Params: { id: string };
-    Reply: ApiResponse<object>;
-  }>('/personas/:id', async (request) => {
-    try {
-      const { getPersona } = await import('../lib/personas.js');
-      const row = getPersona(request.params.id);
-      if (!row) {
-        return errorResponse('not_found', `Persona ${request.params.id} not found`);
-      }
-      return successResponse(row);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('db_error', message);
-    }
-  });
-
-  // List blocked chats
-  fastify.get<{
-    Reply: ApiResponse<object[]>;
-  }>('/blocked', async () => {
-    try {
-      const list = chats.list({ status: 'blocked' });
-
-      return successResponse(list);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('db_error', message);
-    }
-  });
-
-  // Get settings
-  fastify.get<{
-    Reply: ApiResponse<object>;
-  }>('/settings', async () => {
-    try {
-      const allSettings = settings.getAll();
-
-      return successResponse(allSettings);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('db_error', message);
-    }
-  });
-
-  // Update settings
-  fastify.put<{
-    Body: Record<string, unknown>;
-    Reply: ApiResponse<object>;
-  }>('/settings', async (request) => {
-    try {
-      const { ...updates } = request.body;
-
-      for (const [key, value] of Object.entries(updates)) {
-        settings.set(key, value);
-      }
-
-      const allSettings = settings.getAll();
-
-      return successResponse(allSettings);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('db_error', message);
-    }
-  });
-
-  // List secrets (no values)
-  fastify.get<{
-    Reply: ApiResponse<object[]>;
-  }>('/secrets', async () => {
-    try {
-      const list = secrets.list();
-
-      return successResponse(list);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('db_error', message);
-    }
-  });
-
-  // Set secret
-  fastify.put<{
-    Params: { provider: string };
-    Body: { value: string; kind: string; meta?: Record<string, unknown> };
-    Reply: ApiResponse<object>;
-  }>('/secrets/:provider', async (request) => {
-    try {
-      const { provider } = request.params;
-      const { value, kind, meta } = request.body;
-
-      if (!value || !kind) {
-        return errorResponse('validation', 'value and kind are required');
-      }
-
-      secrets.set(provider, kind as 'api_key' | 'cli_subscription', value, meta);
-
-      return successResponse({ provider, kind, updated_at: Date.now() });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('db_error', message);
-    }
-  });
-
-  // ─── CLI health ─────────────────────────────────────────────────────────
-
-  fastify.get<{ Reply: ApiResponse<object[]> }>('/cli/health', async () => {
-    try {
-      const { getAllHealth } = await import('../lib/cli-health.js');
-      return successResponse(getAllHealth());
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('internal', message);
-    }
-  });
-
-  fastify.get<{ Reply: ApiResponse<object[]> }>('/onboard/detect-clis', async () => {
-    try {
-      const { detectAllClis } = await import('../lib/cli-detect.js');
-      return successResponse(detectAllClis());
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('internal', message);
-    }
-  });
-
-  fastify.post<{
-    Body: { id: string; path: string };
-    Reply: ApiResponse<object>;
-  }>('/onboard/validate-cli-path', async (req) => {
-    try {
-      const { id, path: customPath } = req.body || {};
-      if (!id || typeof customPath !== 'string') {
-        return errorResponse('bad_request', 'id and path are required');
-      }
-      const { validateCliPath } = await import('../lib/cli-detect.js');
-      return successResponse(validateCliPath(id as never, customPath));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('internal', message);
-    }
-  });
-
-  // ─── Permission settings ────────────────────────────────────────────────
-
-  fastify.get<{ Reply: ApiResponse<object> }>('/settings/permissions', async () => {
-    try {
-      const { getPermissions, PROFILE_DESCRIPTIONS } = await import('../lib/settings/permissions.js');
-      return successResponse({
-        ...getPermissions(),
-        profileDescriptions: PROFILE_DESCRIPTIONS,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('internal', message);
-    }
-  });
-
-  fastify.put<{
-    Body: { sandboxProfile?: string; autoApprovePrompts?: boolean; networkAccess?: boolean };
-    Reply: ApiResponse<object>;
-  }>('/settings/permissions', async (request) => {
-    try {
-      const { setPermissions } = await import('../lib/settings/permissions.js');
-      const body = request.body ?? {};
-      const next = setPermissions({
-        ...(body.sandboxProfile !== undefined && {
-          sandboxProfile: body.sandboxProfile as 'strict' | 'workspace' | 'full',
-        }),
-        ...(body.autoApprovePrompts !== undefined && { autoApprovePrompts: body.autoApprovePrompts }),
-        ...(body.networkAccess !== undefined && { networkAccess: body.networkAccess }),
-      });
-      return successResponse(next);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('validation', message);
-    }
-  });
-
-  // ─── Transport setting (headless vs tmux) ───────────────────────────────
-
-  fastify.get<{ Reply: ApiResponse<object> }>('/settings/transport', async () => {
-    try {
-      const { getTransport, TRANSPORT_DESCRIPTIONS } = await import('../lib/settings/transport.js');
-      return successResponse({
-        transport: getTransport(),
-        descriptions: TRANSPORT_DESCRIPTIONS,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('internal', message);
-    }
-  });
-
-  fastify.put<{
-    Body: { transport: 'headless' | 'tmux' };
-    Reply: ApiResponse<object>;
-  }>('/settings/transport', async (request) => {
-    try {
-      const { setTransport } = await import('../lib/settings/transport.js');
-      const body = request.body ?? ({} as { transport: 'headless' | 'tmux' });
-      if (body.transport !== 'headless' && body.transport !== 'tmux') {
-        return errorResponse('validation', 'transport must be "headless" or "tmux"');
-      }
-      const next = setTransport(body.transport);
-      return successResponse({ transport: next });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('validation', message);
-    }
-  });
-
-  // List orchestrators with their connection status
-  fastify.get<{
-    Reply: ApiResponse<object[]>;
-  }>('/orchestrators', async () => {
-    try {
-      const { listOrchestrators } = await import('./orchestrators.js');
-      return successResponse(listOrchestrators());
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('internal', message);
-    }
-  });
-
-  // Pre-approve all Chorus MCP tools in the named orchestrator
-  fastify.post<{
-    Params: { name: string };
-    Reply: ApiResponse<object>;
-  }>('/orchestrators/:name/connect', async (request) => {
-    try {
-      const { connectByName, listOrchestrators } = await import('./orchestrators.js');
-      const result = connectByName(request.params.name, { binPath: CHORUS_BIN_PATH });
-      const status = listOrchestrators().find((o) => o.name === request.params.name);
-      return successResponse({ ...result, status });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return errorResponse('validation', message);
-    }
-  });
+  // Decoupled route groups — extracted into dedicated modules so this
+  // file can stay focused on the chat lifecycle + runner orchestration.
+  registerTemplateRoutes(fastify);
+  registerPersonaRoutes(fastify);
+  registerSettingsRoutes(fastify);
+  registerSecretRoutes(fastify);
+  registerSystemRoutes(fastify, { chorusBinPath: CHORUS_BIN_PATH });
 
   // Seed built-in templates on startup
   seedBuiltinTemplates();
@@ -1054,10 +799,19 @@ function seedBuiltinTemplates(): void {
   }
 }
 
-main().catch((error) => {
-  console.error('Failed to start daemon:', error);
-  process.exit(1);
-});
+// Auto-run main() only when this file is the process entry point. When the
+// daemon module is imported from a test (e.g. tests/template-cache.test.ts
+// importing the exported getParsedTemplate), we don't want a side-effecty
+// fastify boot or DB probe firing on module load.
+const isEntryPoint =
+  typeof require !== 'undefined' && require.main === module;
+
+if (isEntryPoint) {
+  main().catch((error) => {
+    console.error('Failed to start daemon:', error);
+    process.exit(1);
+  });
+}
 
 /**
  * Export the tmux manager for use by other daemon modules (runner, agents, etc.)

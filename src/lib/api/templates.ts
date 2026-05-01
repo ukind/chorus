@@ -98,9 +98,17 @@ function mapPhase(p: ParsedPhase): Template["phases"][number] {
     reviewer: {
       require: p.reviewer?.require ?? 1,
       crossLineage: p.reviewer?.crossLineage ?? true,
+      // Keep models alongside lineage so the run page can show the model
+      // badge ("gpt-5.5") on placeholder reviewer cards. Falls back to a
+      // bare-lineage shape via parallel array below — see Template.phases
+      // candidatesWithModels for the structured form.
       candidates: (p.reviewer?.candidates ?? [])
         .map((c) => mapLineage(c.lineage))
         .filter((l) => KNOWN_LINEAGES.has(Object.keys(UI_LINEAGE_MAP).find((k) => UI_LINEAGE_MAP[k] === l) ?? "")),
+      candidatesWithModels: (p.reviewer?.candidates ?? []).map((c) => ({
+        lineage: mapLineage(c.lineage),
+        models: c.models ?? [],
+      })),
     },
     inputs: {
       include: p.inputs?.include ?? [],

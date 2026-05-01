@@ -4,9 +4,9 @@
 
 You wrote some code with ChatGPT, Claude, or Gemini. It looks good… but the same AI that wrote it can't catch its own blind spots. 🙈
 
-**Chorus** runs your code past 2–4 *other* AIs from *different companies*, in parallel, and tells you whether they agree it's safe to ship.
+**Chorus** runs your code past 2–3 *other* AIs from *different companies*, in parallel, and tells you whether they agree it's safe to ship.
 
-[![Status](https://img.shields.io/badge/status-v0.5_pre--release-orange)]()
+[![Status](https://img.shields.io/badge/status-v0.7--dev-orange)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)]()
 
 ---
@@ -15,7 +15,7 @@ You wrote some code with ChatGPT, Claude, or Gemini. It looks good… but the sa
 
 ![Chorus run page showing Claude, Codex, and Gemini reviewing a PR in parallel](docs/images/run-page.png)
 
-Three AIs review the same pull request. They each give a thumbs up or down. Chorus tells you "✅ Ready to merge" only when they agree.
+Three AIs review the same change. They each give a thumbs up or down. Chorus tells you "✅ Ready to merge" only when they agree.
 
 ---
 
@@ -23,13 +23,13 @@ Three AIs review the same pull request. They each give a thumbs up or down. Chor
 
 Imagine asking one friend to proofread your essay. They'll catch most typos — but they'll also *miss the same kinds of mistakes you'd miss*, because they think like you.
 
-Now imagine asking **four friends from different backgrounds** to proofread it. Way more bugs caught. 🐛
+Now imagine asking **three friends from different backgrounds** to proofread it. Way more bugs caught. 🐛
 
 That's Chorus, but for code.
 
 | Without Chorus 😬 | With Chorus 🎯 |
 |---|---|
-| One AI writes + reviews its own code | One AI writes, 3 others review |
+| One AI writes + reviews its own code | One AI writes, 2 others review |
 | Confident but wrong is invisible | Disagreement = red flag |
 | You ship, then debug at 2am | Reviewers catch it before merge |
 
@@ -43,7 +43,9 @@ chorus init          # 🔌 auto-connects every AI CLI on your machine
 chorus start         # 🎬 opens http://localhost:5050
 ```
 
-That's it. Open the page, paste some code, hit **Submit**. Watch four AIs argue. ✨
+That's it. Open the page, paste some code, hit **Submit**. Watch the AIs argue. ✨
+
+> **Heads up:** Chorus needs at least one AI CLI installed (Claude Code, Codex, Gemini CLI, OpenCode, or Kimi). `chorus init` checks and warns if none are found.
 
 ---
 
@@ -57,13 +59,13 @@ function divide(a, b) {
 }
 ```
 
-Looks fine, right? Submit it to Chorus with the **Bug Diagnose** template:
+Looks fine, right? Submit it to Chorus with the **Code Review** template (1 doer + 2 reviewers, both must agree):
 
 1. 🔵 **Claude (writer)** — "Looks correct to me!"
 2. 🟡 **Gemini (reviewer)** — "🚨 Missing zero-check. `divide(1, 0)` returns `Infinity`."
 3. 🟢 **Codex (reviewer)** — "🚨 Also no type validation — `divide('a', 'b')` returns `NaN`."
 
-**Verdict: ❌ Reject.** Now you know what to fix *before* you push.
+**Verdict: ❌ Reject** — both reviewers flagged real bugs. Now you know what to fix *before* you push.
 
 ---
 
@@ -91,12 +93,12 @@ Pick one when you submit a chat:
 
 | Template | What it does | Best for |
 |---|---|---|
-| 🐛 `bug-diagnose` | One AI hunts the bug, another double-checks | "Why is this broken?" |
-| 👨‍⚖️ `code-review` | 4 AIs review, 3-of-4 must agree | Pre-merge gate |
+| 🐛 `bug-diagnose` | Claude proposes a hypothesis, Gemini challenges it | "Why is this broken?" |
+| 👨‍⚖️ `code-review` | Claude writes; Codex + Gemini review (both must agree) | Pre-merge gate |
 | 🏗️ `architect-review` | Cross-vendor critique of design proposals | Big decisions |
 | ⚔️ `red-green` | One AI writes tests, *another* writes the code (no peeking) | Adversarial testing |
 
-Want your own? Drop a YAML file in `~/.chorus/templates/` and it shows up automatically.
+Want your own? Drop a YAML file in `~/.chorus/templates/` and it shows up automatically. You can also pair any template with a **Persona** — a worldview that frames how reviewers critique. Built-ins include Sentinel (security), Cartographer (cross-platform), Accountant (cost), Profiler (performance), and six more.
 
 ---
 
@@ -124,19 +126,30 @@ Configure on first run, or anytime at `/settings/permissions`.
         │  Chorus daemon  │
         │  (port 7707)    │
         └────────┬────────┘
-                 │ spawns each AI in its own tmux session
-       ┌─────────┼─────────┬──────────┐
-       ▼         ▼         ▼          ▼
-   🤖 Claude  💎 Gemini  🦾 Codex  🌙 Kimi
-   (writer)  (reviewer) (reviewer) (reviewer)
-       │         │         │          │
-       └─────────┴────┬────┴──────────┘
+                 │ spawns each AI as a headless subprocess
+       ┌─────────┼─────────┐
+       ▼         ▼         ▼
+   🤖 Claude  💎 Gemini  🦾 Codex
+   (writer)  (reviewer) (reviewer)
+       │         │         │
+       └─────────┴────┬────┘
                       ▼
               ✅ Verdict + diff
               📊 Cockpit (port 5050)
 ```
 
-Each AI runs in a separate sandboxed terminal. Chorus reads their answers, compares them, and shows you the result live.
+Each AI runs as a separate subprocess. Chorus reads their answers, compares them, and shows you the result live.
+
+---
+
+## 💰 What does it cost?
+
+Chorus runs the CLIs you already have installed — so the cost depends on **how you're paying for those CLIs**:
+
+- **CLI subscriptions** (Claude Pro, ChatGPT Plus, Gemini Advanced — usually $20/mo each): A typical chat is **$0** out of pocket, but counts against your monthly quota.
+- **API keys** (pay-per-token): A typical code-review chat (Opus + GPT-5.5 + Gemini Pro) costs roughly **$0.30–$1.50** depending on diff size. Reviewers disagreeing triggers retries — worst case, multiply by 2–3×.
+
+Chorus doesn't add markup. We don't see your tokens. The cockpit shows estimated cost on the run page (heads-up: estimates assume API rates and don't yet detect subscription mode — your real bill may be lower).
 
 ---
 

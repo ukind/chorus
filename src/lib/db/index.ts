@@ -25,17 +25,17 @@ export function getDb(): Database.Database {
       const schemaPath = path.join(__dirname, '..', 'db', 'schema.sql');
       const schema = readFileSync(schemaPath, 'utf-8');
       dbInstance.exec(schema);
-    } else {
-      // Idempotent migrations for existing DBs. SQLite's ADD COLUMN is
-      // safe; the column-existence check via PRAGMA keeps this idempotent
-      // across daemon restarts. New columns added in v0.5: repo_path, pr_url,
-      // ship_error (Ship phase support).
-      const cols = dbInstance.prepare(`PRAGMA table_info(chats)`).all() as { name: string }[];
-      const has = (n: string): boolean => cols.some((c) => c.name === n);
-      if (!has('repo_path')) dbInstance.exec(`ALTER TABLE chats ADD COLUMN repo_path TEXT`);
-      if (!has('pr_url')) dbInstance.exec(`ALTER TABLE chats ADD COLUMN pr_url TEXT`);
-      if (!has('ship_error')) dbInstance.exec(`ALTER TABLE chats ADD COLUMN ship_error TEXT`);
     }
+    // Run idempotent column-add migrations on every startup, not just for
+    // existing DBs. A fresh DB created from a stale dist/schema.sql (e.g.
+    // when the build script forgot to copy the latest schema) would otherwise
+    // skip these and crash on first INSERT. SQLite's ADD COLUMN is safe and
+    // PRAGMA table_info gates each statement.
+    const cols = dbInstance.prepare(`PRAGMA table_info(chats)`).all() as { name: string }[];
+    const has = (n: string): boolean => cols.some((c) => c.name === n);
+    if (!has('repo_path')) dbInstance.exec(`ALTER TABLE chats ADD COLUMN repo_path TEXT`);
+    if (!has('pr_url')) dbInstance.exec(`ALTER TABLE chats ADD COLUMN pr_url TEXT`);
+    if (!has('ship_error')) dbInstance.exec(`ALTER TABLE chats ADD COLUMN ship_error TEXT`);
   }
   return dbInstance;
 }

@@ -211,6 +211,13 @@ export interface Settings {
   permissions?: Record<string, unknown>;
   privacy?: Record<string, unknown>;
   webhooks?: Record<string, unknown>;
+  /**
+   * Models the user picked for the OpenCode CLI during onboarding (or
+   * later in Settings). Qualified form: `opencode-go/kimi-k2.6`,
+   * `opencode-zen/glm-5.1`, etc. Templates and voice pickers filter
+   * available reviewers by this list when OpenCode is the lineage.
+   */
+  "opencode.enabled_models"?: string[];
 }
 
 export interface Secret {

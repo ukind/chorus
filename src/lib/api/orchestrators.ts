@@ -40,3 +40,21 @@ export async function connectOrchestrator(
     method: "POST",
   });
 }
+
+export interface OpencodeModelsResult {
+  /** Models grouped by gateway prefix (`opencode-go`, `opencode-zen`, ...). */
+  gateways: Record<string, string[]>;
+  /** Flat list of all models (`opencode-go/kimi-k2.6`, ...). */
+  flat: string[];
+  /** Sensible default picks (kimi + deepseek if present in `flat`). */
+  defaultPicks: string[];
+}
+
+/**
+ * List models the local `opencode` CLI knows about. Used by the onboarding
+ * flow so the user can tick which subscription models they want chorus to
+ * expose as voices.
+ */
+export async function listOpencodeModels(): Promise<OpencodeModelsResult> {
+  return fetchFromDaemon<OpencodeModelsResult>("/orchestrators/opencode/models");
+}

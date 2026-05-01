@@ -16,6 +16,10 @@ import {
   type CliDetection,
   type DetectableCliId,
 } from "@/lib/api/settings";
+import {
+  listOpencodeModels,
+  type OpencodeModelsResult,
+} from "@/lib/api/orchestrators";
 import { cn } from "@/lib/utils";
 
 interface CliRow {
@@ -100,6 +104,15 @@ export default function OnboardingPage() {
   const [manualError, setManualError] = useState<Record<string, string>>({});
   const [manualBusy, setManualBusy] = useState<Set<string>>(new Set());
 
+  // OpenCode model picker: lazily fetched the first time the user ticks
+  // OpenCode AND the binary is installed. The user picks which subscription
+  // models chorus should expose as voices; persisted under
+  // `opencode.enabled_models` on submit.
+  const [opencodeModels, setOpencodeModels] = useState<OpencodeModelsResult | null>(null);
+  const [opencodeModelsError, setOpencodeModelsError] = useState<string | null>(null);
+  const [opencodeModelsLoading, setOpencodeModelsLoading] = useState(false);
+  const [selectedOpencodeModels, setSelectedOpencodeModels] = useState<Set<string>>(new Set());
+
   useEffect(() => {
     detectInstalledClis()
       .then((rows) => {
@@ -123,6 +136,43 @@ export default function OnboardingPage() {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
+      return next;
+    });
+  };
+
+  // Lazy-fetch the OpenCode model list the first time the user ticks
+  // OpenCode AND the binary is installed. Runs `opencode models` on the
+  // daemon side and groups by gateway prefix.
+  useEffect(() => {
+    if (!selectedClis.has("opencode-cli")) return;
+    if (!detection["opencode-cli"]?.found) return;
+    if (opencodeModels || opencodeModelsLoading) return;
+    setOpencodeModelsLoading(true);
+    setOpencodeModelsError(null);
+    listOpencodeModels()
+      .then((res) => {
+        setOpencodeModels(res);
+        // Pre-select the fleet defaults (kimi + deepseek when present).
+        setSelectedOpencodeModels((prev) => {
+          if (prev.size > 0) return prev;
+          return new Set(res.defaultPicks);
+        });
+      })
+      .catch((err) => {
+        const message =
+          err instanceof DaemonError
+            ? err.message
+            : "Couldn't list OpenCode models. Is the CLI authed (run `opencode auth login`)?";
+        setOpencodeModelsError(message);
+      })
+      .finally(() => setOpencodeModelsLoading(false));
+  }, [selectedClis, detection, opencodeModels, opencodeModelsLoading]);
+
+  const toggleOpencodeModel = (m: string) => {
+    setSelectedOpencodeModels((prev) => {
+      const next = new Set(prev);
+      if (next.has(m)) next.delete(m);
+      else next.add(m);
       return next;
     });
   };
@@ -219,7 +269,18 @@ export default function OnboardingPage() {
           networkAccess,
         });
 
-        await updateSettings({ onboarded: true });
+        // Persist the user's OpenCode model picks (if any) so templates
+        // and voice pickers downstream know which subscription models are
+        // available. Empty array = user has OpenCode but didn't pick any
+        // models — also valid (they may have selected only API keys).
+        const opencodeModelsToSave = selectedClis.has("opencode-cli")
+          ? Array.from(selectedOpencodeModels)
+          : [];
+
+        await updateSettings({
+          onboarded: true,
+          "opencode.enabled_models": opencodeModelsToSave,
+        });
         router.push("/");
         router.refresh();
       } catch (err) {
@@ -376,6 +437,83 @@ export default function OnboardingPage() {
                           <p>After updating PATH, restart Chorus and re-run onboarding.</p>
                         </div>
                       </details>
+                    </div>
+                  )}
+
+                  {cli.id === "opencode-cli" && checked && probe?.found && (
+                    <div className="ml-8 mt-1 space-y-3 rounded-md border border-border bg-card/50 p-3">
+                      <div className="flex items-baseline justify-between gap-2">
+                        <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                          Pick models to enable
+                        </p>
+                        <p className="text-[11px] text-muted-foreground/70">
+                          {selectedOpencodeModels.size} selected
+                        </p>
+                      </div>
+
+                      {opencodeModelsLoading && (
+                        <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                          Listing models from <code className="rounded bg-muted px-1">opencode models</code>…
+                        </div>
+                      )}
+
+                      {opencodeModelsError && (
+                        <p className="text-[11px] text-destructive">
+                          {opencodeModelsError}
+                        </p>
+                      )}
+
+                      {opencodeModels && (
+                        <div className="space-y-3">
+                          {Object.entries(opencodeModels.gateways)
+                            .filter(([gw]) => gw.startsWith("opencode"))
+                            .sort(([a], [b]) => a.localeCompare(b))
+                            .map(([gateway, models]) => (
+                              <div key={gateway} className="space-y-1">
+                                <p className="text-[11px] font-mono text-muted-foreground/80">
+                                  {gateway}/
+                                </p>
+                                <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+                                  {models.map((m) => {
+                                    const sel = selectedOpencodeModels.has(m);
+                                    return (
+                                      <button
+                                        key={m}
+                                        type="button"
+                                        onClick={() => toggleOpencodeModel(m)}
+                                        className={cn(
+                                          "flex items-center gap-2 rounded border px-2 py-1.5 text-left text-[11px] transition",
+                                          sel
+                                            ? "border-primary/50 bg-primary/10 text-foreground"
+                                            : "border-border bg-card hover:border-muted-foreground/30 text-muted-foreground",
+                                        )}
+                                      >
+                                        <div
+                                          className={cn(
+                                            "grid h-3 w-3 shrink-0 place-items-center rounded-sm border transition",
+                                            sel
+                                              ? "border-primary bg-primary text-primary-foreground"
+                                              : "border-border",
+                                          )}
+                                        >
+                                          {sel && <Check className="h-2 w-2" />}
+                                        </div>
+                                        <span className="truncate font-mono">
+                                          {m.slice(gateway.length + 1)}
+                                        </span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            ))}
+                          <p className="text-[11px] leading-relaxed text-muted-foreground/70">
+                            Pre-selected: {opencodeModels.defaultPicks.join(", ") || "none — pick any model your subscription supports"}.
+                            Change anytime in <code className="rounded bg-muted px-1">Settings → OpenCode</code>.
+                          </p>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

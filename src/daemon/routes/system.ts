@@ -107,4 +107,43 @@ export function registerSystemRoutes(
       return errorResponse('validation', message);
     }
   });
+
+  // ─── OpenCode model discovery ────────────────────────────────────────
+  // Lists models the local `opencode` CLI knows about, grouped by gateway
+  // prefix (`opencode/`, `opencode-go/`, `opencode-zen/`). Used by the
+  // onboarding flow so users can pick which subscription models they want
+  // chorus to expose as voices.
+  fastify.get<{
+    Reply: ApiResponse<{
+      gateways: Record<string, string[]>;
+      flat: string[];
+      defaultPicks: string[];
+    }>;
+  }>('/orchestrators/opencode/models', async () => {
+    try {
+      const { execFile } = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const run = promisify(execFile);
+      const { stdout } = await run('opencode', ['models'], { timeout: 10_000 });
+      const flat = stdout
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0);
+      const gateways: Record<string, string[]> = {};
+      for (const m of flat) {
+        const slash = m.indexOf('/');
+        const gw = slash > 0 ? m.slice(0, slash) : 'other';
+        if (!gateways[gw]) gateways[gw] = [];
+        gateways[gw].push(m);
+      }
+      // Fleet defaults — kimi + deepseek via Go subscription. Only suggest
+      // those that actually appear in the user's `opencode models` output.
+      const FLEET = ['opencode-go/kimi-k2.6', 'opencode-go/deepseek-v4-pro'];
+      const defaultPicks = FLEET.filter((m) => flat.includes(m));
+      return successResponse({ gateways, flat, defaultPicks });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return errorResponse('cli_failed', message);
+    }
+  });
 }

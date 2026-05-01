@@ -27,12 +27,7 @@ const CHORUS_BIN_PATH = path.resolve(__dirname, '..', '..', 'bin', 'chorus.mjs')
 function printCockpitAccessHint(): void {
   const env = detectRuntimeEnv();
   console.log('');
-  console.log(
-    kv([
-      ['Cockpit', `${c.cyan(COCKPIT_URL)}`],
-      ['Daemon', c.dim(DAEMON_URL)],
-    ])
-  );
+  console.log(`   ${c.gray('Open')}  ${c.cyan(COCKPIT_URL)}`);
   if (env.hint) {
     console.log('');
     console.log(tip(env.hint));

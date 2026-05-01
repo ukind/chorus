@@ -129,6 +129,13 @@ export const codexShim: AgentShim = {
 
     const args: string[] = ['exec'];
 
+    // Chorus chat dirs aren't git repos. Without this flag codex exec
+    // exits 1 with "Not inside a trusted directory" — the trust_level
+    // entry in config.toml only suppresses the interactive prompt, not
+    // the git-repo guard. Discovered 2026-05-01 dogfooding tri-review:
+    // codex reviewers wrote 0 bytes because exec aborted pre-LLM.
+    args.push('--skip-git-repo-check');
+
     if (opts.sandbox === 'full') {
       args.push('--dangerously-bypass-approvals-and-sandbox');
     } else if (opts.sandbox === 'strict') {

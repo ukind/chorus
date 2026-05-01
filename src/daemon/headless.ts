@@ -381,6 +381,25 @@ export function spawnHeadless(opts: SpawnHeadlessOptions): HeadlessRun {
               ? `CLI ${opts.cli} timed out after ${Math.round(timeoutMs / 1000)}s`
               : `CLI ${opts.cli} cancelled`,
           });
+        } else if (code !== 0 && code !== null) {
+          // Process exited non-zero on its own — likely auth/config/quota.
+          // Surface BOTH stderr and stdout so the user sees an actionable
+          // message instead of a silent 0-byte answer.md. Some CLIs print
+          // their actual error to stdout (kimi: "LLM not set") and only
+          // bookkeeping info to stderr ("To resume this session: ..."), so
+          // checking both is non-optional. Trim to keep it terse.
+          const stderrTail = fullStderr.trim().slice(-300);
+          const stdoutTail = fullStdout.trim().slice(-300);
+          const detail = [stdoutTail, stderrTail]
+            .filter((s) => s.length > 0)
+            .join(' | ');
+          enqueue({
+            type: 'error',
+            kind: 'cli_failed',
+            message: detail.length > 0
+              ? `${opts.cli} exited ${code}: ${detail}`
+              : `${opts.cli} exited ${code} with no output`,
+          });
         }
 
         closeQueue();

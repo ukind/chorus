@@ -531,17 +531,38 @@ export function LiveRunReal({
               status === "blocked" ||
               status === "failed" ||
               status === "cancelled";
-            const showByRounds = totalPhases <= 1 && maxRounds > 1;
+            // Three progress dimensions in priority: phases > rounds >
+            // participants. Pick the first one that has more than one
+            // unit to track. Single-phase + single-round + multi-reviewer
+            // templates (e.g. tri-review) show "N / M complete" so the
+            // user has a top-level signal even when the cards alone tell
+            // the story.
             const showByPhases = totalPhases > 1;
-            if (!showByPhases && !showByRounds) return null;
-            const total = showByPhases ? totalPhases : maxRounds;
+            const showByRounds = !showByPhases && maxRounds > 1;
+            const currentRound = enrichedRounds[enrichedRounds.length - 1];
+            const participantTotal = currentRound?.participants.length ?? 0;
+            const participantDone =
+              currentRound?.participants.filter((p) => p.hasAnswer).length ?? 0;
+            const showByParticipants =
+              !showByPhases && !showByRounds && participantTotal > 1;
+            if (!showByPhases && !showByRounds && !showByParticipants)
+              return null;
+            const total = showByPhases
+              ? totalPhases
+              : showByRounds
+                ? maxRounds
+                : participantTotal;
             const completed = showByPhases
               ? Math.min(completedPhaseCount, totalPhases)
-              : Math.min(Math.max(rounds.length, 1), maxRounds);
+              : showByRounds
+                ? Math.min(Math.max(rounds.length, 1), maxRounds)
+                : participantDone;
             const display = showByPhases && isTerminal_ ? total : completed;
             const label = showByPhases
               ? `${display} / ${total} phases`
-              : `Round ${display} / ${total}`;
+              : showByRounds
+                ? `Round ${display} / ${total}`
+                : `${display} / ${total} complete`;
             return (
               <div className="mx-auto flex w-full max-w-xs items-center gap-2">
                 <div className="flex h-1 flex-1 overflow-hidden rounded-full bg-muted">

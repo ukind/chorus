@@ -93,9 +93,11 @@ export function ParticipantCard({
               {line}
             </div>
           ))
-        ) : liveTail && liveTail.length > 0 ? (
+        ) : state === "working" && liveTail && liveTail.length > 0 ? (
           // Live tail from headless transport — last ~500 chars of streaming
-          // output. Shows the agent typing in real time, no 4s polling lag.
+          // output. Gated on state==="working" so a stale tail keyed by
+          // role:lineage (e.g. Round 1 reviewer's last text) can't leak
+          // into a freshly-pending Round 2 reviewer card.
           <pre className="whitespace-pre-wrap break-words text-foreground/85">
             {liveTail}
           </pre>

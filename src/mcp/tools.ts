@@ -7,6 +7,32 @@ import { z } from "zod";
 import yaml from "yaml";
 import { daemonFetch, streamChat } from "./client";
 
+// Daemon stores chats with snake_case `id` + `current_phase_idx`; MCP contract
+// is camelCase `chatId` + `phase`. Single source of truth for the mapping so
+// every tool returns the same shape.
+interface DaemonChatRow {
+  id: string;
+  status: string;
+  current_phase_idx?: number;
+  updated_at?: number;
+}
+function chatRowToRef(row: DaemonChatRow) {
+  const webBase = process.env.CHORUS_WEB_URL || "http://127.0.0.1:5050";
+  return {
+    chatId: row.id,
+    status: row.status,
+    url: `${webBase}/runs/${row.id}`,
+  };
+}
+function chatRowToStatus(row: DaemonChatRow) {
+  return {
+    chatId: row.id,
+    status: row.status,
+    phase: row.current_phase_idx,
+    blocked: row.status === "blocked",
+  };
+}
+
 interface RawTemplateRow {
   id: string;
   source?: string;
@@ -127,7 +153,7 @@ const TemplateSchema = z.object({
 export async function createChat(input: unknown) {
   const parsed = CreateChatSchema.parse(input);
 
-  const result = await daemonFetch<unknown>("/chats", {
+  const result = await daemonFetch<DaemonChatRow>("/chats", {
     method: "POST",
     body: JSON.stringify({
       work: parsed.work,
@@ -136,7 +162,7 @@ export async function createChat(input: unknown) {
     }),
   });
 
-  return ChatRefSchema.parse(result);
+  return ChatRefSchema.parse(chatRowToRef(result));
 }
 
 /**
@@ -179,8 +205,8 @@ export async function waitForChat(
 export async function getChatStatus(input: unknown) {
   const parsed = GetChatStatusSchema.parse(input);
 
-  const result = await daemonFetch<unknown>(`/chats/${parsed.chatId}`);
-  return ChatStatusSchema.parse(result);
+  const result = await daemonFetch<DaemonChatRow>(`/chats/${parsed.chatId}`);
+  return ChatStatusSchema.parse(chatRowToStatus(result));
 }
 
 /**
@@ -191,10 +217,17 @@ export async function listBlocked(input: unknown) {
   // input is empty object, but we validate it anyway for schema consistency
 
   const result = await daemonFetch<unknown>("/blocked");
+  const rows = Array.isArray(result)
+    ? (result as Array<Record<string, unknown>>)
+    : ((result as Record<string, unknown>).chats as Array<Record<string, unknown>>) || [];
 
-  // Result should be an array of blocked chats
   const chats = z.array(BlockedChatSchema).parse(
-    Array.isArray(result) ? result : (result as Record<string, unknown>).chats || []
+    rows.map((row) => ({
+      chatId: row.id,
+      work: row.work,
+      blockedReason: row.ship_error ?? "Awaiting user input",
+      since: row.updated_at,
+    }))
   );
 
   return { chats };
@@ -206,7 +239,7 @@ export async function listBlocked(input: unknown) {
 export async function resumeChat(input: unknown) {
   const parsed = ResumeChatSchema.parse(input);
 
-  const result = await daemonFetch<unknown>(
+  const result = await daemonFetch<DaemonChatRow>(
     `/chats/${parsed.chatId}/resume`,
     {
       method: "POST",
@@ -214,7 +247,7 @@ export async function resumeChat(input: unknown) {
     }
   );
 
-  return { ok: true, status: ChatStatusSchema.parse(result) };
+  return { ok: true, status: ChatStatusSchema.parse(chatRowToStatus(result)) };
 }
 
 /**

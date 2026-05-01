@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { TriadLogo } from "@/components/triad-logo";
 import { listChats, DaemonError } from "@/lib/api";
+import { chatDisplayTitle } from "@/lib/chat-title";
 import type { Chat } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -58,6 +59,28 @@ export function SidebarBody({ onNavigate }: SidebarBodyProps) {
   const [chatsState, setChatsState] = useState<"loading" | "ready" | "error">(
     "loading",
   );
+  // Read the daemon version from /health on mount instead of hardcoding the
+  // sidebar badge. Fixes a class of drift bug where bumping package.json +
+  // CLI + daemon constants still left the cockpit showing the old version
+  // because the literal in this file was never updated. /health is cached
+  // for the session — single fetch on mount.
+  const [daemonVersion, setDaemonVersion] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/daemon/health")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (cancelled || !j) return;
+        const v = j?.data?.version ?? j?.version;
+        if (typeof v === "string" && v.length > 0) setDaemonVersion(v);
+      })
+      .catch(() => {
+        /* offline daemon — fall back to the placeholder */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -129,7 +152,7 @@ export function SidebarBody({ onNavigate }: SidebarBodyProps) {
         </div>
         <span className="text-sm font-semibold tracking-tight">Chorus</span>
         <span className="ml-auto rounded-md border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
-          v0.5
+          {daemonVersion ? `v${daemonVersion.replace(/^v/, "").replace(/-dev\.\d+$/, "")}` : "—"}
         </span>
       </div>
 
@@ -201,7 +224,8 @@ export function SidebarBody({ onNavigate }: SidebarBodyProps) {
               {chats.map((c) => {
                 const href = `/runs/${c.id}`;
                 const active = pathname === href;
-                const title = c.work.length > 60 ? `${c.work.slice(0, 60)}…` : c.work;
+                const display = chatDisplayTitle(c.work);
+                const title = display.length > 60 ? `${display.slice(0, 60)}…` : display;
                 return (
                   <li key={c.id}>
                     <Link

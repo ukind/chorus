@@ -59,13 +59,18 @@ function readChatRounds(chatId: string): RoundSnapshot[] {
         const rawAgent = d.name.replace(/^(doer-|reviewer-)/, "").replace(/-\d+$/, "");
         const lineage = AGENT_TO_LINEAGE[rawAgent] ?? rawAgent;
         const answerPath = path.join(roundDir, d.name, "answer.md");
+        // `hasAnswer` MUST mean "non-empty" — the runner pre-creates an
+        // empty answer.md when the spawn starts so live tail can poll the
+        // file mid-stream. If we treat any existing file as completed, the
+        // phase stepper flips to DONE the millisecond the doer starts. See
+        // ROADMAP #15.
         let hasAnswer = false;
         let answer: string | undefined;
         let findingsPreview: string[] | undefined;
         if (fs.existsSync(answerPath)) {
-          hasAnswer = true;
           try {
             answer = fs.readFileSync(answerPath, "utf-8");
+            hasAnswer = answer.trim().length > 0;
             findingsPreview = answer
               .split("\n")
               .filter((l) => l.trim().length > 0 && !l.startsWith("##"))

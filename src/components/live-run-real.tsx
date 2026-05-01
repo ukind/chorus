@@ -28,6 +28,7 @@ import {
 import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { PhaseStepper, type PhaseState } from "@/components/phase-stepper";
+import { chatDisplayTitle } from "@/lib/chat-title";
 import type { Template, ReviewerLineage } from "@/lib/types";
 import type { TemplatePhase as MockTemplatePhase } from "@/lib/mock-data";
 
@@ -44,6 +45,48 @@ interface ParticipantSnapshot {
 interface RoundSnapshot {
   round: number;
   participants: ParticipantSnapshot[];
+}
+
+// Renders the chat brief at the top of the run page. Long briefs (persona
+// system_prompt + user request + inlined files) used to render as a wall of
+// text dominating the viewport. Now collapses to a one-line summary by
+// default with a "Show full brief" expander, mirroring how Linear / GitHub
+// handle long PR titles.
+const BRIEF_COLLAPSED_CHARS = 200;
+
+function BriefHeading({ work }: { work: string }) {
+  const [expanded, setExpanded] = useState(false);
+  // Display the de-personaed title by default; the full prompt (system_prompt
+  // + user request + attached files) is still available via Show full brief
+  // for debugging.
+  const displayTitle = chatDisplayTitle(work);
+  const isLong = displayTitle.length > BRIEF_COLLAPSED_CHARS || work !== displayTitle;
+  const summary = displayTitle.length > BRIEF_COLLAPSED_CHARS
+    ? `${displayTitle.slice(0, BRIEF_COLLAPSED_CHARS).replace(/\s+\S*$/, "")}…`
+    : displayTitle;
+
+  if (!isLong) {
+    return (
+      <h1 className="mt-2 break-words text-xl font-semibold tracking-tight">
+        {displayTitle}
+      </h1>
+    );
+  }
+
+  return (
+    <div className="mt-2">
+      <h1 className="break-words text-xl font-semibold tracking-tight">
+        {expanded ? work : summary}
+      </h1>
+      <button
+        type="button"
+        onClick={() => setExpanded((e) => !e)}
+        className="mt-1 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+      >
+        {expanded ? "Show less" : "Show full brief"}
+      </button>
+    </div>
+  );
 }
 
 interface Props {
@@ -321,9 +364,7 @@ export function LiveRunReal({
                   </Badge>
                 )}
               </div>
-              <h1 className="mt-2 break-words text-xl font-semibold tracking-tight">
-                {work}
-              </h1>
+              <BriefHeading work={work} />
             </div>
             <div className="flex shrink-0 items-center gap-2">
               <button

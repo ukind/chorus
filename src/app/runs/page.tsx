@@ -2,6 +2,7 @@ import Link from "next/link";
 import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { listChats, DaemonError } from "@/lib/api";
+import { chatDisplayTitle } from "@/lib/chat-title";
 
 export const dynamic = "force-dynamic";
 
@@ -70,7 +71,7 @@ export default async function RunsListPage() {
                     </Badge>
                   </div>
                   <h3 className="text-sm font-medium text-foreground line-clamp-1">
-                    {chat.work}
+                    {chatDisplayTitle(chat.work)}
                   </h3>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {new Date(chat.createdAt).toLocaleString()}

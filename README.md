@@ -168,6 +168,40 @@ chorus mcp                        # run MCP server (CLIs call this)
 
 ---
 
+## 📡 Telemetry
+
+Chorus pings `chorus.codes` once on daemon boot and once every 24 hours
+while running. The payload is small and fixed:
+
+```json
+{
+  "schema": 1,
+  "installId": "<random uuid>",
+  "version": "0.7.0",
+  "os": "linux", "arch": "x64", "node": "22",
+  "daemonUptimeSeconds": 86400,
+  "chatsLast24h": 12
+}
+```
+
+**Never sent:** chat content, prompts, artifacts, file paths, repo paths,
+branch names, hostnames, usernames, IPs, API keys, model IDs, voice or
+template names. Just the keys above.
+
+**Disable via any one of these:**
+
+```bash
+export CHORUS_TELEMETRY=0           # env var (also: false / no / off)
+touch ~/.chorus/no-telemetry        # touch-file (cargo/brew convention)
+# or set telemetry.enabled=false in cockpit Settings
+```
+
+The install ID lives at `~/.chorus/install-id` — `rm` it to mint a fresh
+one. Network failures are silent (5s timeout, fire-and-forget) so the
+daemon never blocks on the endpoint.
+
+---
+
 ## 🔗 Links
 
 - 🌐 Cockpit: <http://localhost:5050>

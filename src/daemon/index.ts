@@ -1026,6 +1026,14 @@ async function main() {
   await fastify.listen({ port: PORT, host: HOST });
   console.log(`Chorus daemon listening on http://${HOST}:${PORT}`);
 
+  // Anonymous opt-out telemetry — see src/lib/telemetry.ts. First send is
+  // delayed 5s so the listener is definitely up; subsequent sends every 24h.
+  // All three opt-out paths (env, touch-file, settings) are honoured per send.
+  const { startTelemetryHeartbeat } = await import('../lib/telemetry.js');
+  const telemetryHandle = startTelemetryHeartbeat({ version: VERSION, daemonStartedAt: startTime });
+  process.on('SIGTERM', () => telemetryHandle.stop());
+  process.on('SIGINT', () => telemetryHandle.stop());
+
   // Voices Phase 2 — background warmup. `opencode models` shells out and
   // can take up to 10s; running it post-listen avoids that boot-latency
   // hit on every daemon start (per round 1 deepseek LOW). Errors are

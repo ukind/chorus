@@ -109,7 +109,8 @@ interface SSEEvent {
     | "phase_failed"
     | "cli_error"
     | "cli_warning"
-    | "chat_done";
+    | "chat_done"
+    | "participant_done";
   payload: Record<string, unknown>;
   ts: number;
 }
@@ -220,6 +221,17 @@ export function LiveRunReal({
           setActiveParticipants(new Set());
           // Don't clear liveTails — let the disk-poll update them with the
           // final answer instead of flashing empty.
+        }
+
+        if (e.type === "participant_done") {
+          // The runner has just written `## DONE` to this participant's
+          // answer.md. Pull artifacts immediately so the card flips from
+          // WORKING to DONE without waiting for the 8s polling tick.
+          // (The polling will re-confirm it on its next pass.)
+          fetch(`/api/run-artifacts/${chatId}`)
+            .then((r) => (r.ok ? r.json() : null))
+            .then((data) => data && setRounds(data.rounds))
+            .catch(() => {});
         }
 
         if (e.type === "chat_done") {

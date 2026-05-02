@@ -196,6 +196,21 @@ describe('TemplateSchema hybrid guard', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it('rejects duplicate phase ids — runner uses phase.id as a primary key', () => {
+    const result = TemplateSchema.safeParse({
+      id: 'd',
+      name: 'd',
+      description: 'd',
+      phases: [STANDARD_PHASE, { ...STANDARD_PHASE }],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.some((i) => i.message.includes('unique'))).toBe(
+        true,
+      );
+    }
+  });
 });
 
 describe('templateRequiresArtifact', () => {

@@ -12,6 +12,14 @@ export interface ErrorResponse {
   error: {
     code: string;
     message: string;
+    /**
+     * Optional structured payload. Used today for zod-issue lists from
+     * /templates POST (`{issues: [{path, message}, ...]}`) so the cockpit
+     * can pin each error to the field it references. Kept loose so future
+     * routes can attach their own structured detail without changing the
+     * envelope shape.
+     */
+    details?: Record<string, unknown>;
   };
 }
 
@@ -22,10 +30,14 @@ export interface SuccessResponse<T> {
 
 export type ApiResponse<T> = SuccessResponse<T> | ErrorResponse;
 
-export function errorResponse(code: string, message: string): ErrorResponse {
+export function errorResponse(
+  code: string,
+  message: string,
+  details?: Record<string, unknown>,
+): ErrorResponse {
   return {
     ok: false,
-    error: { code, message },
+    error: details ? { code, message, details } : { code, message },
   };
 }
 

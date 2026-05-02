@@ -137,6 +137,20 @@ export async function runReviewerHeadless(args: {
         } else {
           fs.writeFileSync(answerFile, `${event.finalText}\n\n## DONE\n`);
         }
+        // Tell the cockpit this reviewer is fully on disk so it can
+        // flip the card immediately rather than wait for the 8s polling
+        // tick. Mirrored in doer.ts.
+        onEvent({
+          chatId,
+          type: 'participant_done',
+          payload: {
+            phaseId: phase.id,
+            round,
+            role: 'reviewer',
+            agent: `${agentName}-${reviewerIdx}`,
+          },
+          ts: Date.now(),
+        });
       } else if (event.type === 'error') {
         errored = true;
         if (!errorSummary) {

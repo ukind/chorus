@@ -106,6 +106,20 @@ describe('runDoerHeadless', () => {
     expect(written).toMatch(/##\s*DONE/);
   });
 
+  it('emits participant_done after message_done so the cockpit can flip the card without polling lag', async () => {
+    const handle = makeFakeShim({
+      events: happyPathEvents('done\n## DONE'),
+    });
+    await callDoer(handle);
+    const done = events.filter((e) => e.type === 'participant_done');
+    expect(done).toHaveLength(1);
+    expect(done[0].payload).toMatchObject({
+      role: 'doer',
+      agent: 'fake',
+      round: 1,
+    });
+  });
+
   it('appends ## DONE sentinel when finalText lacks it', async () => {
     const handle = makeFakeShim({
       events: [

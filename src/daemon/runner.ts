@@ -31,7 +31,8 @@ export interface RunnerEvent {
     | 'phase_failed'
     | 'cli_error'
     | 'cli_warning'
-    | 'chat_done';
+    | 'chat_done'
+    | 'participant_done';
   payload: Record<string, unknown>;
   ts: number;
 }

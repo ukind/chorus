@@ -213,6 +213,17 @@ export const TemplateSchema = z.object({
         message:
           'review_only phases cannot be mixed with other phase kinds and only one is allowed (hybrid templates are out of scope)',
       },
+    )
+    .refine(
+      (phases) => {
+        // Phase IDs are referenced from the runner (phase_events.phase_id,
+        // chat dir layout, gate keys). Duplicates would clobber each other.
+        const ids = phases.map((p) => p.id);
+        return new Set(ids).size === ids.length;
+      },
+      {
+        message: 'phase ids must be unique',
+      },
     ),
 
   /**

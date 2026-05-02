@@ -29,6 +29,7 @@ interface PhaseStepperProps {
 const KIND_ICON: Record<PhaseKind, React.ComponentType<{ className?: string }>> =
   {
     review: Eye,
+    review_only: Eye,
     plan: ClipboardList,
     spec: FileCode2,
     tests: TestTube2,

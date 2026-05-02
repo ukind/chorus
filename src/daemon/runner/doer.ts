@@ -167,6 +167,20 @@ export async function runDoerHeadless(args: {
               : `${event.finalText}\n`;
           fs.writeFileSync(answerFile, finalContent);
         }
+        // Tell the cockpit this participant is fully on disk so it can
+        // flip the card immediately rather than wait for the 8s polling
+        // tick. Mirrored in reviewer.ts.
+        onEvent({
+          chatId,
+          type: 'participant_done',
+          payload: {
+            phaseId: phase.id,
+            round,
+            role: 'doer',
+            agent: agentName,
+          },
+          ts: Date.now(),
+        });
       } else if (event.type === 'error') {
         errored = true;
         if (!errorSummary) {

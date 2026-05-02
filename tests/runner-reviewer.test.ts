@@ -109,6 +109,27 @@ describe('runReviewerHeadless', () => {
     expect(verdict).toBe(true);
   });
 
+  it('emits participant_done after message_done so the cockpit can flip the card without polling lag', async () => {
+    const text = `${PADDING}\nlgtm.\n## DONE`;
+    const handle = makeFakeShim({ events: happyPathEvents(text) });
+    await callReviewer(handle);
+    const done = events.filter((e) => e.type === 'participant_done');
+    expect(done).toHaveLength(1);
+    expect(done[0].payload).toMatchObject({
+      role: 'reviewer',
+      agent: 'codex-cli-0',
+      round: 1,
+    });
+  });
+
+  it('does NOT emit participant_done when the run errors before message_done', async () => {
+    const handle = makeFakeShim({
+      events: [{ type: 'error', kind: 'quota_exhausted', message: 'limit hit' }],
+    });
+    await callReviewer(handle);
+    expect(events.some((e) => e.type === 'participant_done')).toBe(false);
+  });
+
   it('returns false when reviewer requests changes', async () => {
     const text = `${PADDING}\nMissing input validation; request changes.\n## DONE`;
     const handle = makeFakeShim({ events: happyPathEvents(text) });

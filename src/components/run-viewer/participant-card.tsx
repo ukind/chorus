@@ -46,6 +46,13 @@ export function ParticipantCard({
         ? "errored"
         : "working";
 
+  // When the runner wrote a `## REVIEWER FAILED` summary (PR #11
+  // silent-failure preempt), surface its parsed Kind + body in the
+  // errored state instead of the generic "didn't produce any output"
+  // message. The summary always carries the reason the LLM CLI failed
+  // (quota_exhausted, refresh_token_stale, cli_failed, ...).
+  const failure = parseFailureSummary(participant.answer);
+
   return (
     <div
       className={`flex min-h-[300px] flex-col overflow-hidden rounded-lg border transition-[opacity,border-color,box-shadow] duration-300 ${
@@ -106,9 +113,25 @@ export function ParticipantCard({
         ) : state === "pending" ? (
           <div className="text-muted-foreground/70">Queued — runs after the doer.</div>
         ) : state === "errored" ? (
-          <div className="text-destructive/80">
-            The program finished but didn&apos;t produce any output.
-          </div>
+          failure ? (
+            <div className="space-y-1.5 text-destructive/90">
+              <div className="text-[10px] font-semibold uppercase tracking-wider">
+                {failure.kind}
+              </div>
+              <div className="whitespace-pre-wrap break-words text-foreground/85">
+                {failure.message}
+              </div>
+              {failure.cta && (
+                <div className="text-[11px] text-muted-foreground/80">
+                  {failure.cta}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="text-destructive/80">
+              The program finished but didn&apos;t produce any output.
+            </div>
+          )
         ) : (
           <div className="text-muted-foreground/70">No output yet.</div>
         )}
@@ -143,4 +166,51 @@ export function ParticipantCard({
       </div>
     </div>
   );
+}
+
+/**
+ * Extract Kind + message from a `## REVIEWER FAILED` / `## DOER FAILED`
+ * summary written by runReviewerHeadless / runDoerHeadless when a CLI
+ * subprocess dies before producing content. Returns null when the answer
+ * isn't a failure summary.
+ *
+ * Summary shape (per src/daemon/runner/{reviewer,doer}.ts finally block):
+ *   ## REVIEWER FAILED
+ *
+ *   **Kind:** quota_exhausted
+ *   **Lineage:** openai
+ *   **Model:** gpt-5.5
+ *
+ *   ERROR: ...message...
+ */
+function parseFailureSummary(
+  answer: string | undefined,
+): { kind: string; message: string; cta?: string } | null {
+  if (!answer) return null;
+  const trimmed = answer.trimStart();
+  if (!/^##\s+(?:REVIEWER|DOER)\s+FAILED/i.test(trimmed)) return null;
+  const kindMatch = trimmed.match(/\*\*Kind:\*\*\s*(.+?)(?:\n|$)/);
+  const kind = kindMatch ? kindMatch[1].trim() : "failed";
+  // Body = everything after the first blank line that follows the
+  // header block. The header block has Kind/Lineage/Model lines.
+  const headerEnd = trimmed.search(/\n\n[^*]/);
+  const body = headerEnd >= 0 ? trimmed.slice(headerEnd + 2).trim() : "";
+  const message = body.length > 0 ? body : "(no error message reported)";
+  // Map common kinds to a short call-to-action so the user knows what to do.
+  const cta = ctaForKind(kind);
+  return { kind, message, ...(cta ? { cta } : {}) };
+}
+
+function ctaForKind(kind: string): string | undefined {
+  switch (kind) {
+    case "quota_exhausted":
+      return "Check your subscription dashboard or swap the account in CHORUS_CODEX_HOME / chorus settings.";
+    case "stream_failure":
+      return "Subprocess died mid-stream — check disk space and CLI version.";
+    case "cli_failed":
+    case "cli_error":
+      return "Re-auth the CLI (codex/gemini/opencode login) and retry.";
+    default:
+      return undefined;
+  }
 }

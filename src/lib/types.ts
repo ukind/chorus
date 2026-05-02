@@ -291,6 +291,8 @@ export interface ApiResponse<T> {
   error?: {
     code: string;
     message: string;
+    /** Optional structured payload (e.g. zod issue list for validation errors). */
+    details?: Record<string, unknown>;
   };
   meta?: {
     total?: number;

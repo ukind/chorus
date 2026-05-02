@@ -32,9 +32,13 @@ export function CodeBlock({
   maxHeightClassName?: string;
   children: ReactNode;
 }) {
+  // Flex column so callers can pass h-full / h-[calc(...)] on a parent
+  // wrapper and the pre body will grow to fill the remaining height
+  // (header + footer stay fixed-height). Without flex-col the pre's
+  // max-height capped the layout regardless of the parent's height.
   return (
-    <div className="min-w-0 overflow-hidden rounded-lg border border-border bg-card">
-      <div className="flex items-center justify-between gap-2 border-b border-border bg-card/60 px-4 py-2.5">
+    <div className="flex h-full min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border bg-card/60 px-4 py-2.5">
         <div className="flex min-w-0 items-center gap-2 font-mono text-[11px] text-muted-foreground">
           <Code2 className="h-3 w-3 shrink-0" />
           <span className="truncate">{filename}</span>
@@ -46,12 +50,12 @@ export function CodeBlock({
         )}
       </div>
       <pre
-        className={`${maxHeightClassName} overflow-auto whitespace-pre-wrap break-words bg-background px-5 py-4 font-mono text-[12px] leading-relaxed text-foreground/90`}
+        className={`${maxHeightClassName} min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words bg-background px-5 py-4 font-mono text-[12px] leading-relaxed text-foreground/90`}
       >
         {children}
       </pre>
       {footer && (
-        <div className="flex items-center justify-between gap-2 border-t border-border bg-card/60 px-4 py-2.5 text-[11px] text-muted-foreground">
+        <div className="flex shrink-0 items-center justify-between gap-2 border-t border-border bg-card/60 px-4 py-2.5 text-[11px] text-muted-foreground">
           {footer}
         </div>
       )}

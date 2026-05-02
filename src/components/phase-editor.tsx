@@ -38,6 +38,7 @@ import {
 
 const KIND_ICON: Record<PhaseKind, React.ComponentType<{ className?: string }>> = {
   review: Eye,
+  review_only: Eye,
   plan: ClipboardList,
   spec: FileCode2,
   tests: TestTube2,
@@ -56,12 +57,13 @@ const KINDS: { id: PhaseKind; label: string }[] = [
   { id: "verify", label: "Verify" },
   { id: "pr", label: "Open PR" },
   { id: "review", label: "Review" },
+  { id: "review_only", label: "Review only (artifact)" },
   { id: "divergence", label: "Divergence" },
   { id: "recon", label: "Recon" },
 ];
 
 const LINEAGES: { id: ReviewerLineage; label: string; dot: string }[] = (
-  ["claude", "codex", "gemini", "opencode"] as const
+  ["claude", "codex", "gemini", "opencode", "kimi"] as const
 ).map((id) => ({ id, label: UI_LINEAGE_LABEL[id], dot: UI_LINEAGE_BRAND[id].dot }));
 
 const DEFAULT_MODELS: Record<ReviewerLineage, string> = UI_LINEAGE_DEFAULT_MODEL;
@@ -105,6 +107,171 @@ function useEnabledOpencodeModels(): string[] {
       });
   }, []);
   return models;
+}
+
+// Daemon-lineage → cockpit-lineage mapping for the voices grouping. Kept
+// inline so phase-editor stays decoupled from the dialog file.
+const DAEMON_TO_COCKPIT_LINEAGE: Record<string, ReviewerLineage> = {
+  anthropic: "claude",
+  openai: "codex",
+  google: "gemini",
+  opencode: "opencode",
+  moonshot: "kimi",
+  // Legacy alias from older templates.
+  xai: "opencode",
+};
+
+interface ConnectedVoiceMap {
+  /** Per-cockpit-lineage list of enabled model_ids. */
+  byLineage: Partial<Record<ReviewerLineage, string[]>>;
+  /** Set of cockpit-lineages that have at least one enabled voice. */
+  connectedLineages: Set<ReviewerLineage>;
+  /** True once the initial fetch settled (success or error). */
+  loaded: boolean;
+}
+
+/**
+ * Loads every enabled voice once and groups by cockpit-lineage so the
+ * doer + reviewer dropdowns can show real options. Tolerates fetch
+ * failure — falls back to empty maps; freeform fallback still lets the
+ * user type a model id by hand.
+ */
+function useConnectedVoices(): ConnectedVoiceMap {
+  const [state, setState] = useState<ConnectedVoiceMap>({
+    byLineage: {},
+    connectedLineages: new Set(),
+    loaded: false,
+  });
+  useEffect(() => {
+    listVoices({ enabled: true })
+      .then((voices) => {
+        const byLineage: Partial<Record<ReviewerLineage, string[]>> = {};
+        const connectedLineages = new Set<ReviewerLineage>();
+        for (const v of voices) {
+          // 1. Bucket by daemon lineage (model family). e.g. opencode-go's
+          //    kimi-k2.6 has lineage='moonshot' -> shows under cockpit "Kimi".
+          const cockpitLineage = DAEMON_TO_COCKPIT_LINEAGE[v.lineage];
+          if (cockpitLineage) {
+            connectedLineages.add(cockpitLineage);
+            (byLineage[cockpitLineage] ??= []).push(v.model_id);
+          }
+          // 2. ALSO bucket OpenCode-provider voices under cockpit "opencode"
+          //    regardless of their model-family lineage. Why: OpenCode CLI
+          //    exposes anything (DeepSeek, Kimi, GLM, …) and a user who
+          //    picks "OpenCode" in the lineage dropdown wants every model
+          //    their OpenCode CLI provides — not just the small subset
+          //    where lineage=='opencode'. Without this, opencode-go/kimi
+          //    only appeared under "Kimi" and never under "OpenCode".
+          if (v.provider.startsWith("opencode") && cockpitLineage !== "opencode") {
+            connectedLineages.add("opencode");
+            (byLineage["opencode"] ??= []).push(v.model_id);
+          }
+        }
+        // Dedupe within each lineage — same model could be exposed via
+        // multiple providers (rare but possible with OpenCode + API).
+        for (const k of Object.keys(byLineage) as ReviewerLineage[]) {
+          byLineage[k] = Array.from(new Set(byLineage[k]!));
+        }
+        setState({ byLineage, connectedLineages, loaded: true });
+      })
+      .catch(() => setState({ byLineage: {}, connectedLineages: new Set(), loaded: true }));
+  }, []);
+  return state;
+}
+
+interface ModelSelectProps {
+  lineage: ReviewerLineage;
+  value: string;
+  options: string[];
+  onChange: (next: string) => void;
+  /** Default model used as placeholder when value is empty. */
+  defaultModel?: string;
+}
+
+/**
+ * Dropdown of enabled models for a given lineage, with a final
+ * "(custom — type your own)" option that swaps in a freeform input.
+ * Preserves a value that isn't in the options list (template authored
+ * elsewhere, or model since disabled) by including it as an extra option
+ * marked "(not enabled)".
+ */
+function ModelSelect({ lineage, value, options, onChange, defaultModel }: ModelSelectProps) {
+  const CUSTOM = "__custom__";
+  const valueInOptions = !value || options.includes(value);
+  const [editing, setEditing] = useState(false);
+
+  if (editing) {
+    return (
+      <div className="flex items-center gap-1">
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={defaultModel ? `default: ${defaultModel}` : `${lineage} model id`}
+          className="h-7 flex-1 rounded-md border border-border bg-background px-2 font-mono text-[11px] text-foreground placeholder:text-muted-foreground/50 focus:border-primary/60 focus:outline-none"
+          autoFocus
+        />
+        <button
+          type="button"
+          onClick={() => setEditing(false)}
+          className="h-7 rounded-md border border-border bg-card/40 px-2 text-[10px] text-muted-foreground hover:text-foreground"
+        >
+          done
+        </button>
+      </div>
+    );
+  }
+
+  if (options.length === 0) {
+    // No enabled voices for this lineage — fall through to a freeform
+    // input with a hint. Keeps the dialog usable on a fresh install.
+    return (
+      <div className="flex flex-col gap-1">
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={defaultModel ? `default: ${defaultModel}` : `${lineage} model id`}
+          className="h-7 w-full rounded-md border border-border bg-background px-2 font-mono text-[11px] text-foreground placeholder:text-muted-foreground/50 focus:border-primary/60 focus:outline-none"
+        />
+        <p className="text-[10px] text-amber-400/80">
+          No {lineage} voices enabled. Configure in Connect to populate this dropdown.
+        </p>
+      </div>
+    );
+  }
+
+  // Build the option list. If the current value isn't in `options`,
+  // surface it as "(not enabled)" so we don't silently lose the
+  // template's authored model on save.
+  const allOptions = valueInOptions ? options : [value, ...options];
+
+  return (
+    <select
+      value={value}
+      onChange={(e) => {
+        if (e.target.value === CUSTOM) {
+          setEditing(true);
+          return;
+        }
+        onChange(e.target.value);
+      }}
+      className="h-7 w-full rounded-md border border-border bg-background px-2 font-mono text-[11px] text-foreground focus:border-primary/60 focus:outline-none"
+    >
+      {!value && (
+        <option value="">
+          {defaultModel ? `default: ${defaultModel}` : "— pick a model —"}
+        </option>
+      )}
+      {allOptions.map((m) => (
+        <option key={m} value={m}>
+          {m}
+          {!options.includes(m) && value === m ? " (not enabled)" : ""}
+        </option>
+      ))}
+      <option value={CUSTOM}>+ custom (type a model id)…</option>
+    </select>
+  );
 }
 
 interface OpencodeModelInputProps {
@@ -152,6 +319,7 @@ function OpencodeModelInput({ value, onChange, enabled }: OpencodeModelInputProp
 
 export function PhaseEditor({ phases, onChange }: PhaseEditorProps) {
   const enabledOpencodeModels = useEnabledOpencodeModels();
+  const connectedVoices = useConnectedVoices();
   function update(idx: number, patch: Partial<TemplatePhase>) {
     onChange(phases.map((p, i) => (i === idx ? { ...p, ...patch } : p)));
   }
@@ -194,6 +362,7 @@ export function PhaseEditor({ phases, onChange }: PhaseEditorProps) {
             total={phases.length}
             allPhaseIds={phaseIds}
             enabledOpencodeModels={enabledOpencodeModels}
+            connectedVoices={connectedVoices}
             onUpdate={(patch) => update(i, patch)}
             onMoveUp={() => move(i, -1)}
             onMoveDown={() => move(i, 1)}
@@ -222,6 +391,7 @@ interface PhaseCardProps {
   total: number;
   allPhaseIds: string[];
   enabledOpencodeModels: string[];
+  connectedVoices: ConnectedVoiceMap;
   onUpdate: (patch: Partial<TemplatePhase>) => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
@@ -234,6 +404,7 @@ function PhaseCard({
   total,
   allPhaseIds,
   enabledOpencodeModels,
+  connectedVoices,
   onUpdate,
   onMoveUp,
   onMoveDown,
@@ -267,18 +438,24 @@ function PhaseCard({
             </span>
           </div>
           <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
-            <span className="flex items-center gap-1">
-              <span
-                className={cn(
-                  "h-1.5 w-1.5 rounded-full",
-                  LINEAGES.find((l) => l.id === phase.doer.lineage)?.dot,
-                )}
-              />
-              doer: {phase.doer.lineage}
-            </span>
+            {/* review_only phases have no doer — skip the doer chip and
+                lead with the reviewers (and artifact label as a hint). */}
+            {phase.kind !== "review_only" && (
+              <span className="flex items-center gap-1">
+                <span
+                  className={cn(
+                    "h-1.5 w-1.5 rounded-full",
+                    LINEAGES.find((l) => l.id === phase.doer.lineage)?.dot,
+                  )}
+                />
+                doer: {phase.doer.lineage}
+              </span>
+            )}
             {phase.reviewer.candidates.length > 0 && (
               <>
-                <span className="text-muted-foreground/40">·</span>
+                {phase.kind !== "review_only" && (
+                  <span className="text-muted-foreground/40">·</span>
+                )}
                 <span className="flex items-center gap-1">
                   reviewers:
                   {phase.reviewer.candidates.map((l) => (
@@ -397,24 +574,37 @@ function PhaseCard({
             />
           </SubField>
 
-          {/* Doer */}
+          {/* Doer — review_only phases have no doer; runtime artifact stands
+              in for the doer's output. The artifact section below replaces
+              this whole block for review_only. */}
+          {phase.kind !== "review_only" && (
           <SubField label="Doer · the agent that writes this phase's output">
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              {LINEAGES.map((l) => (
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+              {/* Show every lineage that has at least one enabled voice.
+                  Until voices are loaded (or on first-run with zero
+                  voices), fall through to the full lineage list so the
+                  dialog stays usable. */}
+              {LINEAGES.filter((l) =>
+                connectedVoices.connectedLineages.size === 0
+                  ? true
+                  : connectedVoices.connectedLineages.has(l.id),
+              ).map((l) => (
                 <button
                   key={l.id}
                   type="button"
                   onClick={() => {
-                    // For opencode, prefer an actually-enabled model so the
-                    // template doesn't reference one the user can't reach.
+                    // Prefer an actually-enabled model so the template
+                    // doesn't reference one the user can't reach. Fall
+                    // back to the lineage's curated default when none
+                    // are enabled.
+                    const enabledForLineage =
+                      connectedVoices.byLineage[l.id] ?? [];
                     const fallback =
-                      l.id === "opencode" && enabledOpencodeModels.length > 0
-                        ? enabledOpencodeModels[0]
-                        : DEFAULT_MODELS[l.id];
+                      enabledForLineage[0] ?? DEFAULT_MODELS[l.id];
                     onUpdate({
                       doer: {
                         lineage: l.id,
-                        models: [fallback],
+                        models: fallback ? [fallback] : [],
                       },
                     });
                   }}
@@ -434,95 +624,137 @@ function PhaseCard({
               ))}
             </div>
             <div className="mt-2">
-              {phase.doer.lineage === "opencode" ? (
-                <OpencodeModelInput
-                  value={phase.doer.models[0] ?? ""}
-                  onChange={(next) =>
-                    onUpdate({ doer: { ...phase.doer, models: [next] } })
-                  }
-                  enabled={enabledOpencodeModels}
-                />
-              ) : (
-                <input
-                  type="text"
-                  value={phase.doer.models[0] ?? ""}
-                  onChange={(e) =>
-                    onUpdate({
-                      doer: { ...phase.doer, models: [e.target.value] },
-                    })
-                  }
-                  placeholder="model id (e.g. claude-opus-4-7)"
-                  className="h-7 w-full rounded-md border border-border bg-background px-2.5 font-mono text-[11px] text-foreground placeholder:text-muted-foreground/60 focus:border-primary/60 focus:outline-none"
-                />
-              )}
+              <ModelSelect
+                lineage={phase.doer.lineage}
+                value={phase.doer.models[0] ?? ""}
+                options={connectedVoices.byLineage[phase.doer.lineage] ?? []}
+                defaultModel={DEFAULT_MODELS[phase.doer.lineage]}
+                onChange={(next) =>
+                  onUpdate({
+                    doer: { ...phase.doer, models: next ? [next] : [] },
+                  })
+                }
+              />
             </div>
           </SubField>
+          )}
 
-          {/* Reviewer rule */}
-          <SubField label="Reviewer rule · who gates this phase">
-            <div className="space-y-2">
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                {LINEAGES.map((l) => {
-                  const isDoer = l.id === phase.doer.lineage;
-                  const selected = phase.reviewer.candidates.includes(l.id);
-                  const blocked = phase.reviewer.crossLineage && isDoer;
-                  return (
-                    <button
-                      key={l.id}
-                      type="button"
-                      disabled={blocked}
-                      onClick={() => {
-                        const next = selected
-                          ? phase.reviewer.candidates.filter((c) => c !== l.id)
-                          : [...phase.reviewer.candidates, l.id];
-                        onUpdate({
-                          reviewer: { ...phase.reviewer, candidates: next },
-                        });
-                      }}
-                      className={cn(
-                        "flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-left transition",
-                        blocked && "cursor-not-allowed opacity-40",
-                        !blocked && selected
-                          ? "border-blue-500/40 bg-blue-500/10"
-                          : !blocked
-                            ? "border-border bg-card/40 hover:border-foreground/30"
-                            : "border-border bg-card/40",
-                      )}
-                      title={
-                        blocked
-                          ? "Same lineage as doer — blocked by cross-lineage rule"
-                          : ""
-                      }
-                    >
-                      <span className={cn("h-1.5 w-1.5 rounded-full", l.dot)} />
-                      <span className="text-xs">{l.label}</span>
-                      {selected && !blocked && (
-                        <Check className="ml-auto h-3 w-3 text-blue-400" />
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="flex items-center gap-3">
-                <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                  Require:
+          {/* Artifact — review_only only. Runtime user pastes this into the
+              cockpit when starting a chat; label/hint drive the textarea
+              UX, maxBytes is enforced server-side. */}
+          {phase.kind === "review_only" && (
+            <SubField label="Artifact · what the user pastes when starting a chat">
+              <div className="space-y-2">
+                <div>
+                  <label className="text-[10px] text-muted-foreground">Label</label>
                   <input
-                    type="number"
-                    min={0}
-                    max={4}
-                    value={phase.reviewer.require}
+                    type="text"
+                    value={phase.artifact?.label ?? "Artifact to review"}
                     onChange={(e) =>
                       onUpdate({
-                        reviewer: {
-                          ...phase.reviewer,
-                          require: Math.max(0, parseInt(e.target.value, 10) || 0),
+                        artifact: {
+                          label: e.target.value,
+                          hint:
+                            phase.artifact?.hint ??
+                            "Paste a unified diff, a markdown draft, code, or any text blob.",
+                          maxBytes: phase.artifact?.maxBytes ?? 1024 * 1024,
                         },
                       })
                     }
-                    className="h-6 w-12 rounded border border-border bg-background px-1.5 text-center font-mono text-[11px]"
+                    placeholder="Artifact to review"
+                    className="mt-1 h-7 w-full rounded-md border border-border bg-background px-2.5 text-[11px] placeholder:text-muted-foreground/60 focus:border-primary/60 focus:outline-none"
                   />
-                  approval{phase.reviewer.require === 1 ? "" : "s"}
-                </label>
+                </div>
+                <div>
+                  <label className="text-[10px] text-muted-foreground">
+                    Placeholder hint
+                  </label>
+                  <textarea
+                    value={phase.artifact?.hint ?? ""}
+                    onChange={(e) =>
+                      onUpdate({
+                        artifact: {
+                          label: phase.artifact?.label ?? "Artifact to review",
+                          hint: e.target.value,
+                          maxBytes: phase.artifact?.maxBytes ?? 1024 * 1024,
+                        },
+                      })
+                    }
+                    placeholder="Paste a unified diff, a markdown draft, code, or any text blob."
+                    rows={2}
+                    className="mt-1 w-full resize-none rounded-md border border-border bg-background px-2.5 py-1.5 text-[11px] placeholder:text-muted-foreground/60 focus:border-primary/60 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-muted-foreground">
+                    Max bytes (server-side cap)
+                  </label>
+                  <input
+                    type="number"
+                    min={1024}
+                    step={1024}
+                    value={phase.artifact?.maxBytes ?? 1024 * 1024}
+                    onChange={(e) =>
+                      onUpdate({
+                        artifact: {
+                          label: phase.artifact?.label ?? "Artifact to review",
+                          hint:
+                            phase.artifact?.hint ??
+                            "Paste a unified diff, a markdown draft, code, or any text blob.",
+                          maxBytes: Math.max(1024, parseInt(e.target.value, 10) || 1024 * 1024),
+                        },
+                      })
+                    }
+                    className="mt-1 h-7 w-full rounded-md border border-border bg-background px-2.5 font-mono text-[11px] focus:border-primary/60 focus:outline-none"
+                  />
+                  <p className="mt-1 text-[10px] text-muted-foreground/80">
+                    1 MiB = 1048576. Default if unset.
+                  </p>
+                </div>
+              </div>
+            </SubField>
+          )}
+
+          {/* Reviewers — flat list of (lineage, model) rows. Each row =
+              one reviewer slot. Same lineage with different models is
+              fine (Codex gpt-5.5 + Codex gpt-5.5-pro as two reviewers).
+              Lineage dropdown only shows the user's connected lineages
+              (filtered by their enabled voices). Model dropdown shows
+              all enabled models for the chosen lineage. */}
+          <SubField label="Reviewers · who gates this phase">
+            <ReviewerSlotsEditor
+              phase={phase}
+              connectedVoices={connectedVoices}
+              onUpdate={onUpdate}
+            />
+          </SubField>
+
+          <SubField label="Quorum">
+            <div className="flex items-center gap-4 flex-wrap">
+              <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                Require:
+                <input
+                  type="number"
+                  min={0}
+                  // Cap at the actual expanded reviewer-slot count rather
+                  // than a hardcoded 4 — multi-model rows + 5 lineages can
+                  // legitimately produce >4 slots, and a stale 4 made the
+                  // input refuse a quorum that targets all of them.
+                  max={Math.max(1, reviewerToRows(phase.reviewer).length)}
+                  value={phase.reviewer.require}
+                  onChange={(e) =>
+                    onUpdate({
+                      reviewer: {
+                        ...phase.reviewer,
+                        require: Math.max(0, parseInt(e.target.value, 10) || 0),
+                      },
+                    })
+                  }
+                  className="h-6 w-12 rounded border border-border bg-background px-1.5 text-center font-mono text-[11px]"
+                />
+                approval{phase.reviewer.require === 1 ? "" : "s"}
+              </label>
+              {phase.kind !== "review_only" && (
                 <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
                   <input
                     type="checkbox"
@@ -539,7 +771,7 @@ function PhaseCard({
                   />
                   Cross-lineage required
                 </label>
-              </div>
+              )}
             </div>
           </SubField>
 
@@ -663,7 +895,11 @@ function PhaseCard({
             </SubField>
           )}
 
-          {/* Iterate */}
+          {/* Iterate / Gate — review_only is single-pass per the schema
+              (no doer to revise; the runner doesn't loop). Hide these
+              sections to avoid implying the runner does something it
+              can't. */}
+          {phase.kind !== "review_only" && (
           <SubField label="Iterate · what happens when reviewer rejects">
             <div className="grid grid-cols-3 gap-2">
               <div>
@@ -734,8 +970,10 @@ function PhaseCard({
               </div>
             </div>
           </SubField>
+          )}
 
           {/* Gate */}
+          {phase.kind !== "review_only" && (
           <SubField label="Gate · what happens when this phase finishes">
             <div className="grid grid-cols-2 gap-2">
               <button
@@ -770,8 +1008,170 @@ function PhaseCard({
               </button>
             </div>
           </SubField>
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Reviewer slots editor ───────────────────────────────────────────
+//
+// One row per reviewer = (lineage, model). Same lineage can repeat with
+// different models; each row emits its own entry in YAML candidates[].
+// Internally we keep the existing candidates+candidateModels shape so
+// nothing else has to change; the editor just flattens for display and
+// re-derives both fields on each edit.
+
+interface ReviewerSlotsEditorProps {
+  phase: TemplatePhase;
+  connectedVoices: ConnectedVoiceMap;
+  onUpdate: (patch: Partial<TemplatePhase>) => void;
+}
+
+interface ReviewerRow {
+  lineage: ReviewerLineage;
+  model: string;
+}
+
+function reviewerToRows(reviewer: TemplatePhase["reviewer"]): ReviewerRow[] {
+  const rows: ReviewerRow[] = [];
+  for (const lineage of reviewer.candidates) {
+    const models = reviewer.candidateModels?.[lineage];
+    if (!models || models.length === 0) {
+      rows.push({ lineage, model: "" });
+    } else {
+      for (const m of models) rows.push({ lineage, model: m });
+    }
+  }
+  return rows;
+}
+
+function rowsToReviewer(
+  rows: ReviewerRow[],
+  base: TemplatePhase["reviewer"],
+): TemplatePhase["reviewer"] {
+  const candidates: ReviewerLineage[] = [];
+  const candidateModels: Partial<Record<ReviewerLineage, string[]>> = {};
+  for (const r of rows) {
+    if (!candidates.includes(r.lineage)) candidates.push(r.lineage);
+    if (r.model) (candidateModels[r.lineage] ??= []).push(r.model);
+  }
+  return { ...base, candidates, candidateModels };
+}
+
+function ReviewerSlotsEditor({
+  phase,
+  connectedVoices,
+  onUpdate,
+}: ReviewerSlotsEditorProps) {
+  const rows = reviewerToRows(phase.reviewer);
+  // Lineages the user has at least one enabled voice for. Falls through
+  // to all 5 lineages on a fresh install with zero voices so the dialog
+  // stays usable.
+  const availableLineages = LINEAGES.filter((l) =>
+    connectedVoices.connectedLineages.size === 0
+      ? true
+      : connectedVoices.connectedLineages.has(l.id),
+  );
+
+  function commit(nextRows: ReviewerRow[]) {
+    onUpdate({ reviewer: rowsToReviewer(nextRows, phase.reviewer) });
+  }
+
+  function setRow(i: number, patch: Partial<ReviewerRow>) {
+    const next = rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r));
+    // When the user changes the lineage, reset the model to the new
+    // lineage's first enabled voice (or default) — the previous model
+    // belonged to a different lineage and won't make sense.
+    if (patch.lineage && patch.lineage !== rows[i].lineage) {
+      const enabledForNew = connectedVoices.byLineage[patch.lineage] ?? [];
+      next[i].model = enabledForNew[0] ?? DEFAULT_MODELS[patch.lineage] ?? "";
+    }
+    commit(next);
+  }
+
+  function removeRow(i: number) {
+    commit(rows.filter((_, idx) => idx !== i));
+  }
+
+  function addRow() {
+    // Pick the first connected lineage as the default for new rows.
+    const firstLineage =
+      availableLineages[0]?.id ?? ("claude" as ReviewerLineage);
+    const enabledForLineage =
+      connectedVoices.byLineage[firstLineage] ?? [];
+    const usedModelsForLineage = new Set(
+      rows.filter((r) => r.lineage === firstLineage).map((r) => r.model),
+    );
+    const fresh =
+      enabledForLineage.find((m) => !usedModelsForLineage.has(m)) ??
+      DEFAULT_MODELS[firstLineage] ??
+      "";
+    commit([...rows, { lineage: firstLineage, model: fresh }]);
+  }
+
+  return (
+    <div className="space-y-1.5">
+      {rows.length === 0 && (
+        <p className="text-[11px] text-muted-foreground">
+          No reviewers yet. Click + add reviewer below.
+        </p>
+      )}
+      {rows.map((row, i) => {
+        const lineageMeta = LINEAGES.find((x) => x.id === row.lineage);
+        return (
+          <div key={i} className="flex items-center gap-1.5">
+            <select
+              value={row.lineage}
+              onChange={(e) =>
+                setRow(i, { lineage: e.target.value as ReviewerLineage })
+              }
+              className="h-7 w-32 shrink-0 rounded-md border border-border bg-background px-2 text-[11px] focus:border-primary/60 focus:outline-none"
+              aria-label="Reviewer lineage"
+            >
+              {availableLineages.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.label}
+                </option>
+              ))}
+              {/* If the current row references a lineage NOT in the
+                  available list (template authored elsewhere), keep
+                  showing it so editing doesn't silently swap it. */}
+              {!availableLineages.find((l) => l.id === row.lineage) && (
+                <option value={row.lineage}>
+                  {lineageMeta?.label ?? row.lineage} (not connected)
+                </option>
+              )}
+            </select>
+            <div className="flex-1">
+              <ModelSelect
+                lineage={row.lineage}
+                value={row.model}
+                options={connectedVoices.byLineage[row.lineage] ?? []}
+                defaultModel={DEFAULT_MODELS[row.lineage]}
+                onChange={(next) => setRow(i, { model: next })}
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => removeRow(i)}
+              aria-label="Remove reviewer"
+              className="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-border bg-card/40 text-muted-foreground hover:border-destructive/40 hover:text-destructive"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        );
+      })}
+      <button
+        type="button"
+        onClick={addRow}
+        className="flex w-full items-center justify-center gap-1.5 rounded-md border border-dashed border-border bg-card/30 px-3 py-2 text-[11px] font-medium text-muted-foreground transition hover:border-primary/40 hover:bg-card/50 hover:text-foreground"
+      >
+        <Plus className="h-3 w-3" />
+        Add another reviewer
+      </button>
     </div>
   );
 }

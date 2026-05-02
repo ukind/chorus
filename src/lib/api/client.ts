@@ -18,6 +18,12 @@ export class DaemonError extends Error {
     public code: string,
     public statusCode: number,
     message: string,
+    /**
+     * Optional structured payload mirrored from the server envelope's
+     * `error.details`. Used for zod-issue lists from /templates POST so
+     * the cockpit can pin each error to the field it references.
+     */
+    public details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = "DaemonError";
@@ -55,6 +61,7 @@ export async function fetchFromDaemon<T>(
         data.error?.code || "unknown",
         response.status,
         data.error?.message || "Unknown error",
+        data.error?.details,
       );
     }
 

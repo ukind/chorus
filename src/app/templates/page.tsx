@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useCallback, useState, useEffect } from "react";
+import { Pencil } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/page-header";
 import { CodeBlock } from "@/components/code-block";
-import { NewTemplateDialog } from "@/components/new-template-dialog";
+import { TemplateDialog } from "@/components/template-dialog";
 import { listTemplates, DaemonError } from "@/lib/api";
 import { Template } from "@/lib/types";
 import { UI_LINEAGE_BRAND } from "@/lib/lineage-maps";
@@ -30,17 +31,28 @@ export default function TemplatesPage() {
     useState<(typeof CATEGORIES)[number]["id"]>("all");
   const [selectedId, setSelectedId] = useState<string>("");
 
-  useEffect(() => {
-    listTemplates()
-      .then((temps) => {
+  const refreshTemplates = useCallback(
+    async (preserveId?: string) => {
+      try {
+        const temps = await listTemplates();
         setTemplates(temps);
-        if (temps.length > 0) setSelectedId(temps[0].id);
-      })
-      .catch((err) =>
+        if (preserveId && temps.find((t) => t.id === preserveId)) {
+          setSelectedId(preserveId);
+        } else if (temps.length > 0 && !selectedId) {
+          setSelectedId(temps[0].id);
+        }
+      } catch (err) {
         setLoadError(
           err instanceof DaemonError ? err.message : "Failed to load templates",
-        ),
-      );
+        );
+      }
+    },
+    [selectedId],
+  );
+
+  useEffect(() => {
+    refreshTemplates();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const filtered =
@@ -71,7 +83,11 @@ export default function TemplatesPage() {
           eyebrow="Templates"
           title="Reusable review workflows"
           subtitle="Each template defines the driver, reviewers, prompts, and quorum rule for a kind of task. Fork, edit, share."
-          action={<NewTemplateDialog />}
+          action={
+            <TemplateDialog
+              onSaved={(savedId) => refreshTemplates(savedId)}
+            />
+          }
         />
 
         <div className="mb-4 flex items-center gap-1 border-b border-border">
@@ -98,11 +114,18 @@ export default function TemplatesPage() {
           {/* Template list */}
           <div className="flex min-w-0 flex-col gap-2">
             {filtered.map((t) => (
-              <button
+              <div
                 key={t.id}
-                type="button"
+                role="button"
+                tabIndex={0}
                 onClick={() => setSelectedId(t.id)}
-                className={`rounded-xl text-left transition ${
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setSelectedId(t.id);
+                  }
+                }}
+                className={`group relative cursor-pointer rounded-xl text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 ${
                   t.id === selectedId
                     ? "ring-2 ring-primary/60 ring-offset-2 ring-offset-background"
                     : ""
@@ -127,15 +150,22 @@ export default function TemplatesPage() {
                       </p>
                     </div>
                   </div>
-                  {t.phases[0]?.reviewer.candidates.length ? (
+                  {t.phases[0]?.reviewer?.candidates.length ? (
                     <div className="mt-3 flex items-center gap-2 text-[11px] text-muted-foreground">
+                      {/* review_only templates have no doer — start the row
+                          with the reviewer dots directly. Standard phases
+                          show "doer → reviewers". */}
+                      {t.phases[0]?.kind !== "review_only" && (
+                        <>
+                          <span className="flex items-center gap-1">
+                            <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+                            doer
+                          </span>
+                          <span className="text-muted-foreground/40">→</span>
+                        </>
+                      )}
                       <span className="flex items-center gap-1">
-                        <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
-                        doer
-                      </span>
-                      <span className="text-muted-foreground/40">→</span>
-                      <span className="flex items-center gap-1">
-                        {t.phases[0]?.reviewer.candidates.map((l) => (
+                        {t.phases[0]?.reviewer?.candidates.map((l) => (
                           <span
                             key={l}
                             className={`h-1.5 w-1.5 rounded-full ${LINEAGE_DOT[l]}`}
@@ -143,8 +173,8 @@ export default function TemplatesPage() {
                           />
                         ))}
                         <span>
-                          {t.phases[0]?.reviewer.candidates.length}{" "}
-                          {t.phases[0]?.reviewer.candidates.length === 1
+                          {t.phases[0]?.reviewer?.candidates.length}{" "}
+                          {t.phases[0]?.reviewer?.candidates.length === 1
                             ? "reviewer"
                             : "reviewers"}
                         </span>
@@ -160,20 +190,52 @@ export default function TemplatesPage() {
                     </div>
                   ) : null}
                 </Card>
-              </button>
+                {/* Pencil edit affordance — appears on hover or when selected.
+                    stopPropagation prevents the card's onClick from firing. */}
+                <div
+                  className={`absolute bottom-3 right-3 transition ${
+                    t.id === selectedId
+                      ? "opacity-100"
+                      : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+                  }`}
+                  onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => e.stopPropagation()}
+                >
+                  <TemplateDialog
+                    editing={t}
+                    onSaved={(savedId) => refreshTemplates(savedId)}
+                    trigger={
+                      <button
+                        type="button"
+                        aria-label={`Edit ${t.name}`}
+                        className="grid h-7 w-7 place-items-center rounded-md border border-border bg-card text-muted-foreground transition hover:border-muted-foreground/40 hover:bg-accent/60 hover:text-foreground"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                    }
+                  />
+                </div>
+              </div>
             ))}
           </div>
 
-          {/* YAML preview */}
+          {/* YAML preview — sticky to top of viewport on lg+ so the
+              pane fills the available height instead of capping at 60vh
+              and leaving empty space when the list is short.
+              Height reserves ~10rem total: ~6rem for the page header
+              (eyebrow + title + subtitle + tabs) and ~4rem of bottom
+              breathing room so the pane doesn't kiss the viewport edge. */}
           {selected ? (
-            <CodeBlock
-              filename={`${selected.id}.yaml`}
-              charCount={selected.yaml.length}
-              maxHeightClassName="max-h-[60vh]"
-              footer={<span>by {selected.authorHandle}</span>}
-            >
-              {selected.yaml}
-            </CodeBlock>
+            <div className="lg:sticky lg:top-6 lg:max-h-[calc(100vh-10rem)] lg:h-[calc(100vh-10rem)]">
+              <CodeBlock
+                filename={`${selected.id}.yaml`}
+                charCount={selected.yaml.length}
+                maxHeightClassName="h-full"
+                footer={<span>by {selected.authorHandle}</span>}
+              >
+                {selected.yaml}
+              </CodeBlock>
+            </div>
           ) : (
             <Card className="bg-card p-4 text-center text-muted-foreground">
               <p>Select a template to view details</p>

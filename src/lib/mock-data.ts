@@ -98,6 +98,7 @@ export interface ReviewerSlot {
 /** What a phase produces — drives the UI body and the artifact type. */
 export type PhaseKind =
   | "review" // panel critiques an existing artifact
+  | "review_only" // single-pass review of a runtime-supplied artifact (no doer)
   | "plan" // doer drafts a plan
   | "spec" // doer derives spec / API contract
   | "tests" // doer writes tests
@@ -134,6 +135,14 @@ export interface ReviewerRule {
   crossLineage: boolean;
   /** Allowed reviewer pool. If empty, any non-doer lineage is acceptable. */
   candidates: ReviewerLineage[];
+  /**
+   * Optional per-lineage model assignment for reviewer candidates.
+   * Lets a template author pick a specific model per reviewer (e.g.
+   * Claude Sonnet 4.6 as reviewer with Claude Opus 4.7 as doer, or
+   * Codex with one prompt-persona vs another). When unset for a given
+   * lineage, the form falls back to that lineage's default model.
+   */
+  candidateModels?: Partial<Record<ReviewerLineage, string[]>>;
 }
 
 /** What prior phases this phase's doer is allowed to read. */
@@ -175,6 +184,17 @@ export interface TemplatePhase {
   execution: ExecutionMode;
   /** True for opinionated built-in phases — user-authored phases are false. */
   builtin: boolean;
+  /**
+   * Artifact spec — only meaningful when kind === 'review_only'. Drives
+   * the cockpit textarea label/placeholder and the size cap. Mirrors the
+   * shape on `lib/types:TemplatePhase` so the dialog and PhaseEditor can
+   * round-trip review_only templates.
+   */
+  artifact?: {
+    label: string;
+    hint: string;
+    maxBytes: number;
+  };
 }
 
 export interface Template {

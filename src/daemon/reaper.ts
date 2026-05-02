@@ -23,23 +23,25 @@ export interface ReaperConfig {
  */
 export function startReaper(
   mgr: TmuxManager,
-  getActiveChats: () => Map<string, string>,
+  getActiveChats: () => Promise<Map<string, string>>,
   cfg: ReaperConfig
 ): () => void {
   const interval = setInterval(() => {
-    try {
-      const activeChats = getActiveChats();
-      const result = mgr.reapOnce({
-        activeChats,
-        idleDestroyMinutes: cfg.idleDestroyMinutes,
-      });
+    void (async () => {
+      try {
+        const activeChats = await getActiveChats();
+        const result = mgr.reapOnce({
+          activeChats,
+          idleDestroyMinutes: cfg.idleDestroyMinutes,
+        });
 
-      if (result.killed.length > 0) {
-        console.log(`[reaper] Killed ${result.killed.length} session(s): ${result.killed.join(', ')}`);
+        if (result.killed.length > 0) {
+          console.log(`[reaper] Killed ${result.killed.length} session(s): ${result.killed.join(', ')}`);
+        }
+      } catch (error) {
+        console.error('[reaper] Error during sweep:', error);
       }
-    } catch (error) {
-      console.error('[reaper] Error during sweep:', error);
-    }
+    })();
   }, cfg.intervalMs);
 
   // Return stop function

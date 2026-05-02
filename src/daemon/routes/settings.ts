@@ -17,7 +17,7 @@ export function registerSettingsRoutes(fastify: FastifyInstance): void {
   // ─── Base settings (key/value bag) ───────────────────────────────────
   fastify.get<{ Reply: ApiResponse<object> }>('/settings', async () => {
     try {
-      const allSettings = settings.getAll();
+      const allSettings = await settings.getAll();
       return successResponse(allSettings);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
@@ -32,9 +32,9 @@ export function registerSettingsRoutes(fastify: FastifyInstance): void {
     try {
       const updates = request.body;
       for (const [key, value] of Object.entries(updates)) {
-        settings.set(key, value);
+        await settings.set(key, value);
       }
-      return successResponse(settings.getAll());
+      return successResponse(await settings.getAll());
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return errorResponse('db_error', message);
@@ -50,7 +50,7 @@ export function registerSettingsRoutes(fastify: FastifyInstance): void {
           '../../lib/settings/permissions.js'
         );
         return successResponse({
-          ...getPermissions(),
+          ...(await getPermissions()),
           profileDescriptions: PROFILE_DESCRIPTIONS,
         });
       } catch (error) {
@@ -71,7 +71,7 @@ export function registerSettingsRoutes(fastify: FastifyInstance): void {
     try {
       const { setPermissions } = await import('../../lib/settings/permissions.js');
       const body = request.body ?? {};
-      const next = setPermissions({
+      const next = await setPermissions({
         ...(body.sandboxProfile !== undefined && {
           sandboxProfile: body.sandboxProfile as 'strict' | 'workspace' | 'full',
         }),
@@ -98,7 +98,7 @@ export function registerSettingsRoutes(fastify: FastifyInstance): void {
           '../../lib/settings/transport.js'
         );
         return successResponse({
-          transport: getTransport(),
+          transport: await getTransport(),
           descriptions: TRANSPORT_DESCRIPTIONS,
         });
       } catch (error) {
@@ -118,7 +118,7 @@ export function registerSettingsRoutes(fastify: FastifyInstance): void {
       if (body.transport !== 'headless' && body.transport !== 'tmux') {
         return errorResponse('validation', 'transport must be "headless" or "tmux"');
       }
-      return successResponse({ transport: setTransport(body.transport) });
+      return successResponse({ transport: await setTransport(body.transport) });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return errorResponse('validation', message);
@@ -132,7 +132,7 @@ export function registerSettingsRoutes(fastify: FastifyInstance): void {
         '../../lib/settings/billing.js'
       );
       return successResponse({
-        mode: getBillingMode(),
+        mode: await getBillingMode(),
         descriptions: BILLING_MODE_LABELS,
       });
     } catch (error) {
@@ -159,7 +159,7 @@ export function registerSettingsRoutes(fastify: FastifyInstance): void {
           'mode must be "api" | "subscription" | "mixed"',
         );
       }
-      return successResponse({ mode: setBillingMode(body.mode) });
+      return successResponse({ mode: await setBillingMode(body.mode) });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return errorResponse('validation', message);
@@ -170,7 +170,7 @@ export function registerSettingsRoutes(fastify: FastifyInstance): void {
 export function registerSecretRoutes(fastify: FastifyInstance): void {
   fastify.get<{ Reply: ApiResponse<object[]> }>('/secrets', async () => {
     try {
-      return successResponse(secrets.list());
+      return successResponse(await secrets.list());
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return errorResponse('db_error', message);
@@ -188,7 +188,7 @@ export function registerSecretRoutes(fastify: FastifyInstance): void {
       if (!value || !kind) {
         return errorResponse('validation', 'value and kind are required');
       }
-      secrets.set(provider, kind as 'api_key' | 'cli_subscription', value, meta);
+      await secrets.set(provider, kind as 'api_key' | 'cli_subscription', value, meta);
       return successResponse({ provider, kind, updated_at: Date.now() });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';

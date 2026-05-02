@@ -43,15 +43,15 @@ function isBillingMode(value: unknown): value is BillingMode {
   return value === 'api' || value === 'subscription' || value === 'mixed';
 }
 
-export function getBillingMode(): BillingMode {
-  const raw = settings.get(BILLING_MODE_KEY);
+export async function getBillingMode(): Promise<BillingMode> {
+  const raw = await settings.get(BILLING_MODE_KEY);
   return isBillingMode(raw) ? raw : DEFAULT_BILLING_MODE;
 }
 
-export function setBillingMode(value: BillingMode): BillingMode {
+export async function setBillingMode(value: BillingMode): Promise<BillingMode> {
   if (!isBillingMode(value)) {
     throw new Error(`invalid billing mode: ${value}`);
   }
-  settings.set(BILLING_MODE_KEY, value);
+  await settings.set(BILLING_MODE_KEY, value);
   return getBillingMode();
 }

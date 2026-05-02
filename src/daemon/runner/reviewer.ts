@@ -48,7 +48,7 @@ export async function runReviewerHeadless(args: {
 
   if (!shim.runHeadless) return null;
 
-  const perms = getPermissions();
+  const perms = await getPermissions();
   let accumulated = '';
   let finalText: string | undefined;
   let errored = false;

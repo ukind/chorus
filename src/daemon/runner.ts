@@ -411,7 +411,7 @@ async function runDoer(
   // Transport branch: headless when settings + shim support it; otherwise
   // fall through to the tmux flow below. Mixed-mode in a single chat is OK
   // — Claude can run headless while Gemini reviewer falls back to tmux.
-  const transport = getTransport();
+  const transport = await getTransport();
   if (transport === 'headless' && shim.runHeadless) {
     return runDoerHeadless({
       shim,
@@ -429,7 +429,7 @@ async function runDoer(
 
   // Acquire session — fresh per chat by default; reuses across rounds when
   // template policy says so (shareSessionAcrossRounds, default true).
-  const perms = getPermissions();
+  const perms = await getPermissions();
   const sessionName = sanitizeName(`chorus-${chatId}-${phase.id}-doer-${agentName}`);
   const session = await tmuxMgr.acquire({
     chatId,
@@ -504,11 +504,18 @@ async function runDoer(
             ts: Date.now(),
           });
         } else {
+          // Fire-and-forget — recordHealth became async in the libsql
+          // migration. Inside a setInterval callback we can't await without
+          // changing the callback shape; explicit .catch keeps unhandled
+          // rejections off the process and preserves the pre-migration
+          // semantics (non-blocking health record).
           recordHealth({
             lineage: phase.doer.lineage as CliLineage,
             status: kindToStatus(err.kind),
             message: err.message,
             resetAt: err.resetAt,
+          }).catch((healthErr: unknown) => {
+            console.error(`[chorus] recordHealth failed for ${phase.doer.lineage}:`, healthErr);
           });
           onEvent({
             chatId,
@@ -737,7 +744,7 @@ async function runReviewer(
 
   // Headless branch — same pattern as runDoer. Mixed-mode is fine: doer can
   // run headless while a reviewer of a different lineage falls back to tmux.
-  const transport = getTransport();
+  const transport = await getTransport();
   if (transport === 'headless' && shim.runHeadless) {
     return runReviewerHeadless({
       shim,
@@ -758,7 +765,7 @@ async function runReviewer(
 
   // Reviewers don't share sessions across rounds — each round wants a fresh
   // perspective on the new doer output. Across-phase reuse never makes sense.
-  const perms = getPermissions();
+  const perms = await getPermissions();
   const sessionName = sanitizeName(
     `chorus-${chatId}-${phase.id}-reviewer-${agentName}-${reviewerIdx}`,
   );
@@ -830,11 +837,15 @@ async function runReviewer(
             ts: Date.now(),
           });
         } else {
+          // See doer-side comment at runner.ts:507 — same fire-and-forget
+          // pattern for the async recordHealth inside a setInterval cb.
           recordHealth({
             lineage: candidate.lineage as CliLineage,
             status: kindToStatus(err.kind),
             message: err.message,
             resetAt: err.resetAt,
+          }).catch((healthErr: unknown) => {
+            console.error(`[chorus] recordHealth failed for ${candidate.lineage}:`, healthErr);
           });
           onEvent({
             chatId,

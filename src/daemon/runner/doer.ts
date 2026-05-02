@@ -53,7 +53,7 @@ export async function runDoerHeadless(args: {
     return null;
   }
 
-  const perms = getPermissions();
+  const perms = await getPermissions();
   let accumulated = '';
   let finalText: string | undefined;
   let errored = false;

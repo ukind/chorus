@@ -46,12 +46,12 @@ const ALL_LINEAGES: CliLineage[] = [
   'moonshot',
 ];
 
-export function recordHealth(input: {
+export async function recordHealth(input: {
   lineage: CliLineage;
   status: HealthStatus;
   message?: string;
   resetAt?: number;
-}): void {
+}): Promise<void> {
   const payload: CliHealth = {
     lineage: input.lineage,
     status: input.status,
@@ -59,11 +59,11 @@ export function recordHealth(input: {
     resetAt: input.resetAt,
     updatedAt: Date.now(),
   };
-  settings.set(KEY(input.lineage), payload);
+  await settings.set(KEY(input.lineage), payload);
 }
 
-export function getHealth(lineage: CliLineage): CliHealth {
-  const raw = settings.get(KEY(lineage));
+export async function getHealth(lineage: CliLineage): Promise<CliHealth> {
+  const raw = await settings.get(KEY(lineage));
   if (raw && typeof raw === 'object' && 'status' in raw) {
     return raw as CliHealth;
   }
@@ -74,8 +74,8 @@ export function getHealth(lineage: CliLineage): CliHealth {
   };
 }
 
-export function getAllHealth(): CliHealth[] {
-  return ALL_LINEAGES.map(getHealth);
+export async function getAllHealth(): Promise<CliHealth[]> {
+  return Promise.all(ALL_LINEAGES.map(getHealth));
 }
 
 /**

@@ -27,7 +27,7 @@ export function registerSystemRoutes(
   // List blocked chats — used by the cockpit's /blocked page.
   fastify.get<{ Reply: ApiResponse<object[]> }>('/blocked', async () => {
     try {
-      return successResponse(chats.list({ status: 'blocked' }));
+      return successResponse(await chats.list({ status: 'blocked' }));
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return errorResponse('db_error', message);
@@ -38,7 +38,7 @@ export function registerSystemRoutes(
   fastify.get<{ Reply: ApiResponse<object[]> }>('/cli/health', async () => {
     try {
       const { getAllHealth } = await import('../../lib/cli-health.js');
-      return successResponse(getAllHealth());
+      return successResponse(await getAllHealth());
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return errorResponse('internal', message);

@@ -49,14 +49,14 @@ export const TMUX_AVAILABLE: boolean = platform() !== 'win32';
  */
 export const DEFAULT_TRANSPORT: Transport = 'headless';
 
-export function getTransport(): Transport {
+export async function getTransport(): Promise<Transport> {
   // Env override takes precedence — operator escape hatch.
   const envOverride = process.env.CHORUS_TRANSPORT;
   let resolved: Transport;
   if (envOverride === 'headless' || envOverride === 'tmux') {
     resolved = envOverride;
   } else {
-    const raw = settings.get(TRANSPORT_KEY);
+    const raw = await settings.get(TRANSPORT_KEY);
     const parsed = TransportSchema.safeParse(raw);
     resolved = parsed.success ? parsed.data : DEFAULT_TRANSPORT;
   }
@@ -65,14 +65,14 @@ export function getTransport(): Transport {
   return resolved;
 }
 
-export function setTransport(value: Transport): Transport {
+export async function setTransport(value: Transport): Promise<Transport> {
   TransportSchema.parse(value);
   if (value === 'tmux' && !TMUX_AVAILABLE) {
     throw new Error(
       'tmux transport is not available on Windows — headless transport works for everything tmux does plus more.',
     );
   }
-  settings.set(TRANSPORT_KEY, value);
+  await settings.set(TRANSPORT_KEY, value);
   return getTransport();
 }
 

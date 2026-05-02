@@ -144,7 +144,7 @@ program
       }
 
       // Initialize DB (this will seed schema)
-      getDb();
+      await getDb();
       console.log(`  ${sym.ok} ${c.dim('database ready at')} ${path.join(chorusDir, 'chorus.db')}`);
 
       // Copy built-in templates
@@ -159,10 +159,10 @@ program
           const yamlPath = path.join(templatesDir, file);
           const yamlContent = fs.readFileSync(yamlPath, 'utf-8');
 
-          const existing = templates.getById(id);
+          const existing = await templates.getById(id);
 
           if (!existing) {
-            templates.create(id, yamlContent, 'builtin');
+            await templates.create(id, yamlContent, 'builtin');
             seeded.push(id);
           }
         }

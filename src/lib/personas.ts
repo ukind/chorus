@@ -94,11 +94,11 @@ export function loadPersonaFiles(): ParsedPersonaFile[] {
  *
  * Returns the count of rows upserted.
  */
-export function seedBuiltinPersonas(): number {
+export async function seedBuiltinPersonas(): Promise<number> {
   const parsed = loadPersonaFiles();
   let count = 0;
   for (const { frontmatter, body } of parsed) {
-    personas.upsert({
+    await personas.upsert({
       id: frontmatter.id,
       label: frontmatter.label,
       one_liner: frontmatter.one_liner,
@@ -115,10 +115,10 @@ export function seedBuiltinPersonas(): number {
 /**
  * Public read API used by HTTP / MCP layers.
  */
-export function listPersonas(): PersonaRow[] {
+export async function listPersonas(): Promise<PersonaRow[]> {
   return personas.list();
 }
 
-export function getPersona(id: string): PersonaRow | null {
+export async function getPersona(id: string): Promise<PersonaRow | null> {
   return personas.getById(id);
 }

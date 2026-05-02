@@ -19,7 +19,7 @@ export function registerTemplateRoutes(fastify: FastifyInstance): void {
   // List all templates
   fastify.get<{ Reply: ApiResponse<object[]> }>('/templates', async () => {
     try {
-      const list = templates.list();
+      const list = await templates.list();
       return successResponse(list);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
@@ -33,7 +33,7 @@ export function registerTemplateRoutes(fastify: FastifyInstance): void {
     Reply: ApiResponse<object>;
   }>('/templates/:id', async (request) => {
     try {
-      const template = templates.getById(request.params.id);
+      const template = await templates.getById(request.params.id);
       if (!template) {
         return errorResponse('not_found', `Template ${request.params.id} not found`);
       }
@@ -62,10 +62,10 @@ export function registerTemplateRoutes(fastify: FastifyInstance): void {
       } catch (parseError) {
         return errorResponse('validation', `Invalid YAML: ${parseError}`);
       }
-      const existing = templates.getById(id);
+      const existing = await templates.getById(id);
       const source: 'builtin' | 'user' =
         existing?.source === 'builtin' ? 'builtin' : 'user';
-      const template = templates.create(id, yamlContent, source);
+      const template = await templates.create(id, yamlContent, source);
       return successResponse(template);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
@@ -78,7 +78,7 @@ export function registerPersonaRoutes(fastify: FastifyInstance): void {
   fastify.get<{ Reply: ApiResponse<object[]> }>('/personas', async () => {
     try {
       const { listPersonas } = await import('../../lib/personas.js');
-      return successResponse(listPersonas());
+      return successResponse(await listPersonas());
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return errorResponse('db_error', message);
@@ -91,7 +91,7 @@ export function registerPersonaRoutes(fastify: FastifyInstance): void {
   }>('/personas/:id', async (request) => {
     try {
       const { getPersona } = await import('../../lib/personas.js');
-      const row = getPersona(request.params.id);
+      const row = await getPersona(request.params.id);
       if (!row) {
         return errorResponse('not_found', `Persona ${request.params.id} not found`);
       }

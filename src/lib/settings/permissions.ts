@@ -43,33 +43,33 @@ const SANDBOX_KEY = 'sandbox_profile';
 const AUTO_APPROVE_KEY = 'auto_approve_prompts';
 const NETWORK_KEY = 'network_access';
 
-export function getPermissions(): PermissionSettings {
-  const sandboxRaw = settings.get(SANDBOX_KEY);
+export async function getPermissions(): Promise<PermissionSettings> {
+  const [sandboxRaw, autoApproveRaw, networkRaw] = await Promise.all([
+    settings.get(SANDBOX_KEY),
+    settings.get(AUTO_APPROVE_KEY),
+    settings.get(NETWORK_KEY),
+  ]);
   const sandboxProfile = SandboxProfileSchema.safeParse(sandboxRaw);
 
   return {
     sandboxProfile: sandboxProfile.success ? sandboxProfile.data : DEFAULT_PERMISSIONS.sandboxProfile,
     autoApprovePrompts:
-      typeof settings.get(AUTO_APPROVE_KEY) === 'boolean'
-        ? (settings.get(AUTO_APPROVE_KEY) as boolean)
-        : DEFAULT_PERMISSIONS.autoApprovePrompts,
+      typeof autoApproveRaw === 'boolean' ? autoApproveRaw : DEFAULT_PERMISSIONS.autoApprovePrompts,
     networkAccess:
-      typeof settings.get(NETWORK_KEY) === 'boolean'
-        ? (settings.get(NETWORK_KEY) as boolean)
-        : DEFAULT_PERMISSIONS.networkAccess,
+      typeof networkRaw === 'boolean' ? networkRaw : DEFAULT_PERMISSIONS.networkAccess,
   };
 }
 
-export function setPermissions(input: Partial<PermissionSettings>): PermissionSettings {
+export async function setPermissions(input: Partial<PermissionSettings>): Promise<PermissionSettings> {
   if (input.sandboxProfile !== undefined) {
     SandboxProfileSchema.parse(input.sandboxProfile);
-    settings.set(SANDBOX_KEY, input.sandboxProfile);
+    await settings.set(SANDBOX_KEY, input.sandboxProfile);
   }
   if (input.autoApprovePrompts !== undefined) {
-    settings.set(AUTO_APPROVE_KEY, input.autoApprovePrompts);
+    await settings.set(AUTO_APPROVE_KEY, input.autoApprovePrompts);
   }
   if (input.networkAccess !== undefined) {
-    settings.set(NETWORK_KEY, input.networkAccess);
+    await settings.set(NETWORK_KEY, input.networkAccess);
   }
   return getPermissions();
 }

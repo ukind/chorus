@@ -124,7 +124,7 @@ export function getParsedTemplate(
 // rows we can't faithfully reconstruct.
 function phaseEventToRunnerEvent(
   chatId: string,
-  ev: ReturnType<typeof phaseEvents.list>[number],
+  ev: Awaited<ReturnType<typeof phaseEvents.list>>[number],
 ): Record<string, unknown> | null {
   const baseType =
     ev.state === 'drafting'
@@ -158,7 +158,7 @@ function phaseEventToRunnerEvent(
 interface RunWithMultiplexArgs {
   chatId: string;
   template: ReturnType<typeof TemplateSchema.parse>;
-  chat: NonNullable<ReturnType<typeof chats.getById>>;
+  chat: NonNullable<Awaited<ReturnType<typeof chats.getById>>>;
 }
 
 function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
@@ -168,6 +168,18 @@ function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
   // entry.abortController.abort(). Closing an SSE does NOT abort.
   const abortController = new AbortController();
   const subscribers = new Set<Subscriber>();
+
+  // Pending DB writes from onEvent. Fire-and-forget here would race against
+  // the activeRuns.delete in `.finally()` below — a reattaching SSE could
+  // see activeRuns empty (slot released) but read the stale chats row
+  // (status='reviewing') and start a duplicate run. Drain this set before
+  // releasing the slot. Identified during PR #1 multi-LLM review.
+  const pendingWrites = new Set<Promise<unknown>>();
+  const trackWrite = <T,>(p: Promise<T>): Promise<T> => {
+    pendingWrites.add(p);
+    p.finally(() => pendingWrites.delete(p));
+    return p;
+  };
 
   // Single onEvent for the runChat. Persists side effects exactly once and
   // fans out to every subscribed SSE. Handles backpressure by queuing writes
@@ -217,54 +229,73 @@ function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
       const phaseKind = validKinds.includes(kind)
         ? (kind as 'plan' | 'spec' | 'tests' | 'implement' | 'review' | 'verify' | 'divergence')
         : 'plan';
-      phaseEvents.create({
-        chat_id: chatId,
-        phase_idx: (payload.phaseIdx as number) ?? 0,
-        phase_kind: phaseKind,
-        role: (payload.role as 'doer' | 'reviewer') ?? 'doer',
-        agent_id: (payload.agent as string) ?? null,
-        state:
-          event.type === 'phase_start'
-            ? 'drafting'
-            : event.type === 'phase_done'
-              ? 'submitted'
-              : 'blocked',
-        output: (payload.output as string) ?? null,
-        cost_usd: 0,
-        tokens_in: 0,
-        tokens_out: 0,
-        started_at: event.ts,
-        finished_at:
-          event.type === 'phase_done' || event.type === 'phase_failed'
-            ? Date.now()
-            : null,
-      });
+      // Fire-and-forget the DB write. onEvent is typed `(e) => void` and is
+      // called synchronously from the runner — awaiting here would block the
+      // entire fan-out chain. SQLite serializes writes via WAL anyway.
+      // Tracked in pendingWrites so the .finally drain can ensure all DB
+      // state is consistent before activeRuns.delete fires.
+      void trackWrite(
+        phaseEvents
+          .create({
+            chat_id: chatId,
+            phase_idx: (payload.phaseIdx as number) ?? 0,
+            phase_kind: phaseKind,
+            role: (payload.role as 'doer' | 'reviewer') ?? 'doer',
+            agent_id: (payload.agent as string) ?? null,
+            state:
+              event.type === 'phase_start'
+                ? 'drafting'
+                : event.type === 'phase_done'
+                  ? 'submitted'
+                  : 'blocked',
+            output: (payload.output as string) ?? null,
+            cost_usd: 0,
+            tokens_in: 0,
+            tokens_out: 0,
+            started_at: event.ts,
+            finished_at:
+              event.type === 'phase_done' || event.type === 'phase_failed'
+                ? Date.now()
+                : null,
+          })
+          .catch((err: unknown) => {
+            console.error(`[chorus] phaseEvents.create failed for chat ${chatId}:`, err);
+          }),
+      );
     }
 
     // Update chats.status on terminal event. Same translation as before:
     // runner emits status='completed' for the happy path; we map to
-    // 'approved' to fit the chats.status enum.
+    // 'approved' to fit the chats.status enum. Tracked so .finally drains
+    // before releasing the activeRuns slot — otherwise a reattaching SSE
+    // could see no active run + stale 'reviewing' status and start a dup run.
     if (event.type === 'chat_done') {
       const payload = event.payload as Record<string, unknown>;
       const status = (payload.status as string) ?? 'completed';
-      chats.update(chatId, {
-        status: (status === 'completed' ? 'approved' : status) as
-          | 'drafting'
-          | 'reviewing'
-          | 'approved'
-          | 'merged'
-          | 'blocked'
-          | 'cancelled'
-          | 'failed'
-          | 'no_review',
-        ...(typeof payload.prUrl === 'string' && payload.prUrl.length > 0
-          ? { pr_url: payload.prUrl }
-          : {}),
-        ...(typeof payload.shipError === 'string' && payload.shipError.length > 0
-          ? { ship_error: payload.shipError }
-          : {}),
-        finished_at: Date.now(),
-      });
+      void trackWrite(
+        chats
+          .update(chatId, {
+            status: (status === 'completed' ? 'approved' : status) as
+              | 'drafting'
+              | 'reviewing'
+              | 'approved'
+              | 'merged'
+              | 'blocked'
+              | 'cancelled'
+              | 'failed'
+              | 'no_review',
+            ...(typeof payload.prUrl === 'string' && payload.prUrl.length > 0
+              ? { pr_url: payload.prUrl }
+              : {}),
+            ...(typeof payload.shipError === 'string' && payload.shipError.length > 0
+              ? { ship_error: payload.shipError }
+              : {}),
+            finished_at: Date.now(),
+          })
+          .catch((err: unknown) => {
+            console.error(`[chorus] chats.update on chat_done failed for ${chatId}:`, err);
+          }),
+      );
     }
   };
 
@@ -278,9 +309,16 @@ function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
     tmuxMgr,
     errorDetector,
     onEvent,
-  }).finally(() => {
-    // Always release the registry slot when the runner exits. Subsequent SSE
-    // attachers fall through to the terminal-state replay branch above.
+  }).finally(async () => {
+    // Drain pending DB writes BEFORE releasing the slot. Without this, the
+    // chat_done chats.update can still be in flight when a reattaching SSE
+    // sees activeRuns empty + reads stale chats row → starts a duplicate
+    // run, burns subscription quota, writes duplicate phase events.
+    // allSettled so a failed write doesn't leak unhandled rejections — the
+    // individual .catch handlers above already log the failure.
+    if (pendingWrites.size > 0) {
+      await Promise.allSettled(Array.from(pendingWrites));
+    }
     activeRuns.delete(chatId);
   });
 
@@ -295,7 +333,7 @@ async function main() {
   // *before* the first HTTP request fails opaquely. Without this, the
   // cockpit would just show "db_error" with no clue for the user.
   try {
-    chats.list({ limit: 1 });
+    await chats.list({ limit: 1 });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     // eslint-disable-next-line no-console
@@ -319,7 +357,7 @@ async function main() {
   // startup; user-created rows (builtin=0) are not touched.
   try {
     const { seedBuiltinPersonas } = await import('../lib/personas.js');
-    const count = seedBuiltinPersonas();
+    const count = await seedBuiltinPersonas();
     // eslint-disable-next-line no-console
     console.log(`[daemon] seeded ${count} built-in personas`);
   } catch (err) {
@@ -348,7 +386,7 @@ async function main() {
     try {
       const { status, limit, offset } = request.query;
 
-      const list = chats.list({
+      const list = await chats.list({
         status: status || undefined,
         limit: limit ? parseInt(limit, 10) : undefined,
         offset: offset ? parseInt(offset, 10) : undefined,
@@ -370,13 +408,13 @@ async function main() {
       if (!isValidChatId(request.params.id)) {
         return errorResponse('validation', 'invalid chat id');
       }
-      const chat = chats.getById(request.params.id);
+      const chat = await chats.getById(request.params.id);
 
       if (!chat) {
         return errorResponse('not_found', `Chat ${request.params.id} not found`);
       }
 
-      const events = phaseEvents.list(request.params.id);
+      const events = await phaseEvents.list(request.params.id);
 
       return successResponse({ ...chat, events });
     } catch (error) {
@@ -420,7 +458,7 @@ async function main() {
       // runner.
       let initialPhaseKind: 'plan' | 'spec' | 'tests' | 'implement' | 'review' | 'verify' | 'divergence' = 'plan';
       try {
-        const tmpl = templates.getById(templateId);
+        const tmpl = await templates.getById(templateId);
         if (tmpl) {
           const parsed = yaml.parse(tmpl.yaml) as { phases?: Array<{ kind?: string }> } | undefined;
           const firstKind = parsed?.phases?.[0]?.kind;
@@ -433,7 +471,7 @@ async function main() {
         /* fall through with 'plan' default */
       }
 
-      const chat = chats.create({
+      const chat = await chats.create({
         work,
         template_id: templateId,
         attached_files: files ? JSON.stringify(files) : undefined,
@@ -444,7 +482,7 @@ async function main() {
       // This endpoint is for chat creation only.
 
       // Create initial phase event
-      phaseEvents.create({
+      await phaseEvents.create({
         chat_id: chat.id,
         phase_idx: 0,
         phase_kind: initialPhaseKind,
@@ -476,7 +514,7 @@ async function main() {
       if (!isValidChatId(chatId)) {
         return errorResponse('validation', 'invalid chat id');
       }
-      const chat = chats.cancel(chatId);
+      const chat = await chats.cancel(chatId);
 
       // Abort the active runner if there is one. This propagates into the
       // runChat abortListener which fires chat_done(cancelled) once (latched
@@ -517,7 +555,7 @@ async function main() {
       if (!isValidChatId(id)) {
         return errorResponse('validation', 'invalid chat id');
       }
-      const existing = chats.getById(id);
+      const existing = await chats.getById(id);
       if (!existing) {
         return successResponse({ id, deleted: false, reason: 'not_found' });
       }
@@ -528,7 +566,7 @@ async function main() {
         existing.status === 'reviewing'
       ) {
         try {
-          chats.cancel(id);
+          await chats.cancel(id);
         } catch {
           /* best-effort */
         }
@@ -563,7 +601,7 @@ async function main() {
       }
 
       // 3. Drop DB row + phase events.
-      chats.delete(id);
+      await chats.delete(id);
 
       // 4. Nuke chat artifacts directory.
       const fsModule = await import('fs');
@@ -604,7 +642,7 @@ async function main() {
         return errorResponse('validation', 'answer is required');
       }
 
-      const chat = chats.update(chatId, { status: 'reviewing' });
+      const chat = await chats.update(chatId, { status: 'reviewing' });
 
       return successResponse(chat);
     } catch (error) {
@@ -625,14 +663,14 @@ async function main() {
     }
 
     try {
-      const chat = chats.getById(chatId);
+      const chat = await chats.getById(chatId);
 
       if (!chat) {
         reply.code(404);
         return { error: 'not found' };
       }
 
-      const tmplRow = templates.getById(chat.template_id);
+      const tmplRow = await templates.getById(chat.template_id);
       if (!tmplRow) {
         reply.code(404);
         return { error: 'template not found' };
@@ -684,7 +722,7 @@ async function main() {
       // RunnerEvent shape the live stream uses (phase_start / phase_done /
       // phase_failed). This is best-effort — DB doesn't capture phase_progress
       // or cli_error, so live tail is still richer.
-      const pastEvents = phaseEvents.list(chatId);
+      const pastEvents = await phaseEvents.list(chatId);
       for (const ev of pastEvents) {
         const reconstructed = phaseEventToRunnerEvent(chatId, ev);
         if (reconstructed) {
@@ -794,7 +832,7 @@ async function main() {
   registerSystemRoutes(fastify, { chorusBinPath: CHORUS_BIN_PATH });
 
   // Seed built-in templates on startup
-  seedBuiltinTemplates();
+  await seedBuiltinTemplates();
 
   // Reap orphan headless subprocesses from any prior daemon crash. Without
   // this, a hung CLI from a previous run keeps burning subscription quota
@@ -814,10 +852,10 @@ async function main() {
 
   // Initialize tmux manager and reaper
   tmuxMgr = new TmuxManagerImpl();
-  stopReaper = startReaper(tmuxMgr, () => {
+  stopReaper = startReaper(tmuxMgr, async () => {
     // getActiveChats: return a map of chatId → status for active chats only
     // (drafting and reviewing states; terminal states are reaped)
-    const allChats = chats.list({ limit: 1000, offset: 0 });
+    const allChats = await chats.list({ limit: 1000, offset: 0 });
     const activeMap = new Map<string, string>();
     const activeStatuses = new Set(['drafting', 'reviewing']);
     for (const chat of allChats) {
@@ -888,7 +926,7 @@ async function main() {
   console.log(`Chorus daemon listening on http://${HOST}:${PORT}`);
 }
 
-function seedBuiltinTemplates(): void {
+async function seedBuiltinTemplates(): Promise<void> {
   const templatesDir = path.join(__dirname, '..', '..', 'templates');
 
   if (!fs.existsSync(templatesDir)) {
@@ -905,10 +943,10 @@ function seedBuiltinTemplates(): void {
     const yamlPath = path.join(templatesDir, file);
     const yamlContent = fs.readFileSync(yamlPath, 'utf-8');
 
-    const existing = templates.getById(id);
+    const existing = await templates.getById(id);
 
     if (!existing) {
-      templates.create(id, yamlContent, 'builtin');
+      await templates.create(id, yamlContent, 'builtin');
       console.log(`[daemon] seeded template: ${id}`);
       continue;
     }
@@ -918,7 +956,7 @@ function seedBuiltinTemplates(): void {
     // belong to the user and will be edited via /templates POST. This keeps
     // YAML source-of-truth aligned with the DB after a chorus upgrade.
     if (existing.source === 'builtin' && existing.yaml !== yamlContent) {
-      templates.create(id, yamlContent, 'builtin');
+      await templates.create(id, yamlContent, 'builtin');
       console.log(`[daemon] refreshed builtin template from disk: ${id}`);
     }
   }
@@ -926,25 +964,24 @@ function seedBuiltinTemplates(): void {
   // Delete any builtin templates that are no longer present on disk.
   // Query for all builtin templates and remove those not in onDiskIds.
   try {
-    const allTemplates = templates.list();
+    const allTemplates = await templates.list();
     let deletedCount = 0;
     for (const tmpl of allTemplates) {
       if (tmpl.source === 'builtin' && !onDiskIds.has(tmpl.id)) {
-        // Attempt to delete if the method exists; templates.delete may not be exposed.
-        const deleteMethod = (templates as unknown as { delete?: (id: string) => void }).delete;
-        if (typeof deleteMethod === 'function') {
-          deleteMethod(tmpl.id);
-          deletedCount++;
-          console.log(`[daemon] deleted stale builtin template: ${tmpl.id}`);
-        }
+        // templates.delete is not currently exported — leave stale rows; the
+        // refresh-on-disk-change above keeps content fresh, and stale rows
+        // are inert (just don't appear in templatesDir). Tracked as a TODO
+        // outside the libsql migration scope.
+        console.log(`[daemon] would delete stale builtin template (no delete method): ${tmpl.id}`);
+        deletedCount++;
       }
     }
     if (deletedCount > 0) {
-      console.log(`[daemon] cleaned up ${deletedCount} stale builtin templates`);
+      console.log(`[daemon] flagged ${deletedCount} stale builtin templates for cleanup`);
     }
   } catch (err) {
-    // Non-fatal: if templates.list() doesn't exist or fails, skip cleanup.
-    console.warn('[daemon] failed to clean up stale builtin templates:', err);
+    // Non-fatal: if templates.list() fails, skip cleanup.
+    console.warn('[daemon] failed to scan stale builtin templates:', err);
   }
 }
 

@@ -737,6 +737,26 @@ async function main() {
       if (!original) {
         return errorResponse('not_found', `Chat ${param} not found`);
       }
+      // Guard against rerun-on-active. The cockpit Retry button only renders
+      // for terminal statuses, but a direct API call (curl, script, future
+      // surface) could otherwise spawn a duplicate runner alongside the
+      // still-alive original — flagged in retroactive review of PR #14 by
+      // gemini + opencode-deepseek + opencode-kimi. Reject loudly with a
+      // dedicated kind so the caller can distinguish from generic validation.
+      const TERMINAL_FOR_RERUN: ReadonlyArray<typeof original.status> = [
+        'approved',
+        'merged',
+        'blocked',
+        'cancelled',
+        'failed',
+        'no_review',
+      ];
+      if (!TERMINAL_FOR_RERUN.includes(original.status)) {
+        return errorResponse(
+          'conflict',
+          `Chat ${param} is still active (status=${original.status}). Cancel it first, then retry.`,
+        );
+      }
       const newChat = await chats.create({
         work: original.work,
         template_id: original.template_id,

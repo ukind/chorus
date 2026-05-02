@@ -447,12 +447,29 @@ export function LiveRunReal({
                       const body = (await res.json()) as {
                         ok: boolean;
                         data?: { slug?: string; id?: string };
+                        error?: { code?: string; message?: string };
                       };
+                      // Daemon returns HTTP 200 with `{ok: false, error: {...}}`
+                      // for validation/conflict failures (e.g. rerun-while-active).
+                      // Without surfacing it the button just stops spinning and
+                      // the user has no idea why nothing happened — flagged in
+                      // retroactive review of PR #14 by opencode reviewers.
+                      if (!body.ok) {
+                        const msg = body.error?.message ?? "Unknown error from Chorus.";
+                        window.alert(`Couldn't start a new run: ${msg}`);
+                        setRetrying(false);
+                        return;
+                      }
                       const target = body.data?.slug ?? body.data?.id;
                       if (target) {
                         router.push(`/runs/${target}`);
                         router.refresh();
                       } else {
+                        // ok:true with no slug/id is a daemon-side bug, but
+                        // we still need to unstick the button.
+                        window.alert(
+                          "Chorus accepted the retry but didn't return a chat id. Refresh and try again.",
+                        );
                         setRetrying(false);
                       }
                     } catch {

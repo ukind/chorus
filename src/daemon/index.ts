@@ -718,6 +718,70 @@ async function main() {
     }
   });
 
+  // Re-run an existing chat. Creates a fresh chat row carrying over the
+  // same work + template_id + attached_files + repo_path + artifact, plus
+  // an initial phase event mirroring /chats POST. Intended for the
+  // cancelled/failed → Retry button on the run viewer; the original chat
+  // row stays untouched as history. Returns the new chat row so the
+  // caller can navigate by slug.
+  fastify.post<{
+    Params: { id: string };
+    Reply: ApiResponse<object>;
+  }>('/chats/:id/rerun', async (request) => {
+    try {
+      const param = request.params.id;
+      if (!isValidChatId(param)) {
+        return errorResponse('validation', 'invalid chat id');
+      }
+      const original = await chats.getBySlugOrId(param);
+      if (!original) {
+        return errorResponse('not_found', `Chat ${param} not found`);
+      }
+      const newChat = await chats.create({
+        work: original.work,
+        template_id: original.template_id,
+        attached_files: original.attached_files ?? undefined,
+        repo_path: original.repo_path ?? undefined,
+        artifact: original.artifact ?? undefined,
+      });
+      // Mirror the create-path's initial phase_event so the cockpit gets a
+      // populated stepper from t=0.
+      let initialPhaseKind:
+        | 'plan' | 'spec' | 'tests' | 'implement' | 'review'
+        | 'verify' | 'divergence' | 'review_only' = 'plan';
+      try {
+        const tmpl = await templates.getById(original.template_id);
+        if (tmpl) {
+          const safe = TemplateSchema.safeParse(yaml.parse(tmpl.yaml));
+          if (safe.success) {
+            const firstKind = safe.data.phases[0]?.kind;
+            if (firstKind) initialPhaseKind = firstKind as typeof initialPhaseKind;
+          }
+        }
+      } catch {
+        /* keep default */
+      }
+      await phaseEvents.create({
+        chat_id: newChat.id,
+        phase_idx: 0,
+        phase_kind: initialPhaseKind,
+        role: 'doer',
+        agent_id: null,
+        state: 'drafting',
+        output: null,
+        cost_usd: 0,
+        tokens_in: 0,
+        tokens_out: 0,
+        started_at: Date.now(),
+        finished_at: null,
+      });
+      return successResponse(newChat);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return errorResponse('db_error', message);
+    }
+  });
+
   // Delete chat (hard delete: row + phase_events + filesystem artifacts).
   // Cancels any active session first to avoid orphaned subprocesses writing
   // to the dir we're about to nuke. Idempotent: returns 200 even if the

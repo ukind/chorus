@@ -21,6 +21,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   Loader2,
+  RotateCw,
   Trash2,
   X,
 } from "lucide-react";
@@ -139,6 +140,7 @@ export function LiveRunReal({
   const [prUrl, setPrUrl] = useState<string | undefined>(initialPrUrl);
   const [shipError, setShipError] = useState<string | undefined>(initialShipError);
   const [deleting, setDeleting] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const router = useRouter();
 
   // Live tail per participant (role:lineage → most recent ~500 chars). When
@@ -425,18 +427,58 @@ export function LiveRunReal({
                   for mid-run pause. Resume after pause requires session
                   state we don't have today. Will reintroduce when the
                   daemon gains real pause/resume in v0.8. */}
-              <button
-                type="button"
-                disabled={isTerminal}
-                onClick={async () => {
-                  await fetch(`/api/daemon/chats/${chatId}/cancel`, { method: "POST" });
-                  setStatus("cancelled");
-                }}
-                className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:border-destructive/40 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <X className="h-3.5 w-3.5" />
-                Cancel
-              </button>
+              {status === "cancelled" || status === "failed" ? (
+                <button
+                  type="button"
+                  disabled={retrying}
+                  onClick={async () => {
+                    setRetrying(true);
+                    try {
+                      const res = await fetch(`/api/daemon/chats/${chatId}/rerun`, {
+                        method: "POST",
+                      });
+                      if (!res.ok) {
+                        window.alert(
+                          "Couldn't start a new run — Chorus didn't respond. Try restarting it from your terminal: chorus start",
+                        );
+                        setRetrying(false);
+                        return;
+                      }
+                      const body = (await res.json()) as {
+                        ok: boolean;
+                        data?: { slug?: string; id?: string };
+                      };
+                      const target = body.data?.slug ?? body.data?.id;
+                      if (target) {
+                        router.push(`/runs/${target}`);
+                        router.refresh();
+                      } else {
+                        setRetrying(false);
+                      }
+                    } catch {
+                      window.alert("Retry failed. Network error.");
+                      setRetrying(false);
+                    }
+                  }}
+                  className="flex items-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary transition hover:border-primary hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <RotateCw className={`h-3.5 w-3.5 ${retrying ? "animate-spin" : ""}`} />
+                  {retrying ? "Restarting…" : "Retry"}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={isTerminal}
+                  onClick={async () => {
+                    await fetch(`/api/daemon/chats/${chatId}/cancel`, { method: "POST" });
+                    setStatus("cancelled");
+                  }}
+                  className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:border-destructive/40 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <X className="h-3.5 w-3.5" />
+                  Cancel
+                </button>
+              )}
               <button
                 type="button"
                 disabled={deleting}
@@ -559,9 +601,15 @@ export function LiveRunReal({
             const showByPhases = totalPhases > 1;
             const showByRounds = !showByPhases && maxRounds > 1;
             const currentRound = enrichedRounds[enrichedRounds.length - 1];
-            const participantTotal = currentRound?.participants.length ?? 0;
-            const participantDone =
-              currentRound?.participants.filter((p) => p.hasAnswer).length ?? 0;
+            // Count reviewers only — the doer (or synthetic `doer-artifact`
+            // slot in review-only chats) is its own participant on disk but
+            // not part of the "N reviewers complete" mental model. Without
+            // this filter a 4-reviewer review-only chat displays "x/5",
+            // which is the bug surfaced 2026-05-01.
+            const reviewerParticipants =
+              currentRound?.participants.filter((p) => p.role === "reviewer") ?? [];
+            const participantTotal = reviewerParticipants.length;
+            const participantDone = reviewerParticipants.filter((p) => p.hasAnswer).length;
             const showByParticipants =
               !showByPhases && !showByRounds && participantTotal > 1;
             if (!showByPhases && !showByRounds && !showByParticipants)

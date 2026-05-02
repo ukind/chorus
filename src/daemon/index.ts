@@ -24,6 +24,7 @@ import {
 } from './routes/settings.js';
 import { registerSystemRoutes } from './routes/system.js';
 import { registerVoiceRoutes } from './routes/voices.js';
+import { logger, chatLogger } from '../lib/logger.js';
 
 /**
  * Resolve daemon port from env, with hard validation. parseInt('chorus', 10)
@@ -278,7 +279,10 @@ function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
                 : null,
           })
           .catch((err: unknown) => {
-            console.error(`[chorus] phaseEvents.create failed for chat ${chatId}:`, err);
+            chatLogger(chatId).error(
+              { err: err instanceof Error ? err.message : String(err) },
+              'phaseEvents.create failed',
+            );
           }),
       );
     }
@@ -324,7 +328,10 @@ function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
             finished_at: Date.now(),
           })
           .catch((err: unknown) => {
-            console.error(`[chorus] chats.update on chat_done failed for ${chatId}:`, err);
+            chatLogger(chatId).error(
+              { err: err instanceof Error ? err.message : String(err) },
+              'chats.update on chat_done failed',
+            );
           }),
       );
     }
@@ -589,9 +596,25 @@ async function main() {
         finished_at: null,
       });
 
+      chatLogger(chat.id).info(
+        {
+          templateId,
+          phaseKind: initialPhaseKind,
+          requestId: request.id,
+          hasArtifact: artifact !== undefined && artifact !== null && artifact !== '',
+          hasRepoPath: repoPath !== undefined,
+          attachedFileCount: files?.length ?? 0,
+        },
+        'chat created',
+      );
+
       return successResponse(chat);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
+      logger.error(
+        { requestId: request.id, err: message, route: 'POST /chats' },
+        'chat create failed',
+      );
       return errorResponse('db_error', message);
     }
   });
@@ -1024,6 +1047,9 @@ async function main() {
   });
 
   await fastify.listen({ port: PORT, host: HOST });
+  logger.info({ port: PORT, host: HOST, version: VERSION }, 'daemon listening');
+  // Keep the human-readable startup line — the install script + onboarding
+  // grep for it. Structured line above is what `chorus logs` will consume.
   console.log(`Chorus daemon listening on http://${HOST}:${PORT}`);
 
   // Anonymous opt-out telemetry — see src/lib/telemetry.ts. First send is

@@ -188,7 +188,26 @@ export type AgentEvent =
   | { type: 'tool_call_start'; tool: string; input?: unknown }
   | { type: 'tool_call_end'; tool: string; ok: boolean }
   | { type: 'progress'; elapsedMs: number }
-  | { type: 'message_done'; finalText: string }
+  | {
+      type: 'message_done';
+      finalText: string;
+      /**
+       * Optional usage block extracted from the upstream stream-json's
+       * terminal event (claude `result.usage`, codex `assistant_done`
+       * usage, gemini terminal chunk's `*TokenCount` fields). Per-lineage
+       * parsers populate this when available; left undefined for kimi /
+       * opencode which currently lack a structured token signal.
+       *
+       * Numbers are integers; cachedInputTokens is anthropic-only today.
+       * The runner persists these into phase_events.tokens_in /
+       * tokens_out and ignores undefined values.
+       */
+      usage?: {
+        inputTokens?: number;
+        outputTokens?: number;
+        cachedInputTokens?: number;
+      };
+    }
   | { type: 'error'; kind: string; message: string };
 
 /**

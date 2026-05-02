@@ -179,4 +179,36 @@ describe('runDoerHeadless', () => {
     const res = await callDoer(handle);
     expect(res).toBeNull();
   });
+
+  it('captures message_done.usage onto the return shape (round-2-deferred §1 rails)', async () => {
+    const handle = makeFakeShim({
+      events: [
+        { type: 'text_delta', text: 'doing the thing' },
+        {
+          type: 'message_done',
+          finalText: 'doing the thing\n## DONE',
+          usage: { inputTokens: 1234, outputTokens: 567, cachedInputTokens: 100 },
+        },
+      ],
+    });
+    const res = await callDoer(handle);
+    expect(res).not.toBeNull();
+    expect(res!.usage).toEqual({
+      inputTokens: 1234,
+      outputTokens: 567,
+      cachedInputTokens: 100,
+    });
+  });
+
+  it('omits usage from the return when message_done has no usage block', async () => {
+    const handle = makeFakeShim({
+      events: [
+        { type: 'text_delta', text: 'no usage here' },
+        { type: 'message_done', finalText: 'no usage here\n## DONE' },
+      ],
+    });
+    const res = await callDoer(handle);
+    expect(res).not.toBeNull();
+    expect(res!.usage).toBeUndefined();
+  });
 });

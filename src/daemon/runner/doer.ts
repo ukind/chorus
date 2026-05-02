@@ -35,7 +35,22 @@ export async function runDoerHeadless(args: {
   doerCwd: string;
   abortSignal: AbortSignal;
   onEvent: (e: RunnerEvent) => void;
-}): Promise<{ content: string; full: boolean } | null> {
+}): Promise<{
+  content: string;
+  full: boolean;
+  /**
+   * Token-usage block from the message_done terminal event. Undefined
+   * when the upstream shim doesn't (yet) populate it — kimi/opencode
+   * fall through with no usage; claude/codex/gemini will once their
+   * parsers are migrated. The runner persists these into phase_events
+   * tokens_in/tokens_out + cost_usd in a follow-up wiring PR.
+   */
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedInputTokens?: number;
+  };
+} | null> {
   const {
     shim,
     chatId,
@@ -58,6 +73,11 @@ export async function runDoerHeadless(args: {
   let accumulated = '';
   let finalText: string | undefined;
   let errored = false;
+  let capturedUsage: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedInputTokens?: number;
+  } | undefined;
 
   // Initialize answer.md so the artifacts endpoint sees the file mid-stream.
   fs.writeFileSync(answerFile, '');
@@ -119,6 +139,7 @@ export async function runDoerHeadless(args: {
         });
       } else if (event.type === 'message_done') {
         finalText = event.finalText;
+        if (event.usage) capturedUsage = event.usage;
         writer.flushNow();
         if (event.finalText.trim().length === 0) {
           const existing = fs.existsSync(answerFile)
@@ -214,5 +235,9 @@ export async function runDoerHeadless(args: {
     return null;
   }
 
-  return { content, full: finalText !== undefined || accumulated.length > 0 };
+  return {
+    content,
+    full: finalText !== undefined || accumulated.length > 0,
+    ...(capturedUsage ? { usage: capturedUsage } : {}),
+  };
 }

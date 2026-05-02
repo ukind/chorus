@@ -83,6 +83,7 @@ export async function runDoerHeadless(args: {
     outputTokens?: number;
     cachedInputTokens?: number;
   } | undefined;
+  const startedAt = Date.now();
 
   // Initialize answer.md so the artifacts endpoint sees the file mid-stream.
   fs.writeFileSync(answerFile, '');
@@ -170,6 +171,22 @@ export async function runDoerHeadless(args: {
         // Tell the cockpit this participant is fully on disk so it can
         // flip the card immediately rather than wait for the 8s polling
         // tick. Mirrored in reviewer.ts.
+        // Persist runtime stats next to answer.md — see reviewer.ts for
+        // rationale. answerFile is at <doerDir>/answer.md so the sidecar
+        // path drops `answer.md` and appends `_stats.json`.
+        try {
+          const statsPath = answerFile.replace(/answer\.md$/, '_stats.json');
+          fs.writeFileSync(
+            statsPath,
+            JSON.stringify({
+              durationMs: Date.now() - startedAt,
+              ...(capturedUsage ? { usage: capturedUsage } : {}),
+            }),
+            'utf-8',
+          );
+        } catch {
+          /* sidecar is informational; ignore write errors */
+        }
         onEvent({
           chatId,
           type: 'participant_done',
@@ -178,6 +195,8 @@ export async function runDoerHeadless(args: {
             round,
             role: 'doer',
             agent: agentName,
+            durationMs: Date.now() - startedAt,
+            ...(capturedUsage ? { usage: capturedUsage } : {}),
           },
           ts: Date.now(),
         });

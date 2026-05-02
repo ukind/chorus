@@ -158,14 +158,51 @@ export function ParticipantCard({
 
       <div className="flex items-center justify-between gap-3 border-t border-border bg-card/60 px-4 py-2 font-mono text-[10px] text-muted-foreground">
         <span className="truncate">{participant.binaryUsed ?? participant.agentName}</span>
-        <span className="shrink-0">
-          {participant.hasAnswer
-            ? `${(participant.answer?.length ?? 0).toLocaleString()} B`
-            : "—"}
+        <span className="flex shrink-0 items-center gap-2">
+          {participant.durationMs !== undefined && (
+            <span title="Wall-clock time the CLI took to finish.">
+              {formatDuration(participant.durationMs)}
+            </span>
+          )}
+          {participant.usage && formatTokens(participant.usage) && (
+            <span title={tokensTitle(participant.usage)}>
+              {formatTokens(participant.usage)}
+            </span>
+          )}
+          <span>
+            {participant.hasAnswer
+              ? `${(participant.answer?.length ?? 0).toLocaleString()} B`
+              : "—"}
+          </span>
         </span>
       </div>
     </div>
   );
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms} ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const m = Math.floor(s / 60);
+  const r = Math.round(s - m * 60);
+  return `${m}m${r.toString().padStart(2, "0")}s`;
+}
+
+function formatTokens(u: NonNullable<ParticipantSnapshot["usage"]>): string | null {
+  const total = (u.inputTokens ?? 0) + (u.outputTokens ?? 0);
+  if (total <= 0) return null;
+  if (total < 1000) return `${total} tok`;
+  return `${(total / 1000).toFixed(1)}k tok`;
+}
+
+function tokensTitle(u: NonNullable<ParticipantSnapshot["usage"]>): string {
+  const parts: string[] = [];
+  if (u.inputTokens !== undefined) parts.push(`in ${u.inputTokens.toLocaleString()}`);
+  if (u.outputTokens !== undefined) parts.push(`out ${u.outputTokens.toLocaleString()}`);
+  if (u.cachedInputTokens !== undefined)
+    parts.push(`cached ${u.cachedInputTokens.toLocaleString()}`);
+  return parts.join(" · ");
 }
 
 /**

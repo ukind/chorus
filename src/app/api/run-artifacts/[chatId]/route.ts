@@ -110,6 +110,38 @@ function readChatRounds(chatId: string): RoundSnapshot[] {
             /* sidecar is informational; ignore parse errors */
           }
         }
+        // Stats sidecar — runner writes `{durationMs,usage}` at
+        // participant_done. Powers the time/tokens chips on the card.
+        let durationMs: number | undefined;
+        let usage:
+          | { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number }
+          | undefined;
+        const statsPath = path.join(roundDir, d.name, "_stats.json");
+        if (fs.existsSync(statsPath)) {
+          try {
+            const stats = JSON.parse(fs.readFileSync(statsPath, "utf-8")) as {
+              durationMs?: unknown;
+              usage?: {
+                inputTokens?: unknown;
+                outputTokens?: unknown;
+                cachedInputTokens?: unknown;
+              };
+            };
+            if (typeof stats.durationMs === "number") durationMs = stats.durationMs;
+            if (stats.usage && typeof stats.usage === "object") {
+              const u: Record<string, number> = {};
+              if (typeof stats.usage.inputTokens === "number")
+                u.inputTokens = stats.usage.inputTokens;
+              if (typeof stats.usage.outputTokens === "number")
+                u.outputTokens = stats.usage.outputTokens;
+              if (typeof stats.usage.cachedInputTokens === "number")
+                u.cachedInputTokens = stats.usage.cachedInputTokens;
+              if (Object.keys(u).length > 0) usage = u;
+            }
+          } catch {
+            /* sidecar is informational; ignore parse errors */
+          }
+        }
         return {
           participant: d.name,
           role,
@@ -120,6 +152,8 @@ function readChatRounds(chatId: string): RoundSnapshot[] {
           findingsPreview,
           binaryUsed,
           modelUsed,
+          durationMs,
+          usage,
         };
       });
 

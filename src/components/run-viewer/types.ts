@@ -36,6 +36,22 @@ export interface ParticipantSnapshot {
    * starts, instead of leaving the user staring at a lone doer card.
    */
   pending?: boolean;
+  /**
+   * Wall-clock duration of the participant's CLI run, in ms. Captured from
+   * the runner's `_stats.json` sidecar written at participant_done. Absent
+   * for pending / still-working participants.
+   */
+  durationMs?: number;
+  /**
+   * Token usage reported by the upstream CLI's stream. Populated by shims
+   * that surface usage in `message_done` (claude/anthropic today; others
+   * fill in as parsers grow). Absent when the CLI didn't report it.
+   */
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedInputTokens?: number;
+  };
 }
 
 export interface RoundSnapshot {

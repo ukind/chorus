@@ -50,9 +50,13 @@ export async function runReviewerHeadless(args: {
   if (!shim.runHeadless) return null;
 
   const perms = await getPermissions();
+  const startedAt = Date.now();
   let accumulated = '';
   let finalText: string | undefined;
   let errored = false;
+  let capturedUsage:
+    | { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number }
+    | undefined;
   // Captured from the first error event so we can write it to
   // answer.md when the subprocess dies before producing any content.
   // Without this, callers reading ~/.chorus/chats/<id>/round-N/
@@ -119,6 +123,7 @@ export async function runReviewerHeadless(args: {
         });
       } else if (event.type === 'message_done') {
         finalText = event.finalText;
+        if (event.usage) capturedUsage = event.usage;
         // Same guard as the doer side: don't truncate accumulated deltas
         // when the CLI emits an empty `result` event (Gemini's text-then-
         // disappears bug). Only overwrite when there's real authoritative
@@ -137,6 +142,23 @@ export async function runReviewerHeadless(args: {
         } else {
           fs.writeFileSync(answerFile, `${event.finalText}\n\n## DONE\n`);
         }
+        // Persist runtime stats next to the answer so the cockpit run-
+        // artifacts route can surface "12.4s · 3.4k tok" on the card even
+        // after a daemon restart or browser reload. Sidecar mirrors the
+        // existing _meta.json (transport metadata) shape — write best-
+        // effort, ignore errors.
+        try {
+          fs.writeFileSync(
+            `${reviewerDir}/_stats.json`,
+            JSON.stringify({
+              durationMs: Date.now() - startedAt,
+              ...(capturedUsage ? { usage: capturedUsage } : {}),
+            }),
+            'utf-8',
+          );
+        } catch {
+          /* sidecar is informational; ignore write errors */
+        }
         // Tell the cockpit this reviewer is fully on disk so it can
         // flip the card immediately rather than wait for the 8s polling
         // tick. Mirrored in doer.ts.
@@ -148,6 +170,8 @@ export async function runReviewerHeadless(args: {
             round,
             role: 'reviewer',
             agent: `${agentName}-${reviewerIdx}`,
+            durationMs: Date.now() - startedAt,
+            ...(capturedUsage ? { usage: capturedUsage } : {}),
           },
           ts: Date.now(),
         });

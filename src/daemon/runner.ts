@@ -16,6 +16,8 @@ import { ErrorDetector } from './error-detector.js';
 import { getPermissions } from '../lib/settings/permissions.js';
 import { getTransport } from '../lib/settings/transport.js';
 import { recordHealth, kindToStatus, type CliLineage } from '../lib/cli-health.js';
+import { precheckLineage } from '../lib/cli-precheck.js';
+import { atomicWriteJsonSync } from '../lib/atomic-write.js';
 import type { AgentShim } from './agents/types.js';
 import { detectGitContext, runShipPhase } from './ship.js';
 
@@ -84,14 +86,15 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
     fs.mkdirSync(chatDir, { recursive: true });
   }
 
-  // Write meta
+  // Write meta — atomic temp+rename so a partial write (daemon crash, FS
+  // ENOSPC mid-fsync) can't leave a corrupt JSON that the cockpit chokes on.
   const meta: ChatMeta = {
     chatId,
     work,
     templateId: template.id,
     createdAt: Date.now(),
   };
-  fs.writeFileSync(path.join(chatDir, 'meta.json'), JSON.stringify(meta, null, 2));
+  atomicWriteJsonSync(path.join(chatDir, 'meta.json'), meta);
 
   // chat_done is a one-way latch. The abort listener and the normal terminal
   // emission (line 304+) both try to fire it; whichever runs first wins. This
@@ -387,6 +390,31 @@ async function runDoer(
 ): Promise<{ content: string; full: boolean } | null> {
   const shim = registry.pickShim(phase.doer.lineage);
   const agentName = shim.name;
+
+  // Pre-spawn precheck: short-circuit doomed runs without paying the spawn
+  // tax. Two cheap layers: (1) recent quota_exhausted with future resetAt,
+  // (2) credential file missing → user not logged in. See cli-precheck.ts.
+  const preDoer = await precheckLineage(phase.doer.lineage as CliLineage);
+  if (!preDoer.ok) {
+    onEvent({
+      chatId,
+      type: 'cli_warning',
+      payload: {
+        phaseId: phase.id,
+        round,
+        role: 'doer',
+        agent: agentName,
+        lineage: phase.doer.lineage,
+        reason: preDoer.reason,
+        message: preDoer.message,
+        cta: preDoer.cta,
+        resetAt: preDoer.resetAt,
+      },
+      ts: Date.now(),
+    });
+    return null;
+  }
+
   const roundDir = path.join(chatDir, `round-${round}`);
   const doerDir = path.join(roundDir, `doer-${agentName}`);
 
@@ -728,6 +756,31 @@ async function runReviewer(
 
   const shim = registry.pickShim(candidate.lineage);
   const agentName = shim.name;
+
+  // Pre-spawn precheck — same gate as runDoer. A reviewer that fails precheck
+  // is treated as "never produced a valid answer" (returns null), which the
+  // phase loop already handles by counting it toward the all-reviewers-failed
+  // threshold and continuing with the remaining reviewers.
+  const preRev = await precheckLineage(candidate.lineage as CliLineage);
+  if (!preRev.ok) {
+    onEvent({
+      chatId,
+      type: 'cli_warning',
+      payload: {
+        phaseId: phase.id,
+        round,
+        role: 'reviewer',
+        agent: `${agentName}-${reviewerIdx}`,
+        lineage: candidate.lineage,
+        reason: preRev.reason,
+        message: preRev.message,
+        cta: preRev.cta,
+        resetAt: preRev.resetAt,
+      },
+      ts: Date.now(),
+    });
+    return null;
+  }
 
   const roundDir = path.join(chatDir, `round-${round}`);
   const reviewerDir = path.join(roundDir, `reviewer-${agentName}-${reviewerIdx}`);

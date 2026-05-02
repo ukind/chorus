@@ -25,7 +25,25 @@ import {
 import { registerSystemRoutes } from './routes/system.js';
 import { registerVoiceRoutes } from './routes/voices.js';
 
-const PORT = parseInt(process.env.CHORUS_DAEMON_PORT || '7707', 10);
+/**
+ * Resolve daemon port from env, with hard validation. parseInt('chorus', 10)
+ * silently returns NaN, which Fastify accepts as "let the OS pick a port" —
+ * the daemon would start, bind to a random port, and the cockpit would never
+ * find it. Catch this at boot with a useful error message instead.
+ */
+function resolveDaemonPort(): number {
+  const raw = process.env.CHORUS_DAEMON_PORT;
+  if (!raw) return 7707;
+  const parsed = parseInt(raw, 10);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+    throw new Error(
+      `CHORUS_DAEMON_PORT must be an integer between 1 and 65535. Got: ${JSON.stringify(raw)}`,
+    );
+  }
+  return parsed;
+}
+
+const PORT = resolveDaemonPort();
 const HOST = '127.0.0.1';
 const VERSION = '0.7.0-dev.0';
 const startTime = Date.now();
@@ -709,7 +727,15 @@ async function main() {
         };
       }
 
-      // Set SSE headers
+      // Set SSE headers.
+      //
+      // Do NOT add Content-Encoding: gzip here, and do not stick a buffering
+      // proxy in front of this route. SSE is line-delimited (`data: ...\n\n`);
+      // gzip's compression window batches bytes until flush, which collapses
+      // many small events into one frame and breaks the client's per-event
+      // parser. CLIProxyAPI documents the same constraint with
+      // `Accept-Encoding: identity` on its upstream calls — this is a known
+      // proxy gotcha, not a Chorus quirk.
       reply.raw.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',

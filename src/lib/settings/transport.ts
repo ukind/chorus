@@ -49,6 +49,11 @@ export const TMUX_AVAILABLE: boolean = platform() !== 'win32';
  */
 export const DEFAULT_TRANSPORT: Transport = 'headless';
 
+// Module-level dedup so we warn once per process, not once per chat. The
+// daemon reads getTransport() per-chat, and a stuck typo in CHORUS_TRANSPORT
+// would otherwise spam stderr for every new chat.
+let envWarnFired = false;
+
 export async function getTransport(): Promise<Transport> {
   // Env override takes precedence — operator escape hatch.
   const envOverride = process.env.CHORUS_TRANSPORT;
@@ -56,6 +61,15 @@ export async function getTransport(): Promise<Transport> {
   if (envOverride === 'headless' || envOverride === 'tmux') {
     resolved = envOverride;
   } else {
+    if (envOverride !== undefined && envOverride !== '' && !envWarnFired) {
+      // Operator-typo aid: silent fallback used to mean a misspelled
+      // CHORUS_TRANSPORT (e.g. "headles") just inherited DB/default with no
+      // signal. Surface once on stderr; one line, no stack, no rotation.
+      console.warn(
+        `[chorus] CHORUS_TRANSPORT=${JSON.stringify(envOverride)} is not 'headless' or 'tmux' — ignoring env, falling back to settings/default.`,
+      );
+      envWarnFired = true;
+    }
     const raw = await settings.get(TRANSPORT_KEY);
     const parsed = TransportSchema.safeParse(raw);
     resolved = parsed.success ? parsed.data : DEFAULT_TRANSPORT;

@@ -27,6 +27,7 @@ import type {
 import { quoteValue, quotePath, validateValue } from './quote.js';
 import { spawnHeadless } from '../headless.js';
 import { parseOpencode, parseOpencodeExit, parseKimi } from './parsers.js';
+import { atomicWriteJsonSync } from '../../lib/atomic-write.js';
 
 /**
  * Two ways to talk to Kimi K2.6:
@@ -96,12 +97,11 @@ export function _resetKimiTransportCache(): void {
  */
 function writeTransportMeta(cwd: string, binary: string, model: string): void {
   try {
+    // Atomic temp+rename — cockpit polls this file; a crash mid-write would
+    // otherwise leave a half-written JSON that the parser rejects. See
+    // src/lib/atomic-write.ts for the rationale.
     const metaPath = path.join(cwd, '_meta.json');
-    fs.writeFileSync(
-      metaPath,
-      JSON.stringify({ binary, model, ts: Date.now() }, null, 2),
-      'utf-8',
-    );
+    atomicWriteJsonSync(metaPath, { binary, model, ts: Date.now() });
   } catch {
     /* informational only */
   }

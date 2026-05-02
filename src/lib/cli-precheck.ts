@@ -1,0 +1,133 @@
+/**
+ * Pre-spawn CLI health check.
+ *
+ * Runs before each CLI subprocess spawn (doer or reviewer) to short-circuit
+ * three classes of doomed runs:
+ *   1. Quota already exhausted (cli-health.ts has a recent resetAt in the
+ *      future). Spawning would just hit the same wall in 5–10 seconds and
+ *      burn UI time.
+ *   2. CLI not logged in / cred file missing. Spawning would emit either a
+ *      cold_start_timeout or token_refresh_lost from the pane scraper after
+ *      we already paid the spawn tax (~3-5s for tmux/headless boot).
+ *   3. CLI binary not present (handled at boot by `cli-detect`; we just
+ *      mention it here for completeness — not re-checked per spawn).
+ *
+ * Deliberately cheap: no network calls. We check filesystem state + the
+ * existing health record. A real network probe (ping `/v1/models` with the
+ * stored bearer to confirm token validity) is the natural next layer; for
+ * v0.7 the file-existence check catches "user logged out 3 days ago" which
+ * is the highest-frequency failure mode.
+ *
+ * Returns:
+ *   - { ok: true } → proceed with spawn
+ *   - { ok: false, reason, cta } → skip spawn, runner emits cli_warning
+ */
+
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { getHealth, type CliLineage } from './cli-health';
+
+export type PrecheckFailReason =
+  | 'quota_exhausted'
+  | 'auth_missing'
+  | 'auth_unreadable';
+
+export type PrecheckResult =
+  | { ok: true }
+  | { ok: false; reason: PrecheckFailReason; message: string; cta: string; resetAt?: number };
+
+/**
+ * Per-lineage credential file we treat as "user is logged in." Each CLI
+ * stores its OAuth bearer somewhere different; if the file doesn't exist
+ * the user almost certainly hasn't run the CLI's login command. False
+ * positives are possible (some users move credential dirs via env), so we
+ * only fail-closed when the file is *missing or unreadable* — never on
+ * shape mismatches inside the file.
+ */
+const CRED_PATHS: Record<CliLineage, () => string[]> = {
+  anthropic: () => [
+    path.join(os.homedir(), '.claude', '.credentials.json'),
+    path.join(os.homedir(), '.config', 'anthropic', 'claude.json'),
+  ],
+  openai: () => [
+    path.join(os.homedir(), '.codex', 'auth.json'),
+  ],
+  google: () => [
+    path.join(os.homedir(), '.gemini', 'oauth_creds.json'),
+    path.join(os.homedir(), '.config', 'gemini', 'oauth_creds.json'),
+  ],
+  opencode: () => [
+    path.join(os.homedir(), '.opencode', 'auth.json'),
+    path.join(os.homedir(), '.local', 'share', 'opencode', 'auth.json'),
+  ],
+  moonshot: () => [
+    path.join(os.homedir(), '.kimi', 'auth.json'),
+    path.join(os.homedir(), '.opencode', 'auth.json'),
+  ],
+};
+
+const LOGIN_HINT: Record<CliLineage, string> = {
+  anthropic: 'Run `claude login` in a terminal.',
+  openai: 'Run `codex login` in a terminal.',
+  google: 'Run `gemini` once interactively to complete OAuth.',
+  opencode: 'Run `opencode auth login` in a terminal.',
+  moonshot: 'Run `kimi` once interactively, or set up opencode if you use the kimi-via-opencode transport.',
+};
+
+/**
+ * Check whether at least one of the candidate credential paths for `lineage`
+ * exists and is readable. Existence-only — we don't parse contents (each CLI
+ * has its own JSON shape and bearer-refresh lifecycle, neither of which we
+ * want to couple to). Readable-but-empty counts as missing.
+ */
+function hasCredFile(lineage: CliLineage): { exists: boolean; tried: string[] } {
+  const candidates = CRED_PATHS[lineage]();
+  for (const p of candidates) {
+    try {
+      const stat = fs.statSync(p);
+      if (stat.isFile() && stat.size > 0) {
+        return { exists: true, tried: candidates };
+      }
+    } catch {
+      // ENOENT or perm-denied — try next candidate
+    }
+  }
+  return { exists: false, tried: candidates };
+}
+
+export async function precheckLineage(lineage: CliLineage): Promise<PrecheckResult> {
+  // Layer 1: quota state from cli-health (populated reactively when the
+  // error-detector observes a quota_exhausted pane). If a previous run
+  // tripped the limit and the reset hasn't elapsed, skip the spawn.
+  const health = await getHealth(lineage);
+  if (health.status === 'quota_exhausted') {
+    const now = Date.now();
+    if (typeof health.resetAt === 'number' && health.resetAt > now) {
+      const minsLeft = Math.ceil((health.resetAt - now) / 60_000);
+      return {
+        ok: false,
+        reason: 'quota_exhausted',
+        message: `${lineage} quota still exhausted (resets in ~${minsLeft} min).`,
+        cta: 'Wait for reset, switch account, or disable this voice.',
+        resetAt: health.resetAt,
+      };
+    }
+    // resetAt missing or already past — fall through and let the spawn try.
+    // Stale health markers self-clear when a successful run records 'healthy'.
+  }
+
+  // Layer 2: credential file presence. Cheap, catches "logged out" without
+  // paying the spawn tax. See CRED_PATHS for the per-CLI lookups.
+  const cred = hasCredFile(lineage);
+  if (!cred.exists) {
+    return {
+      ok: false,
+      reason: 'auth_missing',
+      message: `${lineage} CLI is not logged in (no credential file found).`,
+      cta: LOGIN_HINT[lineage],
+    };
+  }
+
+  return { ok: true };
+}

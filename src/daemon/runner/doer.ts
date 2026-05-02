@@ -180,6 +180,27 @@ export async function runDoerHeadless(args: {
     });
   } finally {
     writer.flushNow();
+    // If the StreamFileWriter went dead (FS ENOSPC, EACCES, etc.) it
+    // dropped the failing chunk to avoid retrying the same sync write
+    // forever. Surface this so the user sees "stream stopped writing"
+    // rather than silently truncated answer.md.
+    if (writer.isDead()) {
+      const err = writer.lastError();
+      onEvent({
+        chatId,
+        type: 'cli_warning',
+        payload: {
+          phaseId: phase.id,
+          round,
+          role: 'doer',
+          agent: agentName,
+          reason: 'stream_writer_dead',
+          message: `answer.md write failed; subsequent deltas dropped: ${err ? err.message : 'unknown'}`,
+          cta: 'Check disk space + permissions on ~/.chorus/chats. Re-run when fixed.',
+        },
+        ts: Date.now(),
+      });
+    }
   }
 
   if (errored && finalText === undefined && accumulated.length === 0) {

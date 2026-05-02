@@ -240,6 +240,118 @@ describe('phaseEvents', () => {
     expect(list[0].id).toBeLessThan(list[1].id);
   });
 
+  it('caps oversized output to MAX bytes with truncation marker (head + tail preserved)', async () => {
+    const c = await chats.create({ work: 'big', template_id: 't' });
+    const head = 'HEAD_MARKER_'.repeat(8);
+    const tail = 'TAIL_MARKER_'.repeat(8);
+    const filler = 'x'.repeat(512 * 1024); // 512 KB filler
+    const oversized = head + filler + tail;
+    const event = await phaseEvents.create({
+      chat_id: c.id,
+      phase_idx: 0,
+      phase_kind: 'plan',
+      role: 'doer',
+      agent_id: 'claude-code',
+      state: 'submitted',
+      output: oversized,
+      cost_usd: 0,
+      tokens_in: 0,
+      tokens_out: 0,
+      started_at: Date.now(),
+      finished_at: null,
+    });
+    const stored = event.output ?? '';
+    expect(stored).toContain('truncated');
+    expect(stored).toContain('HEAD_MARKER_');
+    expect(stored).toContain('TAIL_MARKER_');
+    expect(Buffer.byteLength(stored, 'utf-8')).toBeLessThanOrEqual(260 * 1024);
+  });
+
+  it('truncation marker contains the actual chat id (not literal placeholder)', async () => {
+    const c = await chats.create({ work: 'cap', template_id: 't' });
+    const oversized = 'x'.repeat(500 * 1024);
+    const event = await phaseEvents.create({
+      chat_id: c.id,
+      phase_idx: 0,
+      phase_kind: 'plan',
+      role: 'doer',
+      agent_id: 'claude-code',
+      state: 'submitted',
+      output: oversized,
+      cost_usd: 0,
+      tokens_in: 0,
+      tokens_out: 0,
+      started_at: Date.now(),
+      finished_at: null,
+    });
+    const stored = event.output ?? '';
+    expect(stored).toContain(c.id);
+    expect(stored).not.toContain('<chatId>');
+  });
+
+  it('update with explicit output:null clears the stored output (regression: null was silently preserved)', async () => {
+    const c = await chats.create({ work: 'clear', template_id: 't' });
+    const event = await phaseEvents.create({
+      chat_id: c.id,
+      phase_idx: 0,
+      phase_kind: 'plan',
+      role: 'doer',
+      agent_id: 'claude-code',
+      state: 'submitted',
+      output: 'stored body',
+      cost_usd: 0,
+      tokens_in: 0,
+      tokens_out: 0,
+      started_at: Date.now(),
+      finished_at: null,
+    });
+    expect(event.output).toBe('stored body');
+    const cleared = await phaseEvents.update(event.id, { output: null });
+    expect(cleared.output).toBeNull();
+  });
+
+  it('update without output key preserves existing output (no re-cap)', async () => {
+    const c = await chats.create({ work: 'preserve', template_id: 't' });
+    const original = 'preserved body';
+    const event = await phaseEvents.create({
+      chat_id: c.id,
+      phase_idx: 0,
+      phase_kind: 'plan',
+      role: 'doer',
+      agent_id: 'claude-code',
+      state: 'submitted',
+      output: original,
+      cost_usd: 0,
+      tokens_in: 0,
+      tokens_out: 0,
+      started_at: Date.now(),
+      finished_at: null,
+    });
+    const after = await phaseEvents.update(event.id, { state: 'reviewing' });
+    expect(after.output).toBe(original);
+    expect(after.state).toBe('reviewing');
+  });
+
+  it('passes through outputs at or below the cap unchanged', async () => {
+    const c = await chats.create({ work: 'small', template_id: 't' });
+    const small = 'a'.repeat(1000);
+    const event = await phaseEvents.create({
+      chat_id: c.id,
+      phase_idx: 0,
+      phase_kind: 'plan',
+      role: 'doer',
+      agent_id: 'claude-code',
+      state: 'submitted',
+      output: small,
+      cost_usd: 0,
+      tokens_in: 0,
+      tokens_out: 0,
+      started_at: Date.now(),
+      finished_at: null,
+    });
+    expect(event.output).toBe(small);
+  });
+
   it('update merges partial without resetting started_at', async () => {
     const c = await chats.create({ work: 'x', template_id: 't' });
     const ev = await phaseEvents.create({

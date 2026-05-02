@@ -118,4 +118,43 @@ describe('runReviewerHeadless', () => {
     expect(written).toContain('lgtm');
     expect(verdict).toBe(true);
   });
+
+  it('emits cli_warning when answer.md write fails (StreamFileWriter dies mid-stream)', async () => {
+    // Force the writer dead: runReviewerHeadless does an initial
+    // `fs.writeFileSync(answerFile, '')` to create the file, then
+    // constructs StreamFileWriter against it. We let the create succeed,
+    // but chmod the file to read-only AFTER the create, BEFORE the
+    // text_delta flush — by short-circuiting via a fake shim that fires
+    // text_delta on first iteration.
+    //
+    // Chmod hook is delivered through the fake shim: the first event the
+    // shim yields is a text_delta large enough to trigger an immediate
+    // flush; we chmod inside an async iterator step BEFORE that delta is
+    // emitted. Plain happyPathEvents has no hook, so we hand-roll one.
+    async function* hostileStream(): AsyncIterable<{ type: 'text_delta' | 'message_done'; text?: string; finalText?: string }> {
+      // Run AFTER runReviewerHeadless's initial fs.writeFileSync(answerFile,'').
+      fs.chmodSync(answerFile, 0o444);
+      // Buffer crosses the flush threshold (4KB). The synchronous
+      // appendFileSync then fails with EACCES, flipping the writer dead.
+      yield { type: 'text_delta', text: 'x'.repeat(8192) };
+      yield { type: 'message_done', finalText: '' };
+    }
+    const fakeShim = makeFakeShim({ events: [] });
+    fakeShim.shim.runHeadless = () => hostileStream() as never;
+
+    await callReviewer(fakeShim);
+
+    // Restore perms so afterEach rmSync can clean up.
+    try { fs.chmodSync(answerFile, 0o644); } catch { /* best-effort */ }
+
+    const warning = events.find(
+      (e) =>
+        e.type === 'cli_warning' &&
+        (e.payload as { reason?: string }).reason === 'stream_writer_dead',
+    );
+    expect(warning).toBeDefined();
+    const payload = warning!.payload as { role?: string; agent?: string };
+    expect(payload.role).toBe('reviewer');
+    expect(payload.agent).toBe('codex-cli-0');
+  });
 });

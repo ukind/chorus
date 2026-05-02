@@ -267,12 +267,32 @@ export function spawnHeadless(opts: SpawnHeadlessOptions): HeadlessRun {
     }
   }
 
-  // ─── stdout streaming ──────────────────────────────────────────────────
+  // ─── stdout / stderr accumulators ──────────────────────────────────────
+  //
+  // fullStdout + fullStderr buffer the entire CLI output for `onExit` callers
+  // (codex/opencode emit one final blob, parsed at exit) and for the tail
+  // diagnostic on hangs (lines 391–392 below). A pathological CLI streaming
+  // unparsed output forever would otherwise grow these strings unbounded
+  // until the daemon OOMs. Cap each at MAX_FULL_BUFFER_BYTES; once exceeded
+  // we keep accumulating *for parsing* via stdoutBuf (line-mode), but stop
+  // appending to the full-text accumulator and set a truncation flag the
+  // exit path surfaces in error events.
+  const MAX_FULL_BUFFER_BYTES = 10 * 1024 * 1024; // 10 MB
   let stdoutBuf = '';
   let fullStdout = '';
+  let stdoutTruncated = false;
+  let fullStderr = '';
+  let stderrTruncated = false;
+
   child.stdout.setEncoding('utf-8');
   child.stdout.on('data', (chunk: string) => {
-    fullStdout += chunk;
+    if (!stdoutTruncated) {
+      if (Buffer.byteLength(fullStdout, 'utf-8') + Buffer.byteLength(chunk, 'utf-8') > MAX_FULL_BUFFER_BYTES) {
+        stdoutTruncated = true;
+      } else {
+        fullStdout += chunk;
+      }
+    }
     stdoutBuf += chunk;
     let nl: number;
     while ((nl = stdoutBuf.indexOf('\n')) !== -1) {
@@ -291,9 +311,13 @@ export function spawnHeadless(opts: SpawnHeadlessOptions): HeadlessRun {
   });
 
   // ─── stderr (for error visibility, not parsing) ────────────────────────
-  let fullStderr = '';
   child.stderr.setEncoding('utf-8');
   child.stderr.on('data', (chunk: string) => {
+    if (stderrTruncated) return;
+    if (Buffer.byteLength(fullStderr, 'utf-8') + Buffer.byteLength(chunk, 'utf-8') > MAX_FULL_BUFFER_BYTES) {
+      stderrTruncated = true;
+      return;
+    }
     fullStderr += chunk;
   });
 
@@ -364,7 +388,19 @@ export function spawnHeadless(opts: SpawnHeadlessOptions): HeadlessRun {
         }
 
         // Per-shim final emission (e.g. message_done from full output for
-        // one-shot CLIs).
+        // one-shot CLIs). When the 10 MB accumulator cap was hit we MUST
+        // surface a partial-output warning — non-streaming CLIs (codex,
+        // opencode) feed fullStdout into onExit() to parse the final blob,
+        // and a truncated blob would parse as "complete" silently. The
+        // warning is independent of exit code: a "successful" run with a
+        // truncated diagnostic is still incomplete from the user's view.
+        if (stdoutTruncated || stderrTruncated) {
+          enqueue({
+            type: 'error',
+            kind: 'output_truncated',
+            message: `${opts.cli} output exceeded ${MAX_FULL_BUFFER_BYTES / (1024 * 1024)} MB cap; trailing data dropped. Final parse may be incomplete.`,
+          });
+        }
         if (opts.onExit) {
           try {
             for (const evt of opts.onExit(fullStdout, fullStderr, code)) enqueue(evt);
@@ -390,9 +426,17 @@ export function spawnHeadless(opts: SpawnHeadlessOptions): HeadlessRun {
           // checking both is non-optional. Trim to keep it terse.
           const stderrTail = fullStderr.trim().slice(-300);
           const stdoutTail = fullStdout.trim().slice(-300);
-          const detail = [stdoutTail, stderrTail]
-            .filter((s) => s.length > 0)
-            .join(' | ');
+          const tails = [stdoutTail, stderrTail].filter((s) => s.length > 0).join(' | ');
+          // If we hit the 10 MB accumulator cap, the *leading* output is
+          // captured but the trailing part is dropped on the floor (we stop
+          // appending early to avoid OOM). Surface a short note so the user
+          // knows the diagnostic is partial; the full output, if needed, is
+          // recoverable via the per-round artifact files in the chat dir.
+          const truncationNote =
+            stdoutTruncated || stderrTruncated
+              ? `[output truncated at ${MAX_FULL_BUFFER_BYTES / (1024 * 1024)}MB cap]`
+              : '';
+          const detail = [tails, truncationNote].filter((s) => s.length > 0).join(' ');
           enqueue({
             type: 'error',
             kind: 'cli_failed',

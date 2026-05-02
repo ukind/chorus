@@ -61,4 +61,29 @@ describe('StreamFileWriter', () => {
     w.flushNow();
     expect(fs.readFileSync(target, 'utf-8')).toBe('one two three');
   });
+
+  it('flips to dead state on flush failure and surfaces the error', () => {
+    // Point the writer at an unwritable path (target dir was deleted).
+    const deadPath = path.join(dir, 'subdir', 'no-such-parent.md');
+    const w = new StreamFileWriter(deadPath, 16, 5000);
+    expect(w.isDead()).toBe(false);
+    // 16 bytes triggers flush, which fails because the parent dir doesn't
+    // exist. The first write enqueues, the second crosses the threshold
+    // and triggers an internal flushNow that fails.
+    w.write('x'.repeat(20));
+    expect(w.isDead()).toBe(true);
+    expect(w.lastError()).toBeInstanceOf(Error);
+    expect(w.lastError()?.message ?? '').toMatch(/ENOENT|no such/i);
+  });
+
+  it('subsequent writes after death are dropped silently (no further errors)', () => {
+    const deadPath = path.join(dir, 'subdir', 'still-dead.md');
+    const w = new StreamFileWriter(deadPath, 16, 5000);
+    w.write('x'.repeat(20)); // triggers death
+    expect(w.isDead()).toBe(true);
+    // These should not throw, regardless of size
+    expect(() => w.write('more data after death')).not.toThrow();
+    expect(() => w.flushNow()).not.toThrow();
+    expect(w.isDead()).toBe(true);
+  });
 });

@@ -1,0 +1,152 @@
+/**
+ * Pre-spawn CLI precheck regression net.
+ *
+ * Covers the two layers:
+ *   - Quota gate: getHealth(lineage) returning quota_exhausted with a future
+ *     resetAt → returns ok:false. Past resetAt or no resetAt → falls through.
+ *   - Cred gate: per-lineage credential file existence. Existing+non-empty
+ *     file passes; missing/empty/zero-byte fails.
+ *
+ * Each test isolates DB state via CHORUS_DB_PATH + _resetDbForTests, and
+ * isolates HOME via process.env.HOME so the precheck reads from a tempdir
+ * we control.
+ */
+
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+
+import { _resetDbForTests, getDb } from '@/lib/db';
+import { recordHealth } from '@/lib/cli-health';
+import { precheckLineage } from '@/lib/cli-precheck';
+
+let dbPath: string;
+let fakeHome: string;
+let realHome: string | undefined;
+
+beforeEach(async () => {
+  dbPath = path.join(os.tmpdir(), `chorus-precheck-${randomUUID()}.db`);
+  process.env.CHORUS_DB_PATH = dbPath;
+  await _resetDbForTests();
+  await getDb();
+
+  realHome = process.env.HOME;
+  fakeHome = path.join(os.tmpdir(), `chorus-fakehome-${randomUUID()}`);
+  fs.mkdirSync(fakeHome, { recursive: true });
+  process.env.HOME = fakeHome;
+});
+
+afterEach(async () => {
+  await _resetDbForTests();
+  for (const suffix of ['', '-shm', '-wal']) {
+    try { fs.unlinkSync(dbPath + suffix); } catch { /* best-effort */ }
+  }
+  delete process.env.CHORUS_DB_PATH;
+
+  try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch { /* best-effort */ }
+  if (realHome) process.env.HOME = realHome;
+  else delete process.env.HOME;
+});
+
+/** Drop a non-empty fake credential file at the canonical path for `lineage`. */
+function writeFakeCred(relPath: string, content = '{"oauth":"fake"}'): void {
+  const full = path.join(fakeHome, relPath);
+  fs.mkdirSync(path.dirname(full), { recursive: true });
+  fs.writeFileSync(full, content);
+}
+
+describe('precheckLineage', () => {
+  describe('quota gate', () => {
+    it('blocks when quota_exhausted with future resetAt', async () => {
+      writeFakeCred('.claude/.credentials.json');
+      await recordHealth({
+        lineage: 'anthropic',
+        status: 'quota_exhausted',
+        resetAt: Date.now() + 60 * 60_000, // +1h
+      });
+      const result = await precheckLineage('anthropic');
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toBe('quota_exhausted');
+        expect(result.resetAt).toBeGreaterThan(Date.now());
+      }
+    });
+
+    it('falls through when quota_exhausted with past resetAt (stale marker)', async () => {
+      writeFakeCred('.claude/.credentials.json');
+      await recordHealth({
+        lineage: 'anthropic',
+        status: 'quota_exhausted',
+        resetAt: Date.now() - 60_000, // 1m ago
+      });
+      const result = await precheckLineage('anthropic');
+      expect(result.ok).toBe(true);
+    });
+
+    it('falls through when quota_exhausted has no resetAt', async () => {
+      writeFakeCred('.claude/.credentials.json');
+      await recordHealth({
+        lineage: 'anthropic',
+        status: 'quota_exhausted',
+        // resetAt omitted
+      });
+      const result = await precheckLineage('anthropic');
+      expect(result.ok).toBe(true);
+    });
+
+    it('passes when health is healthy / unknown', async () => {
+      writeFakeCred('.claude/.credentials.json');
+      const result = await precheckLineage('anthropic');
+      expect(result.ok).toBe(true);
+    });
+  });
+
+  describe('cred gate', () => {
+    it('blocks when no credential file exists for the lineage', async () => {
+      // No fake creds written for openai
+      const result = await precheckLineage('openai');
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toBe('auth_missing');
+        expect(result.cta).toMatch(/codex login/i);
+      }
+    });
+
+    it('blocks when credential file is zero bytes (treated as not logged in)', async () => {
+      writeFakeCred('.codex/auth.json', '');
+      const result = await precheckLineage('openai');
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.reason).toBe('auth_missing');
+    });
+
+    it('passes when credential file exists for any candidate path', async () => {
+      writeFakeCred('.codex/auth.json');
+      const result = await precheckLineage('openai');
+      expect(result.ok).toBe(true);
+    });
+
+    it('passes when fallback candidate path exists (google)', async () => {
+      // Primary path does not exist, fallback at .config/gemini/oauth_creds.json does
+      writeFakeCred('.config/gemini/oauth_creds.json');
+      const result = await precheckLineage('google');
+      expect(result.ok).toBe(true);
+    });
+
+    it('per-lineage CTA mentions the right login command', async () => {
+      const cases: Array<{ lineage: 'anthropic' | 'openai' | 'google' | 'opencode' | 'moonshot'; needle: RegExp }> = [
+        { lineage: 'anthropic', needle: /claude login/i },
+        { lineage: 'openai', needle: /codex login/i },
+        { lineage: 'google', needle: /gemini/i },
+        { lineage: 'opencode', needle: /opencode/i },
+        { lineage: 'moonshot', needle: /kimi|opencode/i },
+      ];
+      for (const c of cases) {
+        const result = await precheckLineage(c.lineage);
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.cta).toMatch(c.needle);
+      }
+    });
+  });
+});

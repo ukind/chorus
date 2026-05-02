@@ -349,11 +349,49 @@ export const chats = {
   },
 };
 
+/**
+ * Hard cap on phase_events.output length. SQLite handles big TEXT cells
+ * fine in isolation, but libsql wraps each row's columns in a result
+ * payload that gets reshipped on every read. A 4 MB reviewer transcript
+ * stored inline turns every `phaseEvents.list(chatId)` call into a 4 MB
+ * fetch — and the run page calls list() on every SSE re-attach. Cap at
+ * 256 KB; if a real output is bigger we keep the head + tail and emit a
+ * truncation marker pointing at the on-disk artifact dir. Long-form
+ * artifacts already live under ~/.chorus/chats/<id>/ — the DB row is
+ * meant to be a summary handle.
+ */
+const MAX_PHASE_OUTPUT_BYTES = 256 * 1024;
+
+function buildTruncationMarker(chatId: string): string {
+  // Concrete path lets the user `cat` the recovery directory directly.
+  // Caller wires through chatId; if a future call site doesn't have one
+  // it must pass a stable identifier (never an empty string).
+  return `\n\n... [truncated — see ~/.chorus/chats/${chatId}/ for full transcript] ...\n\n`;
+}
+
+function capOutput(output: string | null, chatId: string): string | null {
+  if (output === null) return null;
+  // Length check uses byte length, not char count — SQLite stores UTF-8 and
+  // a 4 MB string of multi-byte chars would still bloat the row.
+  const byteLen = Buffer.byteLength(output, 'utf-8');
+  if (byteLen <= MAX_PHASE_OUTPUT_BYTES) return output;
+  // Keep head (192 KB) + tail (32 KB) so the UI shows context on both ends.
+  // Bytes-based slicing on the underlying Buffer to stay under the cap even
+  // when the string contains multi-byte runes.
+  const buf = Buffer.from(output, 'utf-8');
+  const headBytes = 192 * 1024;
+  const tailBytes = 32 * 1024;
+  const head = buf.subarray(0, headBytes).toString('utf-8');
+  const tail = buf.subarray(buf.length - tailBytes).toString('utf-8');
+  return head + buildTruncationMarker(chatId) + tail;
+}
+
 // Phase events operations
 export const phaseEvents = {
   async create(event: Omit<PhaseEvent, 'id'>): Promise<PhaseEvent> {
     const db = await getDb();
     const validated = PhaseEventSchema.omit({ id: true }).parse(event);
+    const output = capOutput(validated.output, validated.chat_id);
 
     const result = await db.execute({
       sql: `
@@ -367,7 +405,7 @@ export const phaseEvents = {
         validated.role,
         validated.agent_id,
         validated.state,
-        validated.output,
+        output,
         validated.cost_usd,
         validated.tokens_in,
         validated.tokens_out,
@@ -411,7 +449,17 @@ export const phaseEvents = {
       throw new Error(`Phase event ${id} not found`);
     }
 
-    const updated = { ...event, ...partial };
+    // CRITICAL: distinguish "output omitted from partial" (preserve existing)
+    // from "output explicitly null" (caller wants to clear). The naive
+    // `partial.output ?? event.output` collapses both into "preserve" because
+    // null ?? x → x, which would silently drop intentional clears. Detect via
+    // the `in` operator on the typed key. Already-capped outputs in event.output
+    // pass through unchanged (cap is idempotent); only newly-supplied outputs
+    // need re-capping.
+    const nextOutput = 'output' in partial
+      ? capOutput(partial.output ?? null, event.chat_id)
+      : event.output;
+    const updated = { ...event, ...partial, output: nextOutput };
 
     await db.execute({
       sql: `

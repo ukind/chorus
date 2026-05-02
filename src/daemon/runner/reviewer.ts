@@ -170,6 +170,27 @@ export async function runReviewerHeadless(args: {
     });
   } finally {
     writer.flushNow();
+    // Mirror runDoerHeadless: surface answer.md write failures as a
+    // cli_warning so the user sees "stream stopped writing" instead of
+    // a quietly truncated reviewer transcript that the verdict parser
+    // then chokes on.
+    if (writer.isDead()) {
+      const err = writer.lastError();
+      onEvent({
+        chatId,
+        type: 'cli_warning',
+        payload: {
+          phaseId: phase.id,
+          round,
+          role: 'reviewer',
+          agent: `${agentName}-${reviewerIdx}`,
+          reason: 'stream_writer_dead',
+          message: `answer.md write failed; subsequent deltas dropped: ${err ? err.message : 'unknown'}`,
+          cta: 'Check disk space + permissions on ~/.chorus/chats. Re-run when fixed.',
+        },
+        ts: Date.now(),
+      });
+    }
   }
 
   const content = finalText && finalText.length > 0 ? finalText : accumulated;

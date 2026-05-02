@@ -8,7 +8,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import type { Template, Phase, StandardPhase, ReviewOnlyPhase } from '../lib/template-schema.js';
-import { isReviewOnlyPhase } from '../lib/template-schema.js';
+import { isReviewOnlyPhase, DEFAULT_TMUX_PHASE_TIMEOUT_MS } from '../lib/template-schema.js';
 import { waitForAnswer } from './output-watcher.js';
 
 import type { TmuxManager } from './tmux-types.js';
@@ -653,7 +653,7 @@ async function runDoer(
 
   try {
     return await waitForAnswer(answerFile, {
-      timeoutMs: 5 * 60 * 1000,
+      timeoutMs: phase.timeoutMs ?? DEFAULT_TMUX_PHASE_TIMEOUT_MS,
       doneSentinel: '## DONE',
     });
   } catch {
@@ -1014,7 +1014,7 @@ async function runReviewer(
 
   try {
     const result = await waitForAnswer(answerFile, {
-      timeoutMs: 5 * 60 * 1000,
+      timeoutMs: phase.timeoutMs ?? DEFAULT_TMUX_PHASE_TIMEOUT_MS,
       doneSentinel: '## DONE',
     });
     if (!result.full || result.content.trim().length === 0) {
@@ -1150,6 +1150,7 @@ async function runReviewOnlyPhase(args: {
       shareSessionAcrossRounds: false,
       shareSessionAcrossPhases: false,
     },
+    timeoutMs: phase.timeoutMs,
   };
 
   const consensus = await runReviewers(

@@ -68,6 +68,31 @@ const callDoer = (shimHandle: ReturnType<typeof makeFakeShim>) =>
   });
 
 describe('runDoerHeadless', () => {
+  it('forwards phase.timeoutMs to the shim spawn options', async () => {
+    const handle = makeFakeShim({ events: happyPathEvents('done\n## DONE') });
+    const phaseWithTimeout: StandardPhase = { ...fixturePhase, timeoutMs: 90_000 };
+    await runDoerHeadless({
+      shim: handle.shim,
+      chatId: 'test-chat',
+      phase: phaseWithTimeout,
+      round: 1,
+      agentName: 'fake',
+      askContent: 'do the thing',
+      answerFile,
+      doerCwd: tmp,
+      abortSignal: new AbortController().signal,
+      onEvent: (e) => events.push(e),
+    });
+    expect(handle.calls).toHaveLength(1);
+    expect(handle.calls[0].options.timeoutMs).toBe(90_000);
+  });
+
+  it('falls back to the default phase timeout when phase.timeoutMs is unset', async () => {
+    const handle = makeFakeShim({ events: happyPathEvents('done\n## DONE') });
+    await callDoer(handle);
+    expect(handle.calls[0].options.timeoutMs).toBe(10 * 60 * 1000);
+  });
+
   it('happy path: streams deltas + finalText, returns full content with DONE sentinel', async () => {
     const handle = makeFakeShim({
       events: happyPathEvents('I made the fix.\n\nLooks good.\n## DONE'),

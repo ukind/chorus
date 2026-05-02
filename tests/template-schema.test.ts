@@ -96,6 +96,50 @@ describe('PhaseSchema', () => {
   });
 });
 
+describe('PhaseSchema timeoutMs override', () => {
+  it('accepts an explicit timeoutMs on a standard phase within bounds', () => {
+    const result = PhaseSchema.safeParse({ ...STANDARD_PHASE, timeoutMs: 600_000 });
+    expect(result.success).toBe(true);
+    if (result.success && result.data.kind !== 'review_only') {
+      expect(result.data.timeoutMs).toBe(600_000);
+    }
+  });
+
+  it('accepts an explicit timeoutMs on a review_only phase within bounds', () => {
+    const result = PhaseSchema.safeParse({ ...REVIEW_ONLY_PHASE, timeoutMs: 120_000 });
+    expect(result.success).toBe(true);
+    if (result.success && result.data.kind === 'review_only') {
+      expect(result.data.timeoutMs).toBe(120_000);
+    }
+  });
+
+  it('leaves timeoutMs undefined when omitted (runner falls back to default)', () => {
+    const result = PhaseSchema.safeParse(STANDARD_PHASE);
+    expect(result.success).toBe(true);
+    if (result.success && result.data.kind !== 'review_only') {
+      expect(result.data.timeoutMs).toBeUndefined();
+    }
+  });
+
+  it('rejects timeoutMs below the 30s floor', () => {
+    const result = PhaseSchema.safeParse({ ...STANDARD_PHASE, timeoutMs: 5_000 });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects timeoutMs above the 1h ceiling', () => {
+    const result = PhaseSchema.safeParse({
+      ...STANDARD_PHASE,
+      timeoutMs: 60 * 60 * 1000 + 1,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a non-integer timeoutMs', () => {
+    const result = PhaseSchema.safeParse({ ...STANDARD_PHASE, timeoutMs: 60_000.5 });
+    expect(result.success).toBe(false);
+  });
+});
+
 describe('isReviewOnlyPhase', () => {
   it('narrows to ReviewOnlyPhase variant', () => {
     const phase = PhaseSchema.parse(REVIEW_ONLY_PHASE);

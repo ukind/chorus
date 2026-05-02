@@ -17,6 +17,7 @@
  */
 import * as fs from 'fs';
 import type { StandardPhase } from '../../lib/template-schema.js';
+import { DEFAULT_PHASE_TIMEOUT_MS } from '../../lib/template-schema.js';
 import type { AgentShim } from '../agents/types.js';
 import { getPermissions } from '../../lib/settings/permissions.js';
 import { StreamFileWriter } from './stream-file-writer.js';
@@ -70,7 +71,7 @@ export async function runDoerHeadless(args: {
     autoApprove: perms.autoApprovePrompts,
     networkAccess: perms.networkAccess,
     abortSignal,
-    timeoutMs: 10 * 60 * 1000,
+    timeoutMs: phase.timeoutMs ?? DEFAULT_PHASE_TIMEOUT_MS,
   });
 
   try {

@@ -70,6 +70,38 @@ const callReviewer = (shimHandle: ReturnType<typeof makeFakeShim>) =>
   });
 
 describe('runReviewerHeadless', () => {
+  it('forwards phase.timeoutMs to the shim spawn options', async () => {
+    const handle = makeFakeShim({
+      events: happyPathEvents(`${PADDING}\nlgtm\n## DONE`),
+    });
+    const phaseWithTimeout: StandardPhase = { ...fixturePhase, timeoutMs: 45_000 };
+    await runReviewerHeadless({
+      shim: handle.shim,
+      chatId: 'test-chat',
+      phase: phaseWithTimeout,
+      round: 1,
+      reviewerIdx: 0,
+      candidateLineage: 'openai',
+      candidateModel: 'gpt-5.5',
+      agentName: 'codex-cli',
+      askContent: 'review the doer output',
+      answerFile,
+      reviewerDir,
+      abortSignal: new AbortController().signal,
+      onEvent: (e) => events.push(e),
+    });
+    expect(handle.calls).toHaveLength(1);
+    expect(handle.calls[0].options.timeoutMs).toBe(45_000);
+  });
+
+  it('falls back to the default phase timeout when phase.timeoutMs is unset', async () => {
+    const handle = makeFakeShim({
+      events: happyPathEvents(`${PADDING}\nlgtm\n## DONE`),
+    });
+    await callReviewer(handle);
+    expect(handle.calls[0].options.timeoutMs).toBe(10 * 60 * 1000);
+  });
+
   it('returns true when reviewer text approves at the tail', async () => {
     const text = `${PADDING}\nThis change handles divide-by-zero correctly. lgtm.\n## DONE`;
     const handle = makeFakeShim({ events: happyPathEvents(text) });

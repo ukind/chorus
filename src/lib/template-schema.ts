@@ -19,6 +19,38 @@ import { z } from 'zod';
  * `kind`. Templates pick exactly one shape per phase and the runner
  * branches on the discriminator.
  */
+/**
+ * Default per-phase wait budget for the headless transport, used when a
+ * template doesn't override `timeoutMs`. Headless wraps a streaming
+ * subprocess; 10 min is the spawn-level wall.
+ */
+export const DEFAULT_PHASE_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * Default per-phase wait budget for the tmux file-watch path. Tighter
+ * than headless because the tmux flow polls a file the CLI is writing
+ * via a TUI — if 5 min pass with no answer.md content the CLI is almost
+ * certainly stuck on a prompt or has crashed silently. A template's
+ * `phase.timeoutMs` override beats this default on either transport.
+ */
+export const DEFAULT_TMUX_PHASE_TIMEOUT_MS = 5 * 60 * 1000;
+
+/**
+ * Bounds on the optional per-phase timeout override.
+ * 30s floor catches typos; 1h ceiling catches misconfigs that would let a
+ * runaway CLI sit forever. A template that legitimately needs longer can
+ * be raised here, but anything beyond an hour is almost certainly a bug.
+ */
+const PHASE_TIMEOUT_MIN_MS = 30_000;
+const PHASE_TIMEOUT_MAX_MS = 60 * 60 * 1000;
+
+const PhaseTimeoutSchema = z
+  .number()
+  .int()
+  .min(PHASE_TIMEOUT_MIN_MS)
+  .max(PHASE_TIMEOUT_MAX_MS)
+  .optional();
+
 const lineageEnum = z.enum(['anthropic', 'openai', 'google', 'opencode', 'moonshot', 'any']);
 const reviewerLineageEnum = z.enum(['anthropic', 'openai', 'google', 'opencode', 'moonshot']);
 
@@ -73,6 +105,13 @@ const StandardPhaseSchema = z.object({
   inputs: InputsSchema,
 
   iterate: IterateSchema,
+
+  /**
+   * Optional hard wait budget for both the doer subprocess and each
+   * reviewer subprocess in this phase. When unset, the runner falls back
+   * to DEFAULT_PHASE_TIMEOUT_MS. Bounds: 30s ≤ timeoutMs ≤ 1h.
+   */
+  timeoutMs: PhaseTimeoutSchema,
 });
 
 /**
@@ -103,6 +142,9 @@ const ReviewOnlyPhaseSchema = z.object({
   }),
 
   inputs: InputsSchema,
+
+  /** Same per-phase override as standard phases; applies to all reviewers. */
+  timeoutMs: PhaseTimeoutSchema,
 });
 
 export const PhaseSchema = z.discriminatedUnion('kind', [

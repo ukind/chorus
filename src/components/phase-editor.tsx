@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { listVoices } from "@/lib/api/voices";
+import { listPersonas, type Persona } from "@/lib/api/personas";
 import {
   ArrowDown,
   ArrowUp,
@@ -179,6 +180,82 @@ function useConnectedVoices(): ConnectedVoiceMap {
   return state;
 }
 
+/**
+ * Hook that fetches the persona catalog once on mount. Used by the doer
+ * + reviewer pickers to offer a dropdown of available personas.
+ *
+ * Returns `[]` while loading and on fetch failure (so the picker just
+ * renders an empty list rather than crashing the dialog). Persona
+ * editing is non-destructive — leaving a slot's persona unset is the
+ * default and produces a generic prompt.
+ */
+function usePersonas(): { personas: Persona[]; loaded: boolean } {
+  const [state, setState] = useState<{ personas: Persona[]; loaded: boolean }>({
+    personas: [],
+    loaded: false,
+  });
+  useEffect(() => {
+    listPersonas()
+      .then((personas) => setState({ personas, loaded: true }))
+      .catch(() => setState({ personas: [], loaded: true }));
+  }, []);
+  return state;
+}
+
+interface PersonaSelectProps {
+  value: string | undefined;
+  personas: Persona[];
+  onChange: (next: string | undefined) => void;
+  /** Tight inline render for reviewer rows; default false renders a labeled block. */
+  inline?: boolean;
+  ariaLabel?: string;
+}
+
+/**
+ * Compact persona picker. Renders a `<select>` with one option per
+ * persona plus a "(none)" entry that maps back to undefined. Mirrors
+ * ModelSelect's UX so the doer + reviewer rows feel consistent.
+ *
+ * When the current value isn't in the persona list (template authored
+ * elsewhere, persona row deleted), keep showing it as "(missing)" so
+ * editing doesn't silently swap it.
+ */
+function PersonaSelect({
+  value,
+  personas,
+  onChange,
+  inline,
+  ariaLabel,
+}: PersonaSelectProps) {
+  const NONE = "__none__";
+  const known = personas.some((p) => p.id === value);
+  const select = (
+    <select
+      value={value ?? NONE}
+      onChange={(e) => {
+        const v = e.target.value;
+        onChange(v === NONE ? undefined : v);
+      }}
+      className={cn(
+        "h-7 rounded-md border border-border bg-background px-2 text-[11px] focus:border-primary/60 focus:outline-none",
+        inline ? "w-32 shrink-0" : "w-full",
+      )}
+      aria-label={ariaLabel ?? "Persona"}
+    >
+      <option value={NONE}>(no persona)</option>
+      {personas.map((p) => (
+        <option key={p.id} value={p.id}>
+          {p.label}
+        </option>
+      ))}
+      {value && !known && (
+        <option value={value}>{value} (missing)</option>
+      )}
+    </select>
+  );
+  return select;
+}
+
 interface ModelSelectProps {
   lineage: ReviewerLineage;
   value: string;
@@ -320,6 +397,7 @@ function OpencodeModelInput({ value, onChange, enabled }: OpencodeModelInputProp
 export function PhaseEditor({ phases, onChange }: PhaseEditorProps) {
   const enabledOpencodeModels = useEnabledOpencodeModels();
   const connectedVoices = useConnectedVoices();
+  const { personas } = usePersonas();
   function update(idx: number, patch: Partial<TemplatePhase>) {
     onChange(phases.map((p, i) => (i === idx ? { ...p, ...patch } : p)));
   }
@@ -363,6 +441,7 @@ export function PhaseEditor({ phases, onChange }: PhaseEditorProps) {
             allPhaseIds={phaseIds}
             enabledOpencodeModels={enabledOpencodeModels}
             connectedVoices={connectedVoices}
+            personas={personas}
             onUpdate={(patch) => update(i, patch)}
             onMoveUp={() => move(i, -1)}
             onMoveDown={() => move(i, 1)}
@@ -392,6 +471,7 @@ interface PhaseCardProps {
   allPhaseIds: string[];
   enabledOpencodeModels: string[];
   connectedVoices: ConnectedVoiceMap;
+  personas: Persona[];
   onUpdate: (patch: Partial<TemplatePhase>) => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
@@ -405,6 +485,7 @@ function PhaseCard({
   allPhaseIds,
   enabledOpencodeModels,
   connectedVoices,
+  personas,
   onUpdate,
   onMoveUp,
   onMoveDown,
@@ -636,6 +717,30 @@ function PhaseCard({
                 }
               />
             </div>
+            <div className="mt-2">
+              <label className="mb-1 block text-[10px] text-muted-foreground">
+                Persona (optional · prepends a worldview to the doer&apos;s prompt)
+              </label>
+              <PersonaSelect
+                value={phase.doer.persona}
+                personas={personas}
+                onChange={(next) =>
+                  onUpdate({
+                    doer: next
+                      ? { ...phase.doer, persona: next }
+                      // Stripping `persona` cleanly when the user picks
+                      // (none) — preserves the omit-when-undefined YAML
+                      // emission contract.
+                      : (() => {
+                          const { persona: _drop, ...rest } = phase.doer;
+                          void _drop;
+                          return rest;
+                        })(),
+                  })
+                }
+                ariaLabel="Doer persona"
+              />
+            </div>
           </SubField>
           )}
 
@@ -725,6 +830,7 @@ function PhaseCard({
             <ReviewerSlotsEditor
               phase={phase}
               connectedVoices={connectedVoices}
+              personas={personas}
               onUpdate={onUpdate}
             />
           </SubField>
@@ -1026,22 +1132,38 @@ function PhaseCard({
 interface ReviewerSlotsEditorProps {
   phase: TemplatePhase;
   connectedVoices: ConnectedVoiceMap;
+  personas: Persona[];
   onUpdate: (patch: Partial<TemplatePhase>) => void;
 }
 
 interface ReviewerRow {
   lineage: ReviewerLineage;
   model: string;
+  /** Optional persona id — round-trips via reviewer.candidatePersonas. */
+  persona?: string;
 }
 
 function reviewerToRows(reviewer: TemplatePhase["reviewer"]): ReviewerRow[] {
   const rows: ReviewerRow[] = [];
   for (const lineage of reviewer.candidates) {
     const models = reviewer.candidateModels?.[lineage];
+    const personasByModel = reviewer.candidatePersonas?.[lineage];
     if (!models || models.length === 0) {
-      rows.push({ lineage, model: "" });
+      // The "" model slot's persona key is also "" — keeps the lookup
+      // consistent with the populated case.
+      rows.push({
+        lineage,
+        model: "",
+        ...(personasByModel?.[""] ? { persona: personasByModel[""] } : {}),
+      });
     } else {
-      for (const m of models) rows.push({ lineage, model: m });
+      for (const m of models) {
+        rows.push({
+          lineage,
+          model: m,
+          ...(personasByModel?.[m] ? { persona: personasByModel[m] } : {}),
+        });
+      }
     }
   }
   return rows;
@@ -1053,16 +1175,31 @@ function rowsToReviewer(
 ): TemplatePhase["reviewer"] {
   const candidates: ReviewerLineage[] = [];
   const candidateModels: Partial<Record<ReviewerLineage, string[]>> = {};
+  const candidatePersonas: Partial<
+    Record<ReviewerLineage, Record<string, string>>
+  > = {};
   for (const r of rows) {
     if (!candidates.includes(r.lineage)) candidates.push(r.lineage);
     if (r.model) (candidateModels[r.lineage] ??= []).push(r.model);
+    if (r.persona) {
+      // Key by model id; "" is fine for the lineage-only-no-model slot.
+      (candidatePersonas[r.lineage] ??= {})[r.model] = r.persona;
+    }
   }
-  return { ...base, candidates, candidateModels };
+  return {
+    ...base,
+    candidates,
+    candidateModels,
+    ...(Object.keys(candidatePersonas).length > 0
+      ? { candidatePersonas }
+      : { candidatePersonas: undefined }),
+  };
 }
 
 function ReviewerSlotsEditor({
   phase,
   connectedVoices,
+  personas,
   onUpdate,
 }: ReviewerSlotsEditorProps) {
   const rows = reviewerToRows(phase.reviewer);
@@ -1153,6 +1290,13 @@ function ReviewerSlotsEditor({
                 onChange={(next) => setRow(i, { model: next })}
               />
             </div>
+            <PersonaSelect
+              value={row.persona}
+              personas={personas}
+              onChange={(next) => setRow(i, { persona: next })}
+              inline
+              ariaLabel="Reviewer persona"
+            />
             <button
               type="button"
               onClick={() => removeRow(i)}

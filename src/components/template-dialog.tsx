@@ -264,15 +264,26 @@ function formToDaemonShape(f: FormState): DaemonTemplateYaml {
                 )
                   .map((m) => m.trim())
                   .filter((m) => m.length > 0);
+                const personasByModel = p.reviewer.candidatePersonas?.[l];
                 const daemonLineage = COCKPIT_TO_DAEMON[l] ?? "anthropic";
                 if (userPicked.length === 0) {
                   const fallback = DAEMON_DEFAULT_MODEL[l] ?? "claude-opus-4-7";
-                  return [{ lineage: daemonLineage, models: [fallback] }];
+                  // Lineage-only slots store their persona under the "" key.
+                  const persona = personasByModel?.[""];
+                  return [{
+                    lineage: daemonLineage,
+                    models: [fallback],
+                    ...(persona ? { persona } : {}),
+                  }];
                 }
-                return userPicked.map((m) => ({
-                  lineage: daemonLineage,
-                  models: [m],
-                }));
+                return userPicked.map((m) => {
+                  const persona = personasByModel?.[m];
+                  return {
+                    lineage: daemonLineage,
+                    models: [m],
+                    ...(persona ? { persona } : {}),
+                  };
+                });
               }),
             }
           : undefined;
@@ -310,6 +321,7 @@ function formToDaemonShape(f: FormState): DaemonTemplateYaml {
             p.doer.models.length > 0
               ? p.doer.models
               : [DAEMON_DEFAULT_MODEL[p.doer.lineage] ?? "claude-opus-4-7"],
+          ...(p.doer.persona ? { persona: p.doer.persona } : {}),
         },
         reviewer: reviewerBlock,
         inputs: { include: p.inputs.include, exclude: p.inputs.exclude },
@@ -400,9 +412,17 @@ function parseYamlToForm(yamlText: string, existingId: string): ParseResult {
     // codex gpt-5.5-pro), and the model picker for that lineage shows
     // both as separate rows.
     const candidateModels: Partial<Record<ReviewerLineage, string[]>> = {};
+    const candidatePersonas: Partial<
+      Record<ReviewerLineage, Record<string, string | undefined>>
+    > = {};
     const seenLineages = new Set<ReviewerLineage>();
     const candidates: ReviewerLineage[] = [];
-    let reviewerHasPersona = false;
+    // Track when a (lineage, model) tuple appears in two different YAML
+    // candidate blocks with conflicting personas. The form's
+    // one-persona-per-tuple representation can't faithfully store both,
+    // so we set a lossy reason and let the user fix it in YAML mode.
+    // Flagged in retroactive PR #23 review by opencode-deepseek.
+    const overlapConflicts: string[] = [];
     for (const c of p.reviewer?.candidates ?? []) {
       const cockpitLineage = DAEMON_TO_COCKPIT[c.lineage ?? ""];
       if (!cockpitLineage) continue;
@@ -410,32 +430,37 @@ function parseYamlToForm(yamlText: string, existingId: string): ParseResult {
         seenLineages.add(cockpitLineage);
         candidates.push(cockpitLineage);
       }
-      // Append each YAML-provided model to the lineage's row list.
-      // Empty/missing models[] -> skip (UI will render the default-row
-      // placeholder).
-      for (const m of c.models ?? []) {
-        const trimmed = (m ?? "").trim();
-        if (!trimmed) continue;
-        (candidateModels[cockpitLineage] ??= []).push(trimmed);
-      }
-      // Form mode doesn't yet model per-slot personas. Flag lossy so the
-      // user gets pushed to YAML mode and can't accidentally drop the
-      // persona binding by saving from Form mode.
-      if (typeof c.persona === "string" && c.persona.trim().length > 0) {
-        reviewerHasPersona = true;
+      // YAML candidates may declare persona without an explicit model;
+      // keying the persona map by model allows the form to round-trip
+      // either case ("" for the lineage-only slot, model id for the rest).
+      const trimmedModels = (c.models ?? [])
+        .map((m) => (m ?? "").trim())
+        .filter((m) => m.length > 0);
+      const yamlPersona =
+        c.persona && c.persona.trim().length > 0 ? c.persona : undefined;
+      const writePersona = (modelKey: string): void => {
+        if (!yamlPersona) return;
+        const map = (candidatePersonas[cockpitLineage] ??= {});
+        const existing = map[modelKey];
+        if (existing !== undefined && existing !== yamlPersona) {
+          overlapConflicts.push(
+            `${cockpitLineage}/${modelKey || "(no model)"}: "${existing}" vs "${yamlPersona}"`,
+          );
+        }
+        map[modelKey] = yamlPersona;
+      };
+      if (trimmedModels.length === 0) {
+        writePersona("");
+      } else {
+        for (const m of trimmedModels) {
+          (candidateModels[cockpitLineage] ??= []).push(m);
+          writePersona(m);
+        }
       }
     }
-    if (reviewerHasPersona) {
+    if (overlapConflicts.length > 0) {
       reasons.push(
-        `Phase ${p.id ?? "?"} has a reviewer with a persona — form mode doesn't expose per-slot personas yet, edit in YAML mode.`,
-      );
-    }
-    if (
-      typeof p.doer?.persona === "string" &&
-      p.doer.persona.trim().length > 0
-    ) {
-      reasons.push(
-        `Phase ${p.id ?? "?"} has a doer persona — form mode doesn't expose doer personas yet, edit in YAML mode.`,
+        `Phase ${p.id ?? "?"} has overlapping reviewer candidates with conflicting personas (${overlapConflicts.join("; ")}) — form mode would silently last-write-wins; edit in YAML to disambiguate.`,
       );
     }
 
@@ -470,12 +495,18 @@ function parseYamlToForm(yamlText: string, existingId: string): ParseResult {
           p.doer?.models && p.doer.models.length > 0
             ? p.doer.models
             : [DAEMON_DEFAULT_MODEL[doerLineage] ?? "claude-opus-4-7"],
+        ...(p.doer?.persona && p.doer.persona.trim().length > 0
+          ? { persona: p.doer.persona.trim() }
+          : {}),
       },
       reviewer: {
         require: p.reviewer?.require ?? 1,
         crossLineage: p.reviewer?.crossLineage ?? true,
         candidates,
         candidateModels,
+        ...(Object.keys(candidatePersonas).length > 0
+          ? { candidatePersonas }
+          : {}),
       },
       inputs: {
         include: p.inputs?.include ?? [],

@@ -125,6 +125,13 @@ export interface DoerSlot {
   lineage: ReviewerLineage;
   /** First entry is primary; rest are fallbacks. */
   models: string[];
+  /**
+   * Optional persona id. The runner prepends the persona's
+   * `system_prompt` to the doer's ask.md so the worldview is explicit
+   * (architect, sentinel, …). When empty, the doer runs without a
+   * persona prefix.
+   */
+  persona?: string;
 }
 
 /** Reviewer rule — how many must approve, must they differ from the doer, etc. */
@@ -143,6 +150,18 @@ export interface ReviewerRule {
    * lineage, the form falls back to that lineage's default model.
    */
   candidateModels?: Partial<Record<ReviewerLineage, string[]>>;
+  /**
+   * Optional per-slot persona assignment, keyed by lineage then model id.
+   * The runner looks up the persona's system_prompt and prepends it to
+   * the reviewer's ask.md so this slot critiques from a specific
+   * worldview (sentinel/security, cartographer/cross-platform, etc).
+   *
+   * Why a nested map and not an array of triples: keeps the structure
+   * compatible with the existing parallel-array form (candidates +
+   * candidateModels) without needing a schema-level slot refactor. A
+   * future cleanup could collapse all three into a flat slot array.
+   */
+  candidatePersonas?: Partial<Record<ReviewerLineage, Record<string, string | undefined>>>;
 }
 
 /** What prior phases this phase's doer is allowed to read. */

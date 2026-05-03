@@ -79,7 +79,7 @@ export function registerSystemRoutes(
   // ─── Orchestrators (editors that call chorus via MCP) ────────────────
   fastify.get<{ Reply: ApiResponse<object[]> }>('/orchestrators', async () => {
     try {
-      const { listOrchestrators } = await import('../orchestrators.js');
+      const { listOrchestrators } = await import('../orchestrators/index.js');
       return successResponse(listOrchestrators());
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
@@ -93,7 +93,7 @@ export function registerSystemRoutes(
   }>('/orchestrators/:name/connect', async (request) => {
     try {
       const { connectByName, listOrchestrators } = await import(
-        '../orchestrators.js'
+        '../orchestrators/index.js'
       );
       const result = await connectByName(request.params.name, {
         binPath: deps.chorusBinPath,

@@ -19,7 +19,7 @@ import {
   CHORUS_TOOLS,
   listOrchestrators,
   type OrchestratorName,
-} from '../daemon/orchestrators.js';
+} from '../daemon/orchestrators/index.js';
 
 const CHORUS_BIN_PATH = path.resolve(__dirname, '..', '..', 'bin', 'chorus.mjs');
 

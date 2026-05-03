@@ -82,7 +82,10 @@ export const UI_LINEAGE_DOT: Record<UILineage, string> = {
   gemini: "bg-blue-400",
   opencode: "bg-emerald-400",
   kimi: "bg-pink-400",
-  openrouter: "bg-amber-400",
+  // Cyan picked over amber — amber reads as "warning/in-progress" in UI
+  // convention, which clashed with lineage-as-brand semantics. Cyan is
+  // brand-distinct without state ambiguity.
+  openrouter: "bg-cyan-400",
 };
 
 export function uiLineageLabel(lineage: string | undefined): string {
@@ -202,9 +205,9 @@ export const UI_LINEAGE_BRAND: Record<UILineage, LineageBrand> = {
     gradient: "bg-gradient-to-b from-pink-500/15 to-card",
   },
   openrouter: {
-    dot: "bg-amber-400",
-    ring: "ring-amber-400/40",
-    gradient: "bg-gradient-to-b from-amber-500/15 to-card",
+    dot: "bg-cyan-400",
+    ring: "ring-cyan-400/40",
+    gradient: "bg-gradient-to-b from-cyan-500/15 to-card",
   },
 };
 

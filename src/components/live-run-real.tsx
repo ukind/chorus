@@ -61,6 +61,10 @@ const AGENT_LABEL: Record<string, string> = {
   gemini: "gemini-cli",
   opencode: "opencode-cli",
   kimi: "kimi-cli",
+  // Matches the on-disk dir name the runner creates for HTTP-dispatched
+  // voices (`reviewer-openrouter-<idx>`) so the synthesized pending card
+  // reconciles cleanly with the real participant once dispatch finishes.
+  openrouter: "openrouter",
 };
 
 // Templates use runtime lineage names ("anthropic", "openai", "google", ...)
@@ -359,26 +363,48 @@ export function LiveRunReal({
     // is empty so the card shows the actual model the runner will use.
     const resolveModel = (lineage: ReviewerLineage, models: string[] | undefined) =>
       models?.[0] ?? uiLineageDefaultModel(lineage);
+    // OpenRouter dispatch overrides the slot's lineage for UI matching:
+    // the runner creates `reviewer-openrouter-N` dirs (not
+    // `reviewer-codex-N` or `-gemini-N`) regardless of the underlying
+    // model's lineage. So a slot with model `openrouter:openai/gpt-4o-mini`
+    // synthesises an "openrouter" UI card that reconciles with the real
+    // participant once dispatch finishes. The voice's underlying lineage
+    // stays accurate on the voices table for diversity scoring.
+    const slotLineageForModel = (
+      templateLineage: string,
+      model: string | undefined,
+    ): ReviewerLineage =>
+      model && model.startsWith("openrouter:")
+        ? "openrouter"
+        : toUiLineage(templateLineage);
     const expectedSlots: Slot[] = [
       ...(reviewOnly
         ? []
-        : [
-            {
-              role: "doer" as const,
-              lineage: toUiLineage(phase.doer.lineage),
-              model: resolveModel(toUiLineage(phase.doer.lineage), phase.doer.models),
-            },
-          ]),
+        : (() => {
+            const doerModel = phase.doer.models?.[0];
+            const doerLineage = slotLineageForModel(phase.doer.lineage, doerModel);
+            return [
+              {
+                role: "doer" as const,
+                lineage: doerLineage,
+                model: doerModel ?? resolveModel(doerLineage, phase.doer.models),
+              },
+            ];
+          })()),
       // Use the structured candidatesWithModels field added to the parser
       // so we keep the model assignment per slot. The legacy `candidates`
       // string array is still emitted for connection-status grids that
       // don't care about models.
-      ...(phase.reviewer?.candidatesWithModels ?? []).map((c, idx) => ({
-        role: "reviewer" as const,
-        lineage: toUiLineage(c.lineage),
-        model: resolveModel(toUiLineage(c.lineage), c.models),
-        reviewerIdx: idx,
-      })),
+      ...(phase.reviewer?.candidatesWithModels ?? []).map((c, idx) => {
+        const slotModel = c.models?.[0];
+        const lineage = slotLineageForModel(c.lineage, slotModel);
+        return {
+          role: "reviewer" as const,
+          lineage,
+          model: slotModel ?? resolveModel(lineage, c.models),
+          reviewerIdx: idx,
+        };
+      }),
     ];
 
     return rounds.map((round) => {

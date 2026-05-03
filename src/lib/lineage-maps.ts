@@ -54,7 +54,13 @@ export function lineageDot(lineage: string | undefined): string {
  * with the daemon-side maps above; the cockpit calls these directly without
  * a translation step.
  */
-export type UILineage = "claude" | "codex" | "gemini" | "opencode" | "kimi";
+export type UILineage =
+  | "claude"
+  | "codex"
+  | "gemini"
+  | "opencode"
+  | "kimi"
+  | "openrouter";
 
 export const UI_LINEAGE_LABEL: Record<UILineage, string> = {
   claude: "Claude",
@@ -62,6 +68,12 @@ export const UI_LINEAGE_LABEL: Record<UILineage, string> = {
   gemini: "Gemini",
   opencode: "OpenCode",
   kimi: "Kimi",
+  // Meta-lineage for HTTP-dispatched voices. The real underlying lineage
+  // (anthropic/openai/google/etc.) is preserved on the voices table for
+  // diversity scoring; this label is what the cockpit cards show because
+  // the runner creates `reviewer-openrouter-N` dirs regardless of the
+  // underlying model.
+  openrouter: "OpenRouter",
 };
 
 export const UI_LINEAGE_DOT: Record<UILineage, string> = {
@@ -70,6 +82,7 @@ export const UI_LINEAGE_DOT: Record<UILineage, string> = {
   gemini: "bg-blue-400",
   opencode: "bg-emerald-400",
   kimi: "bg-pink-400",
+  openrouter: "bg-amber-400",
 };
 
 export function uiLineageLabel(lineage: string | undefined): string {
@@ -94,6 +107,10 @@ export const UI_LINEAGE_DEFAULT_MODEL: Record<UILineage, string> = {
   gemini: "gemini-3.1-pro-preview",
   opencode: "kimi-k2.6",
   kimi: "kimi-k2.6",
+  // No sensible default for openrouter — user explicitly selects a model.
+  // Empty string lets `models?.[0] ?? defaultModel` resolve to "" which
+  // the run page treats as "no model" (skips the · model · separator).
+  openrouter: "",
 };
 
 /**
@@ -183,6 +200,11 @@ export const UI_LINEAGE_BRAND: Record<UILineage, LineageBrand> = {
     dot: "bg-pink-400",
     ring: "ring-pink-400/40",
     gradient: "bg-gradient-to-b from-pink-500/15 to-card",
+  },
+  openrouter: {
+    dot: "bg-amber-400",
+    ring: "ring-amber-400/40",
+    gradient: "bg-gradient-to-b from-amber-500/15 to-card",
   },
 };
 

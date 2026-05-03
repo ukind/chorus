@@ -65,6 +65,11 @@ const COCKPIT_TO_DAEMON: Record<ReviewerLineage, string> = {
   gemini: "google",
   opencode: "opencode",
   kimi: "moonshot",
+  // openrouter voices carry an explicit `openrouter:<model>` id; the
+  // template's lineage field still records the underlying lineage so
+  // diversity scoring works. The "openrouter" UI lineage exists for
+  // run-page rendering only — not a daemon-side template lineage.
+  openrouter: "openrouter",
 };
 
 const DAEMON_TO_COCKPIT: Record<string, ReviewerLineage> = {
@@ -83,6 +88,7 @@ const DAEMON_DEFAULT_MODEL: Record<ReviewerLineage, string> = {
   gemini: "gemini-3.1-pro-preview",
   opencode: "kimi-k2.6",
   kimi: "kimi-k2.6",
+  openrouter: "",
 };
 
 // ─── Form ↔ daemon agreement-threshold ──────────────────────────────────

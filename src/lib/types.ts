@@ -1,7 +1,13 @@
 // Shared type contract between UI and daemon
 // These types define the API wire format (camelCase, extracted from mock-data.ts)
 
-export type ReviewerLineage = "codex" | "gemini" | "opencode" | "claude" | "kimi";
+export type ReviewerLineage =
+  | "codex"
+  | "gemini"
+  | "opencode"
+  | "claude"
+  | "kimi"
+  | "openrouter";
 
 export type AgentState =
   | "idle"

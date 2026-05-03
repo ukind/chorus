@@ -5,7 +5,7 @@ import type {
   Template,
   TemplatePhase,
   ThresholdAction,
-} from "@/lib/mock-data";
+} from "@/lib/cockpit-types";
 import type { FormState } from "./types";
 
 export const COCKPIT_TO_DAEMON: Record<ReviewerLineage, string> = {

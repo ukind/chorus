@@ -14,7 +14,7 @@ import {
   UI_LINEAGE_DEFAULT_MODEL,
   UI_LINEAGE_LABEL,
 } from "@/lib/lineage-maps";
-import type { PhaseKind, ReviewerLineage } from "@/lib/mock-data";
+import type { PhaseKind, ReviewerLineage } from "@/lib/cockpit-types";
 
 export const KIND_ICON: Record<
   PhaseKind,

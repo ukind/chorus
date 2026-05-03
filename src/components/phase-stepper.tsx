@@ -13,7 +13,7 @@ import {
   TestTube2,
   Shuffle,
 } from "lucide-react";
-import type { PhaseKind, TemplatePhase } from "@/lib/mock-data";
+import type { PhaseKind, TemplatePhase } from "@/lib/cockpit-types";
 
 export type PhaseState = "pending" | "active" | "done" | "blocked" | "skipped";
 

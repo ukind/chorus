@@ -4,7 +4,7 @@ import type {
   ReviewerLineage,
   Template,
   TemplatePhase,
-} from "@/lib/mock-data";
+} from "@/lib/cockpit-types";
 import {
   DAEMON_DEFAULT_MODEL,
   DAEMON_TO_COCKPIT,

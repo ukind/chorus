@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Persona } from "@/lib/api/personas";
-import type { PhaseKind, TemplatePhase } from "@/lib/mock-data";
+import type { PhaseKind, TemplatePhase } from "@/lib/cockpit-types";
 import { KIND_ICON, KINDS, LINEAGES } from "./constants";
 import type { ConnectedVoiceMap } from "./hooks";
 import {

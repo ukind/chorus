@@ -1,5 +1,6 @@
 // Shared type contract between UI and daemon
-// These types define the API wire format (camelCase, extracted from mock-data.ts)
+// API wire-format types (camelCase). The cockpit form uses parallel-array
+// shapes (`lib/cockpit-types.ts`); this file is the daemon-canonical view.
 
 export type ReviewerLineage =
   | "codex"

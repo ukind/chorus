@@ -41,7 +41,7 @@ import type {
   ParticipantWarning,
   RoundSnapshot,
 } from "./run-viewer/types";
-import type { TemplatePhase as MockTemplatePhase } from "@/lib/mock-data";
+import type { TemplatePhase as MockTemplatePhase } from "@/lib/cockpit-types";
 
 interface Props {
   chatId: string;

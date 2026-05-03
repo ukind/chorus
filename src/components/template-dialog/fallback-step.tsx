@@ -2,7 +2,7 @@
 
 import { Plus, Shuffle, X } from "lucide-react";
 import { useConnectedVoices, type ConnectedVoiceMap } from "@/components/phase-editor";
-import type { ReviewerLineage } from "@/lib/mock-data";
+import type { ReviewerLineage } from "@/lib/cockpit-types";
 import { FALLBACK_LINEAGES } from "./constants";
 import type { FallbackVoice, FormState } from "./types";
 

@@ -4,7 +4,7 @@ import type {
   Template,
   TemplatePhase,
   ThresholdAction,
-} from "@/lib/mock-data";
+} from "@/lib/cockpit-types";
 
 export interface FallbackVoice {
   lineage: ReviewerLineage;

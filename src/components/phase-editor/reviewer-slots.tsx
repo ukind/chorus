@@ -2,7 +2,7 @@
 
 import { Plus, X } from "lucide-react";
 import type { Persona } from "@/lib/api/personas";
-import type { ReviewerLineage, TemplatePhase } from "@/lib/mock-data";
+import type { ReviewerLineage, TemplatePhase } from "@/lib/cockpit-types";
 import { DEFAULT_MODELS, LINEAGES } from "./constants";
 import type { ConnectedVoiceMap } from "./hooks";
 import { ModelSelect, PersonaSelect } from "./selects";

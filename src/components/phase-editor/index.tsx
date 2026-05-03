@@ -1,7 +1,7 @@
 "use client";
 
 import { Plus } from "lucide-react";
-import type { TemplatePhase } from "@/lib/mock-data";
+import type { TemplatePhase } from "@/lib/cockpit-types";
 import { useConnectedVoices, usePersonas } from "./hooks";
 import { PhaseCard } from "./phase-card";
 import { makeDefaultPhase } from "./primitives";

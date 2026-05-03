@@ -2,7 +2,7 @@ import yaml from "yaml";
 import type {
   AgreementThreshold,
   ThresholdAction,
-} from "@/lib/mock-data";
+} from "@/lib/cockpit-types";
 import {
   COCKPIT_TO_DAEMON,
   DAEMON_DEFAULT_MODEL,

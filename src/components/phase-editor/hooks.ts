@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { listVoices } from "@/lib/api/voices";
 import { listPersonas, type Persona } from "@/lib/api/personas";
-import type { ReviewerLineage } from "@/lib/mock-data";
+import type { ReviewerLineage } from "@/lib/cockpit-types";
 import { DAEMON_TO_COCKPIT_LINEAGE } from "./constants";
 
 export interface ConnectedVoiceMap {

@@ -36,7 +36,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { saveTemplate, DaemonError } from "@/lib/api";
-import type { Template } from "@/lib/mock-data";
+import type { Template } from "@/lib/cockpit-types";
 import { selectLiveYaml } from "@/lib/template-live-yaml";
 import {
   validateTemplateYaml,

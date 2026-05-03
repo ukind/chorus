@@ -1,7 +1,7 @@
 "use client";
 
 import { cn } from "@/lib/utils";
-import type { TemplatePhase } from "@/lib/mock-data";
+import type { TemplatePhase } from "@/lib/cockpit-types";
 
 export function IconBtn({
   children,

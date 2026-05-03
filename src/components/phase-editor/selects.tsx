@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import type { Persona } from "@/lib/api/personas";
-import type { ReviewerLineage } from "@/lib/mock-data";
+import type { ReviewerLineage } from "@/lib/cockpit-types";
 
 interface PersonaSelectProps {
   value: string | undefined;

@@ -3,7 +3,7 @@
 import { Check, Info } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Persona } from "@/lib/api/personas";
-import type { TemplatePhase } from "@/lib/mock-data";
+import type { TemplatePhase } from "@/lib/cockpit-types";
 import { DEFAULT_MODELS, LINEAGES } from "./constants";
 import type { ConnectedVoiceMap } from "./hooks";
 import { SubField, ToggleChip } from "./primitives";

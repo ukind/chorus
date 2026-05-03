@@ -67,13 +67,40 @@ export const opencodeShim: AgentShim = {
   // Pattern: Escape twice to dismiss overlays, then /clear + Enter.
   clearKeys: ['Escape', 'Escape', '/clear', 'Enter'] as const,
 
-  // Auto-recovery for OpenCode's "Always allow" dialog (bash command, file
-  // read, subagent spawn — same dialog, different trigger). Default selection
-  // is "Allow once"; one Right arrow moves to "Always allow", Enter confirms.
-  // The dialog persists across triggers, so this is sufficient for any of the
-  // approval prompts (git diff, Read on external path, Task subagent spawn).
+  // Auto-recovery for OpenCode's permission dialog (bash command, file read,
+  // subagent spawn — same dialog shape, different triggers).
+  //
+  // OpenCode 1.14.x shows a TWO-STEP dialog when the user picks "Allow always":
+  //   1. First dialog (3 buttons, default = leftmost "Allow once"):
+  //          Allow once   Allow always   Reject
+  //      → `Right` moves the highlight from "Allow once" to "Allow always".
+  //      → `Enter` confirms and pops the second dialog.
+  //   2. Nested confirm (2 buttons, default = leftmost "Confirm"):
+  //          △ Always allow
+  //          This will allow the following patterns until OpenCode is restarted:
+  //          - cat *
+  //          Confirm   Cancel
+  //      → `Enter` confirms (default selection is "Confirm"). Dialog dismisses.
+  //
+  // Earlier `[Right, Enter]` only cleared step 1; step 2 sat there forever, the
+  // detector's dedup suppressed re-emission of `permission_prompt` (same kind),
+  // and the reviewer phase eventually timed out with no answer. Worse: if the
+  // dedup ever cleared (e.g. pane redraw scrolled "Always allow" off-screen)
+  // and a fresh recovery fired on dialog 2, `Right` would move "Confirm" →
+  // "Cancel" and `Enter` would REJECT the command. This sequence sends all
+  // three keys atomically via a single `tmux send-keys` call — bubbletea
+  // queues them and processes one at a time, so even if dialog 2 hasn't
+  // rendered yet when the third Enter arrives, it's queued and consumed when
+  // the input loop next polls.
+  //
+  // Same dialog shape covers every recoverable opencode prompt we've seen
+  // (git diff, Read on external path, Task subagent spawn). If a future
+  // opencode reorders buttons or adds a step 3, this sequence may fail
+  // safely (extra Enters land as harmless newlines in chat input) — phase
+  // timeout will catch it. See error-detector.ts for the matching narrowed
+  // regex that prevents false-positives on the nested step-2 heading.
   recoverKeys: {
-    permission_prompt: ['Right', 'Enter'] as const,
+    permission_prompt: ['Right', 'Enter', 'Enter'] as const,
   },
 
   buildLaunchCommand(opts: AgentSpawnOptions): string {

@@ -132,10 +132,13 @@ export const kimiShim: AgentShim = {
   },
 
   // Defense-in-depth recovery if --afk is dropped or a future kimi rev shows
-  // a different prompt shape. Default highlight is "Allow once"; Right + Enter
-  // navigates to "Always allow" and confirms (same UX convention as opencode).
+  // a different prompt shape. The kimi standalone CLI mirrors opencode's
+  // 2-step dialog UX (it's the same upstream codebase) so we send the same
+  // 3-key sequence: `Right` highlights "Allow always", first `Enter` opens
+  // the nested "Confirm/Cancel" dialog (default = Confirm), second `Enter`
+  // confirms it. See opencode.ts for the full per-key rationale.
   recoverKeys: {
-    permission_prompt: ['Right', 'Enter'] as const,
+    permission_prompt: ['Right', 'Enter', 'Enter'] as const,
   },
 
   formatPrompt(opts: AgentNudgeOptions): string {

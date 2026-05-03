@@ -139,8 +139,14 @@ export class ErrorDetector {
     // Pattern 4: Opencode DB corruption (stateful)
     // Accept both 'opencode' (current) and 'xai' (legacy alias) lineage tags
     // so older templates / sessions don't silently lose detection.
+    //
+    // NOTE: must NOT short-circuit when corruption isn't found — the original
+    // code returned the corruption result unconditionally and silently masked
+    // the permission_prompt detection (Pattern 5) for the entire opencode
+    // family. Fall through on null so the dialog detector below can still run.
     if (lineage === 'opencode' || lineage === 'xai') {
-      return this.inspectOpenCodeCorruption(sessionName, paneText);
+      const corruption = this.inspectOpenCodeCorruption(sessionName, paneText);
+      if (corruption) return corruption;
     }
 
     // Pattern 5: Permission prompt — lineage-agnostic.
@@ -161,9 +167,36 @@ export class ErrorDetector {
       lineage === 'opencode' ||
       lineage === 'moonshot';
     if (isInteractiveCli) {
-      // Match common prompt phrasings without false-positive on chat content
-      // (e.g. someone asking "approve this PR" — anchor on TUI-style markers).
-      const promptMatch = /(\b|△ ?)(Always allow|Allow always|Allow this|Allow once|Approve this call|Approve and run|\[a\]llow)\b/i.exec(paneText);
+      // Lineage-aware matching:
+      //
+      //   opencode/xai (and moonshot/kimi-standalone, same upstream code):
+      //     OpenCode 1.14.x's permission UI is a TWO-STEP dialog. Step 1 has
+      //     three buttons in a row ("Allow once   Allow always   Reject");
+      //     step 2 is a nested confirm ("△ Always allow … Confirm   Cancel").
+      //     Tight regex pinned to the step-1 button row prevents the detector
+      //     from re-firing on step 2's "Always allow" heading. That's load-
+      //     bearing: the shim's recoverKeys sends `[Right, Enter, Enter]` to
+      //     clear BOTH dialogs in one shot; if step 2 also matched here and
+      //     a recovery fired against it, `Right` would move the highlight
+      //     "Confirm" → "Cancel" and `Enter` would REJECT the command. The
+      //     dedup guard at the inspect() layer mostly hides this hazard, but
+      //     a single buffer-redraw window where step-2 matches alone can
+      //     re-arm it. Solving it at the regex level removes the failure
+      //     mode entirely instead of relying on dedup timing.
+      //
+      //   anthropic/openai/google:
+      //     Generic phrasings — Claude's "Approve and run", Codex's "Approve
+      //     this call", Gemini's "[a]llow" / "Always allow". Broad regex
+      //     keeps the existing coverage; these CLIs don't have the nested-
+      //     confirm hazard.
+      //
+      // Both sub-patterns refuse to match free-form chat content like
+      // "approve this PR" by anchoring on TUI markers (the △ glyph, the
+      // bracketed letter, or the multi-button row layout).
+      const isOpenCodeFamily = lineage === 'opencode' || lineage === 'moonshot';
+      const promptMatch = isOpenCodeFamily
+        ? /Allow once\s+(?:Always allow|Allow always)\s+Reject/i.exec(paneText)
+        : /(\b|△ ?)(Always allow|Allow always|Allow this|Allow once|Approve this call|Approve and run|\[a\]llow)\b/i.exec(paneText);
       if (promptMatch) {
         return {
           kind: 'permission_prompt',

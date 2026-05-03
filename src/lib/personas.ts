@@ -98,6 +98,12 @@ export async function seedBuiltinPersonas(): Promise<number> {
   const parsed = loadPersonaFiles();
   let count = 0;
   for (const { frontmatter, body } of parsed) {
+    // Skip rows the user has edited via POST /personas (which sets
+    // builtin=false). Without this guard, INSERT OR REPLACE in upsert()
+    // would clobber the user's edits on every daemon boot. Same tradeoff
+    // as templates: edited rows no longer auto-receive upstream changes.
+    const existing = await personas.getById(frontmatter.id);
+    if (existing && !existing.builtin) continue;
     await personas.upsert({
       id: frontmatter.id,
       label: frontmatter.label,

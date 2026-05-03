@@ -8,13 +8,21 @@
  * is loaded on demand when a persona is selected (GET /personas/:id).
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { Copy, Loader2, Trash2 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/page-header";
 import { CodeBlock } from "@/components/code-block";
-import { listPersonas, getPersona, DaemonError } from "@/lib/api";
+import { PersonaDialog } from "@/components/persona-dialog";
+import {
+  listPersonas,
+  getPersona,
+  savePersona,
+  deletePersona,
+  DaemonError,
+} from "@/lib/api";
 import type { Persona } from "@/lib/api/personas";
 import { lineageDot, lineageLabel } from "@/lib/lineage-maps";
 
@@ -24,24 +32,147 @@ export default function PersonasPage() {
   const [selectedId, setSelectedId] = useState<string>("");
   const [selectedFull, setSelectedFull] = useState<Persona | null>(null);
   const [loadingFull, setLoadingFull] = useState(false);
+  // Bumped after every save/delete so the right-pane effect refetches the
+  // updated_at-stamped row even when the selected id didn't change.
+  const [reloadTick, setReloadTick] = useState(0);
+  // When set, the per-row PersonaDialog mounted for this id opens
+  // automatically and the trigger is consumed. Used by the Duplicate
+  // affordance so the user lands directly in the new copy's edit form
+  // without an extra click.
+  const [autoOpenId, setAutoOpenId] = useState<string | null>(null);
+  // Per-row "duplicate in flight" so we can show a spinner on the right
+  // icon while the POST resolves; without it a slow daemon makes the
+  // duplicate icon feel dead and tempts a second click.
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
+  const [duplicateError, setDuplicateError] = useState<string | null>(null);
+  // Delete confirms inline rather than via a modal so the toolbar stays
+  // light. First click = arms (id stored here), second click within the
+  // arming window fires. Auto-disarms after 4s so a forgotten arm doesn't
+  // delete on a much-later stray click.
+  const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const refresh = useCallback(async (preserveId?: string) => {
+    try {
+      const rows = await listPersonas();
+      const sorted = [...rows].sort((a, b) => {
+        if (a.builtin !== b.builtin) return a.builtin ? -1 : 1;
+        return a.label.localeCompare(b.label);
+      });
+      setPersonas(sorted);
+      if (preserveId && sorted.find((p) => p.id === preserveId)) {
+        setSelectedId(preserveId);
+      } else if (sorted.length > 0) {
+        // Fall through to the first row when the preserved id no longer
+        // exists (e.g. just-deleted) — without this the right pane would
+        // strand on a stale id and render the empty state forever.
+        setSelectedId((cur) => (sorted.find((p) => p.id === cur) ? cur : sorted[0].id));
+      } else {
+        setSelectedId("");
+      }
+      setReloadTick((n) => n + 1);
+    } catch (err) {
+      setLoadError(err instanceof DaemonError ? err.message : "Failed to load personas");
+    }
+  }, []);
 
   useEffect(() => {
-    listPersonas()
-      .then((rows) => {
-        // Sort: built-ins first (alphabetical), then user-cloned (alphabetical).
-        const sorted = [...rows].sort((a, b) => {
-          if (a.builtin !== b.builtin) return a.builtin ? -1 : 1;
-          return a.label.localeCompare(b.label);
-        });
-        setPersonas(sorted);
-        if (sorted.length > 0) setSelectedId(sorted[0].id);
-      })
-      .catch((err) =>
-        setLoadError(
-          err instanceof DaemonError ? err.message : "Failed to load personas",
-        ),
+    refresh();
+  }, [refresh]);
+
+  // Walk `<sourceId>-copy`, `<sourceId>-copy-2`, … until we find a free
+  // slot in the current personas list. The bound is a sanity cap; the
+  // user almost certainly wouldn't intentionally duplicate the same row 99
+  // times, so falling through to a timestamp suffix is safe.
+  function nextDuplicateId(sourceId: string, taken: Set<string>): string {
+    const base = `${sourceId}-copy`;
+    if (!taken.has(base)) return base;
+    for (let i = 2; i < 100; i++) {
+      const candidate = `${base}-${i}`;
+      if (!taken.has(candidate)) return candidate;
+    }
+    return `${base}-${Date.now()}`;
+  }
+
+  async function handleDeleteRow(target: Persona) {
+    if (deletingId || target.builtin) return;
+    if (confirmingDeleteId !== target.id) {
+      setConfirmingDeleteId(target.id);
+      setDeleteError(null);
+      // Auto-disarm to avoid a long-lived primed Delete eating a later
+      // accidental click; matches the same 4s window users get inside
+      // the edit dialog.
+      setTimeout(() => {
+        setConfirmingDeleteId((cur) => (cur === target.id ? null : cur));
+      }, 4000);
+      return;
+    }
+    setDeletingId(target.id);
+    setDeleteError(null);
+    try {
+      await deletePersona(target.id);
+      setConfirmingDeleteId(null);
+      await refresh();
+    } catch (err) {
+      setDeleteError(
+        err instanceof DaemonError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : "Delete failed (unknown error)",
       );
-  }, []);
+      setConfirmingDeleteId(null);
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  async function handleDuplicate(source: Persona) {
+    if (duplicatingId) return;
+    setDuplicatingId(source.id);
+    setDuplicateError(null);
+    try {
+      // Need the full persona including system_prompt. List rows are
+      // typically full (the daemon's listPersonas returns all columns)
+      // but be defensive and refetch if the body is missing.
+      const full =
+        source.system_prompt && source.system_prompt.length > 0
+          ? source
+          : await getPersona(source.id);
+      const taken = new Set(personas.map((p) => p.id));
+      const newId = nextDuplicateId(source.id, taken);
+      const saved = await savePersona({
+        id: newId,
+        label: `${full.label} (copy)`,
+        one_liner: full.one_liner,
+        system_prompt: full.system_prompt ?? "",
+        recommended_lineage: full.recommended_lineage ?? null,
+        // Record provenance so future tooling can trace which built-in or
+        // user persona this copy was derived from. Past chats that
+        // reference the source id continue to resolve there unchanged.
+        // Flatten to the root: duplicating an already-duplicated row
+        // points at the original ancestor, not the intermediate copy, so
+        // the lineage chart stays one hop deep.
+        forked_from: full.forked_from ?? full.id,
+      });
+      // Open the duplicate in edit mode immediately so the user can rename
+      // or tweak before walking away. autoOpenId is consumed by the
+      // per-row dialog's `key` + defaultOpen wiring (cleared after mount).
+      setAutoOpenId(saved.id);
+      await refresh(saved.id);
+    } catch (err) {
+      setDuplicateError(
+        err instanceof DaemonError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : "Duplicate failed (unknown error)",
+      );
+    } finally {
+      setDuplicatingId(null);
+    }
+  }
 
   // Fetch the full persona (with system_prompt) when selection changes.
   useEffect(() => {
@@ -67,7 +198,7 @@ export default function PersonasPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedId]);
+  }, [selectedId, reloadTick]);
 
   if (loadError) {
     return (
@@ -98,7 +229,19 @@ export default function PersonasPage() {
               chorus wired up.
             </>
           }
+          action={<PersonaDialog onSaved={(id) => refresh(id)} />}
         />
+
+        {duplicateError && (
+          <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            Duplicate failed: {duplicateError}
+          </div>
+        )}
+        {deleteError && (
+          <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            Delete failed: {deleteError}
+          </div>
+        )}
 
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_1.2fr]">
           {/* Persona list */}
@@ -106,17 +249,24 @@ export default function PersonasPage() {
             {personas.map((p) => {
               const isSelected = p.id === selectedId;
               return (
-                <button
+                <div
                   key={p.id}
-                  type="button"
+                  role="button"
+                  tabIndex={0}
                   onClick={() => setSelectedId(p.id)}
-                  className={`rounded-xl text-left transition ${
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      setSelectedId(p.id);
+                    }
+                  }}
+                  className={`group relative cursor-pointer rounded-xl text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 ${
                     isSelected
                       ? "ring-2 ring-primary/60 ring-offset-2 ring-offset-background"
                       : ""
                   }`}
                 >
-                  <Card className="bg-card p-4">
+                  <Card className="bg-card p-4 transition group-hover:border-muted-foreground/30">
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex-1 min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
@@ -151,7 +301,81 @@ export default function PersonasPage() {
                       </div>
                     </div>
                   </Card>
-                </button>
+                  {/* Edit + Duplicate per-row affordances. Visible on hover
+                      or while selected. stopPropagation prevents the card's
+                      onClick from firing and snapping focus mid-edit. The
+                      Edit pencil needs the *full* persona (with
+                      system_prompt) so it's gated on the right-pane fetch
+                      having completed for this id; opening the dialog before
+                      selectedFull lands would prefill an empty body.
+                      Duplicate doesn't need that gate — the handler refetches
+                      the source if its body is missing. The PersonaDialog's
+                      `key` ties to autoOpenId so the duplicate's
+                      defaultOpen=true takes effect on a fresh mount. */}
+                  <div
+                    className={`absolute bottom-3 right-3 flex items-center gap-1.5 transition ${
+                      isSelected
+                        ? "opacity-100"
+                        : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+                    }`}
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      type="button"
+                      aria-label={`Duplicate persona ${p.label}`}
+                      title="Duplicate"
+                      disabled={duplicatingId === p.id}
+                      onClick={() => handleDuplicate(p)}
+                      className="grid h-7 w-7 place-items-center rounded-md border border-border bg-card text-muted-foreground transition hover:border-muted-foreground/40 hover:bg-accent/60 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {duplicatingId === p.id ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Copy className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                    {!p.builtin && (
+                      <button
+                        type="button"
+                        aria-label={`Delete persona ${p.label}`}
+                        title={
+                          confirmingDeleteId === p.id
+                            ? "Click again to confirm"
+                            : "Delete"
+                        }
+                        disabled={deletingId === p.id}
+                        onClick={() => handleDeleteRow(p)}
+                        className={`grid h-7 w-7 place-items-center rounded-md border transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                          confirmingDeleteId === p.id
+                            ? "border-destructive bg-destructive/15 text-destructive"
+                            : "border-border bg-card text-muted-foreground hover:border-destructive/50 hover:text-destructive"
+                        }`}
+                      >
+                        {deletingId === p.id ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-3.5 w-3.5" />
+                        )}
+                      </button>
+                    )}
+                    {selectedFull && selectedFull.id === p.id && (
+                      <PersonaDialog
+                        key={`${p.id}:${autoOpenId === p.id ? "auto" : "manual"}`}
+                        editing={selectedFull}
+                        defaultOpen={autoOpenId === p.id}
+                        onSaved={(id) => {
+                          if (autoOpenId === p.id) setAutoOpenId(null);
+                          refresh(id);
+                        }}
+                        onDeleted={() => {
+                          if (autoOpenId === p.id) setAutoOpenId(null);
+                          refresh();
+                        }}
+                      />
+                    )}
+                  </div>
+                </div>
               );
             })}
             {personas.length === 0 && (

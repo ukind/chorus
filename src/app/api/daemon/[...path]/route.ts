@@ -25,8 +25,6 @@ async function proxy(req: NextRequest, ctx: ProxyContext): Promise<Response> {
   const target = `${DAEMON_URL}/${segments}${search}`;
 
   const headers = new Headers();
-  const ct = req.headers.get("content-type");
-  if (ct) headers.set("content-type", ct);
   const accept = req.headers.get("accept");
   if (accept) headers.set("accept", accept);
 
@@ -35,8 +33,35 @@ async function proxy(req: NextRequest, ctx: ProxyContext): Promise<Response> {
     headers,
   };
 
-  if (req.method !== "GET" && req.method !== "HEAD") {
-    init.body = await req.text();
+  // Body forwarding rule: read the request body when content-length says
+  // one is present OR the request is using chunked transfer-encoding
+  // (which sends no content-length). Without the chunked check, large
+  // uploads sent via Transfer-Encoding: chunked would silently drop their
+  // body. The Content-Length-only path is the common one — fetchFromDaemon
+  // never streams. The whole guard exists because Next 16's body iterator
+  // hangs (UND_ERR_BODY_TIMEOUT) when Content-Type is set with no body —
+  // see DELETE through fetchFromDaemon. We also drop the upstream
+  // Content-Type for empty requests because Fastify rejects
+  // application/json + empty body with FST_ERR_CTP_EMPTY_JSON_BODY.
+  const hasContentLength =
+    Number(req.headers.get("content-length") ?? "0") > 0;
+  const isChunked = (req.headers.get("transfer-encoding") ?? "")
+    .toLowerCase()
+    .includes("chunked");
+  const hasBody =
+    req.method !== "GET" &&
+    req.method !== "HEAD" &&
+    (hasContentLength || isChunked);
+  if (hasBody) {
+    const ct = req.headers.get("content-type");
+    if (ct) headers.set("content-type", ct);
+    // arrayBuffer over text() — text() decodes the body as UTF-8 and
+    // replaces invalid bytes with U+FFFD, which would silently corrupt
+    // any future binary upload (file import, screenshot, etc.). All
+    // current callers send JSON, so the practical impact today is nil,
+    // but the proxy is a generic forward and shouldn't impose an
+    // encoding on bytes it's just relaying.
+    init.body = await req.arrayBuffer();
   }
 
   try {

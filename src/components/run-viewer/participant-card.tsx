@@ -23,6 +23,7 @@ export function ParticipantCard({
   liveTail,
   chatTerminal,
   chatId,
+  reviewOnly,
 }: {
   participant: ParticipantSnapshot;
   isActive: boolean;
@@ -34,6 +35,10 @@ export function ParticipantCard({
    *  cancel button. Routes to /chats/:id/participants/:key/cancel.
    *  When omitted (older callers, terminal chats), the button is hidden. */
   chatId?: string;
+  /** True when the chat is a review-only template (no doer phase). The
+   *  pending-state copy swaps from "runs after the doer" to a generic
+   *  "queued" line in that case — there is no doer to wait for. */
+  reviewOnly?: boolean;
 }) {
   const [showFull, setShowFull] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -189,7 +194,11 @@ export function ParticipantCard({
         ) : state === "working" ? (
           <div className="text-muted-foreground">Thinking…</div>
         ) : state === "pending" ? (
-          <div className="text-muted-foreground/70">Queued — runs after the doer.</div>
+          <div className="text-muted-foreground/70">
+            {reviewOnly
+              ? "Queued — waiting for an open slot."
+              : "Queued — runs after the doer."}
+          </div>
         ) : state === "errored" ? (
           failure ? (
             <div className="space-y-1.5 text-destructive/90">

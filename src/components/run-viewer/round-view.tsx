@@ -60,6 +60,7 @@ export function RoundView({
             liveTail={liveTails[`${p.role}:${p.lineage}`]}
             chatTerminal={chatTerminal}
             chatId={chatId}
+            reviewOnly={reviewOnly}
           />
         ))}
       </div>

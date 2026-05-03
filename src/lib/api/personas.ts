@@ -58,3 +58,35 @@ export async function getPersona(id: string): Promise<Persona> {
   );
   return fromRow(row);
 }
+
+export interface PersonaInput {
+  id: string;
+  label: string;
+  one_liner: string;
+  system_prompt: string;
+  recommended_lineage?: string | null;
+  /** When set, recorded on the new row so the persona page can show
+   *  "duplicated from <id>" and chats referencing the source can be
+   *  traced. Server only honours this on first create — re-saving an
+   *  existing row preserves whatever provenance was already there. */
+  forked_from?: string | null;
+}
+
+/** Create or update a persona. Server demotes any builtin row that gets
+ *  edited so the boot-time seed doesn't clobber the user's changes. */
+export async function savePersona(input: PersonaInput): Promise<Persona> {
+  const row = await fetchFromDaemon<RawPersonaRow>("/personas", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  return fromRow(row);
+}
+
+/** Delete a user persona. Built-ins cannot be deleted (server returns
+ *  validation error) — the boot seed would just recreate them. */
+export async function deletePersona(id: string): Promise<void> {
+  await fetchFromDaemon<{ id: string }>(
+    `/personas/${encodeURIComponent(id)}`,
+    { method: "DELETE" },
+  );
+}

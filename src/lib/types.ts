@@ -220,6 +220,14 @@ export interface Template {
   authorHandle: string;
   forks: number;
   popularity: number;
+  /** Template-level fallback voices, split by role. Tried in order when a
+   *  slot's per-slot chain exhausts. Dedup is strict (lineage, model) —
+   *  skip rows that match the failed slot or any active slot of the same
+   *  role in the same phase. */
+  fallback?: {
+    doer?: ReviewerCandidate[];
+    reviewer?: ReviewerCandidate[];
+  };
 }
 
 export interface BlockedChat {

@@ -280,6 +280,50 @@ export const TemplateSchema = z.object({
       titleTemplate: z.string().default('chorus: {template} via #{chatId}'),
     })
     .optional(),
+
+  /**
+   * Template-level fallback voices. Tried in order whenever a slot
+   * exhausts its own per-slot model chain (`candidate.models[]`) without
+   * producing an answer.
+   *
+   * Split by role so authors can tune doer-failure recovery independently
+   * from reviewer-failure recovery — typical case: a Sonnet/Haiku ladder
+   * for doer (cheap, fast) but a different lineage entirely for reviewer
+   * fallback (diversity preservation).
+   *
+   * Dedupe rule (strict, by lineage+model, scoped per-phase per-role):
+   *   - Skip if the candidate matches the failed slot itself (would just
+   *     fail again).
+   *   - Skip if the candidate matches any OTHER active slot of the same
+   *     role in the same phase (e.g. reviewers=[kimi, deepseek] with
+   *     fallback.reviewer=[kimi] → don't raise a second kimi reviewer).
+   *
+   * Each entry is a single voice. Authors who want a multi-model fallback
+   * chain put them as separate rows in priority order. Same-lineage only
+   * for v0.7 (cross-lineage swap is a bigger feature; out of scope).
+   */
+  fallback: z
+    .object({
+      doer: z
+        .array(
+          z.object({
+            lineage: lineageEnum,
+            models: z.array(z.string()).min(1),
+            persona: z.string().optional(),
+          }),
+        )
+        .optional(),
+      reviewer: z
+        .array(
+          z.object({
+            lineage: reviewerLineageEnum,
+            models: z.array(z.string()).min(1),
+            persona: z.string().optional(),
+          }),
+        )
+        .optional(),
+    })
+    .optional(),
 });
 
 export type Template = z.infer<typeof TemplateSchema>;

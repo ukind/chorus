@@ -32,6 +32,12 @@ import {
   Sparkles,
   Loader2,
   Pencil,
+  ChevronLeft,
+  ChevronRight,
+  Layers,
+  Sliders,
+  Shuffle,
+  Tag,
 } from "lucide-react";
 import yaml from "yaml";
 import {
@@ -153,6 +159,20 @@ interface FormState {
   onThresholdMetRaw?: "review";
   maxRounds: number;
   yoloDefault: boolean;
+  /**
+   * Template-level fallback voices, split by role. Tried in order when a
+   * slot's per-slot model chain exhausts. Strict (lineage, model) dedup
+   * against active slots of the same role in the same phase. Each entry
+   * is one voice; chain order = priority.
+   */
+  fallbackDoer: FallbackVoice[];
+  fallbackReviewer: FallbackVoice[];
+}
+
+interface FallbackVoice {
+  lineage: ReviewerLineage;
+  model: string;
+  persona?: string;
 }
 
 const DEFAULT_PHASE: TemplatePhase = {
@@ -185,6 +205,8 @@ const DEFAULT_FORM: FormState = {
   onThresholdMet: "ask-user",
   maxRounds: 3,
   yoloDefault: false,
+  fallbackDoer: [],
+  fallbackReviewer: [],
 };
 
 function slugify(s: string): string {
@@ -235,6 +257,10 @@ interface DaemonTemplateYaml {
   maxRounds: number;
   yoloDefault: boolean;
   phases: DaemonPhaseYaml[];
+  fallback?: {
+    doer?: Array<{ lineage: string; models: string[]; persona?: string }>;
+    reviewer?: Array<{ lineage: string; models: string[]; persona?: string }>;
+  };
 }
 
 function formToDaemonShape(f: FormState): DaemonTemplateYaml {
@@ -339,6 +365,33 @@ function formToDaemonShape(f: FormState): DaemonTemplateYaml {
         },
       };
     }),
+    // Template-level fallback chains, split by role. Emitted only when at
+    // least one role has rows, so older templates round-trip unchanged.
+    // Priority order matches form order.
+    ...(f.fallbackDoer.length > 0 || f.fallbackReviewer.length > 0
+      ? {
+          fallback: {
+            ...(f.fallbackDoer.length > 0
+              ? {
+                  doer: f.fallbackDoer.map((fb) => ({
+                    lineage: COCKPIT_TO_DAEMON[fb.lineage] ?? "anthropic",
+                    models: [fb.model],
+                    ...(fb.persona ? { persona: fb.persona } : {}),
+                  })),
+                }
+              : {}),
+            ...(f.fallbackReviewer.length > 0
+              ? {
+                  reviewer: f.fallbackReviewer.map((fb) => ({
+                    lineage: COCKPIT_TO_DAEMON[fb.lineage] ?? "anthropic",
+                    models: [fb.model],
+                    ...(fb.persona ? { persona: fb.persona } : {}),
+                  })),
+                }
+              : {}),
+          },
+        }
+      : {}),
   };
 }
 
@@ -375,6 +428,10 @@ interface ParsedDaemonTemplate {
     artifact?: { label?: string; hint?: string; maxBytes?: number };
     timeoutMs?: number;
   }>;
+  fallback?: {
+    doer?: Array<{ lineage?: string; models?: string[]; persona?: string }>;
+    reviewer?: Array<{ lineage?: string; models?: string[]; persona?: string }>;
+  };
 }
 
 interface ParseResult {
@@ -597,10 +654,36 @@ function parseYamlToForm(yamlText: string, existingId: string): ParseResult {
       ...(onThresholdMetRaw ? { onThresholdMetRaw } : {}),
       maxRounds: parsed.maxRounds ?? 3,
       yoloDefault: parsed.yoloDefault ?? false,
+      // Flatten the daemon shape (`models: [...]`) into one form row per
+      // (lineage, model) so the cockpit's add/remove UI is row-oriented.
+      // Authors who want a multi-model fallback chain put them as separate
+      // rows in priority order — matches how reviewer.candidates is shown.
+      fallbackDoer: flattenFallbackList(parsed.fallback?.doer),
+      fallbackReviewer: flattenFallbackList(parsed.fallback?.reviewer),
     },
     formLossy: reasons.length > 0,
     lossyReasons: reasons,
   };
+}
+
+/** Flatten daemon-shape fallback rows ({lineage, models[]}) into one form row
+ *  per (lineage, model) tuple. The form's add/remove UI is row-oriented. */
+function flattenFallbackList(
+  list: Array<{ lineage?: string; models?: string[]; persona?: string }> | undefined,
+): FallbackVoice[] {
+  if (!Array.isArray(list)) return [];
+  return list.flatMap((fb) => {
+    const cockpitLineage = DAEMON_TO_COCKPIT[fb.lineage ?? ""] ?? "claude";
+    const models = (fb.models ?? []).filter(
+      (m) => typeof m === "string" && m.trim().length > 0,
+    );
+    if (models.length === 0) return [];
+    return models.map((model) => ({
+      lineage: cockpitLineage,
+      model,
+      ...(fb.persona ? { persona: fb.persona } : {}),
+    }));
+  });
 }
 
 function deriveCategory(id: string): Template["category"] {
@@ -1089,6 +1172,63 @@ function Chip({
   );
 }
 
+// ─── Wizard ─────────────────────────────────────────────────────────────
+//
+// FormPanel is a 4-step wizard. Walking the user through {basics → phases →
+// fallback → quorum} keeps each screen short enough to scan and lets us
+// gate Next on per-step validation (required name, ≥1 reviewer per phase,
+// etc.). The same component renders both the New and the Edit dialog so
+// the field surfaces stay in lockstep — there's no separate "edit" form to
+// drift from "new".
+//
+// Save (in the parent dialog footer) is gated by the global YAML
+// validation; the wizard's Next/Back is independent — power users can land
+// on the last step and click Save without walking every screen.
+
+interface StepDef {
+  id: 1 | 2 | 3 | 4;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+}
+
+const WIZARD_STEPS: StepDef[] = [
+  { id: 1, label: "Basics", icon: Tag },
+  { id: 2, label: "Phases", icon: Layers },
+  { id: 3, label: "Fallback", icon: Shuffle },
+  { id: 4, label: "Quorum", icon: Sliders },
+];
+
+function validateStep(step: number, form: FormState): string[] {
+  const issues: string[] = [];
+  if (step === 1) {
+    if (!form.name || form.name.trim().length === 0) {
+      issues.push("Name is required.");
+    } else if (form.name.length > 80) {
+      issues.push("Name is too long (max 80 chars).");
+    }
+    if (!form.description || form.description.trim().length === 0) {
+      issues.push("Description is required — one line on when to use this template.");
+    }
+  } else if (step === 2) {
+    if (form.phases.length === 0) {
+      issues.push("At least one phase is required.");
+    }
+    for (const phase of form.phases) {
+      if (!phase.id || phase.id.trim().length === 0) {
+        issues.push(`Phase "${phase.name || "(unnamed)"}" needs an id.`);
+      }
+      if (phase.kind !== "review_only" && (!phase.doer.lineage || phase.doer.models.length === 0)) {
+        issues.push(`Phase "${phase.name || phase.id}" needs a doer lineage + model.`);
+      }
+      if (phase.reviewer.candidates.length === 0) {
+        issues.push(`Phase "${phase.name || phase.id}" needs at least one reviewer.`);
+      }
+    }
+  }
+  // Steps 3 (Fallback) + 4 (Quorum) are optional — no required fields.
+  return issues;
+}
+
 function FormPanel({
   form,
   setField,
@@ -1096,20 +1236,201 @@ function FormPanel({
   form: FormState;
   setField: <K extends keyof FormState>(k: K, v: FormState[K]) => void;
 }) {
+  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
+  // Errors only show when the user TRIED to advance past a step with issues —
+  // not from the moment the dialog opens. Keeps the form quiet for power
+  // users who fill top-down.
+  const [showErrors, setShowErrors] = useState(false);
+
+  const issues = validateStep(step, form);
+  const canAdvance = issues.length === 0;
+
+  const goNext = () => {
+    if (!canAdvance) {
+      setShowErrors(true);
+      return;
+    }
+    setShowErrors(false);
+    if (step < 4) setStep(((step + 1) as 1 | 2 | 3 | 4));
+  };
+  const goBack = () => {
+    setShowErrors(false);
+    if (step > 1) setStep(((step - 1) as 1 | 2 | 3 | 4));
+  };
+  const goTo = (target: 1 | 2 | 3 | 4) => {
+    // Allow direct jumps backward freely; forward jumps require all
+    // intermediate steps to validate.
+    if (target <= step) {
+      setShowErrors(false);
+      setStep(target);
+      return;
+    }
+    for (let s = step; s < target; s++) {
+      if (validateStep(s, form).length > 0) {
+        setShowErrors(true);
+        return;
+      }
+    }
+    setShowErrors(false);
+    setStep(target);
+  };
+
   return (
-    <div className="space-y-6 px-6 py-6">
-      <Field label="Name" htmlFor="tpl-name">
+    <div className="flex h-full flex-col px-6 py-6">
+      <StepIndicator currentStep={step} onJump={goTo} form={form} />
+
+      <div className="mt-6 flex-1 space-y-6">
+        {step === 1 && (
+          <BasicsStep form={form} setField={setField} showErrors={showErrors} />
+        )}
+        {step === 2 && (
+          <PhasesStep form={form} setField={setField} showErrors={showErrors} />
+        )}
+        {step === 3 && <FallbackStep form={form} setField={setField} />}
+        {step === 4 && <QuorumStep form={form} setField={setField} />}
+      </div>
+
+      {showErrors && issues.length > 0 && (
+        <div className="mt-6 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-[11px] text-destructive">
+          <div className="mb-1 font-medium">Resolve these to continue:</div>
+          <ul className="space-y-0.5 pl-4">
+            {issues.map((i) => (
+              <li key={i} className="list-disc">
+                {i}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="mt-6 flex items-center justify-between border-t border-border pt-4">
+        <button
+          type="button"
+          onClick={goBack}
+          disabled={step === 1}
+          className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-card px-3 text-sm font-medium text-muted-foreground transition hover:border-muted-foreground/30 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <ChevronLeft className="h-3.5 w-3.5" />
+          Back
+        </button>
+        <span className="text-[11px] text-muted-foreground">
+          Step {step} of 4 · {WIZARD_STEPS[step - 1].label}
+        </span>
+        {step < 4 ? (
+          <button
+            type="button"
+            onClick={goNext}
+            className={cn(
+              "inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium shadow-sm transition",
+              canAdvance
+                ? "bg-primary text-primary-foreground hover:bg-primary/90"
+                : "bg-muted text-muted-foreground/60",
+            )}
+          >
+            Next
+            <ChevronRight className="h-3.5 w-3.5" />
+          </button>
+        ) : (
+          <span className="text-[11px] text-emerald-300">
+            <CheckCircle2 className="mr-1 inline-block h-3 w-3" />
+            Save in the footer below
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StepIndicator({
+  currentStep,
+  onJump,
+  form,
+}: {
+  currentStep: 1 | 2 | 3 | 4;
+  onJump: (n: 1 | 2 | 3 | 4) => void;
+  form: FormState;
+}) {
+  return (
+    <div className="flex items-stretch gap-2">
+      {WIZARD_STEPS.map((s) => {
+        const Icon = s.icon;
+        const isActive = s.id === currentStep;
+        const stepIssues = validateStep(s.id, form);
+        const valid = stepIssues.length === 0;
+        const isPast = s.id < currentStep;
+        return (
+          <button
+            key={s.id}
+            type="button"
+            onClick={() => onJump(s.id)}
+            className={cn(
+              "flex flex-1 items-center gap-2 rounded-md border px-3 py-2 text-left transition",
+              isActive
+                ? "border-primary/60 bg-primary/10"
+                : isPast && !valid
+                  ? "border-destructive/40 bg-destructive/5"
+                  : "border-border bg-card hover:border-muted-foreground/30",
+            )}
+          >
+            <span
+              className={cn(
+                "flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-mono",
+                isActive
+                  ? "bg-primary text-primary-foreground"
+                  : isPast && valid
+                    ? "bg-emerald-500/20 text-emerald-300"
+                    : isPast && !valid
+                      ? "bg-destructive/20 text-destructive"
+                      : "bg-muted text-muted-foreground",
+              )}
+            >
+              {isPast && valid ? "✓" : s.id}
+            </span>
+            <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <span className="hidden text-xs font-medium sm:inline">
+              {s.label}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function BasicsStep({
+  form,
+  setField,
+  showErrors,
+}: {
+  form: FormState;
+  setField: <K extends keyof FormState>(k: K, v: FormState[K]) => void;
+  showErrors: boolean;
+}) {
+  const nameInvalid = showErrors && form.name.trim().length === 0;
+  const descInvalid = showErrors && form.description.trim().length === 0;
+  return (
+    <>
+      <Field label="Name *" htmlFor="tpl-name">
         <input
           id="tpl-name"
           value={form.name}
           onChange={(e) => setField("name", e.target.value)}
           placeholder="security-audit"
-          className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm placeholder:text-muted-foreground/60 focus:border-primary/60 focus:outline-none focus:ring-2 focus:ring-primary/20"
+          aria-invalid={nameInvalid}
+          className={cn(
+            "h-10 w-full rounded-md border bg-background px-3 text-sm placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2",
+            nameInvalid
+              ? "border-destructive/60 focus:border-destructive focus:ring-destructive/30"
+              : "border-border focus:border-primary/60 focus:ring-primary/20",
+          )}
         />
+        {nameInvalid && (
+          <p className="text-[11px] text-destructive">Name is required.</p>
+        )}
       </Field>
 
       <Field
-        label="Description"
+        label="Description *"
         htmlFor="tpl-desc"
         hint="One sentence on when someone should reach for this template."
       >
@@ -1119,8 +1440,17 @@ function FormPanel({
           onChange={(e) => setField("description", e.target.value)}
           placeholder="Independent security audit from 3 model families…"
           rows={2}
-          className="w-full resize-none rounded-md border border-border bg-background px-3 py-2 text-sm leading-relaxed placeholder:text-muted-foreground/60 focus:border-primary/60 focus:outline-none focus:ring-2 focus:ring-primary/20"
+          aria-invalid={descInvalid}
+          className={cn(
+            "w-full resize-none rounded-md border bg-background px-3 py-2 text-sm leading-relaxed placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2",
+            descInvalid
+              ? "border-destructive/60 focus:border-destructive focus:ring-destructive/30"
+              : "border-border focus:border-primary/60 focus:ring-primary/20",
+          )}
         />
+        {descInvalid && (
+          <p className="text-[11px] text-destructive">Description is required.</p>
+        )}
       </Field>
 
       <Field label="Category">
@@ -1136,124 +1466,290 @@ function FormPanel({
           ))}
         </div>
       </Field>
+    </>
+  );
+}
 
+function PhasesStep({
+  form,
+  setField,
+  showErrors,
+}: {
+  form: FormState;
+  setField: <K extends keyof FormState>(k: K, v: FormState[K]) => void;
+  showErrors: boolean;
+}) {
+  // PhaseEditor surfaces its own per-phase errors — but on validation
+  // failure show a small banner reminding the user the issue is in here.
+  const issues = validateStep(2, form);
+  return (
+    <>
+      {showErrors && issues.length > 0 && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-[11px] text-destructive">
+          {issues[0]}
+        </div>
+      )}
       <PhaseEditor
         phases={form.phases}
         onChange={(phases) => setField("phases", phases)}
       />
+    </>
+  );
+}
 
-      <div className="rounded-lg border border-border bg-card/40 p-4">
-        <h3 className="mb-3 text-[13px] font-semibold tracking-tight">
-          Across all phases
-        </h3>
-
-        <div className="mb-4">
-          <div className="mb-1.5 text-[11px] font-medium text-muted-foreground">
-            Agreement threshold (per review-style phase)
-          </div>
-          <div className="grid grid-cols-3 gap-2">
-            {THRESHOLDS.map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => setField("threshold", t.id)}
-                className={cn(
-                  "rounded-md border px-3 py-2 text-left transition",
-                  form.threshold === t.id
-                    ? "border-primary/60 bg-primary/10 ring-1 ring-primary/40"
-                    : "border-border bg-card hover:border-muted-foreground/30 hover:bg-accent/40",
-                )}
-              >
-                <div className="text-xs font-medium">{t.label}</div>
-              </button>
-            ))}
-          </div>
-          <p className="mt-1.5 text-[11px] leading-snug text-muted-foreground/80">
-            {THRESHOLDS.find((t) => t.id === form.threshold)?.hint}
-          </p>
+function FallbackStep({
+  form,
+  setField,
+}: {
+  form: FormState;
+  setField: <K extends keyof FormState>(k: K, v: FormState[K]) => void;
+}) {
+  return (
+    <>
+      <div className="rounded-md border border-border bg-card/40 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+        <div className="mb-1 flex items-center gap-1.5 text-foreground">
+          <Shuffle className="h-3 w-3" />
+          <span className="text-[12px] font-medium">
+            Template-level fallback chains
+          </span>
         </div>
+        Tried in order whenever a slot exhausts its own per-slot model chain.
+        Same-lineage only (cross-lineage swap lands in v0.8). Strict
+        <span className="font-mono"> (lineage, model)</span> dedup —
+        if your reviewers already include kimi, a kimi fallback is skipped
+        when another reviewer fails.
+      </div>
 
-        <div className="mb-4">
-          <div className="mb-1.5 text-[11px] font-medium text-muted-foreground">
-            When threshold is met
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            {ACTIONS.map((a) => (
-              <button
-                key={a.id}
-                type="button"
-                onClick={() => setField("onThresholdMet", a.id)}
-                className={cn(
-                  "rounded-md border px-3 py-2 text-left transition",
-                  form.onThresholdMet === a.id
-                    ? "border-primary/60 bg-primary/10 ring-1 ring-primary/40"
-                    : "border-border bg-card hover:border-muted-foreground/30 hover:bg-accent/40",
-                )}
-              >
-                <div className="text-xs font-medium">{a.label}</div>
-              </button>
-            ))}
-          </div>
-        </div>
+      <FallbackList
+        title="Doer fallback"
+        hint="Engaged when the doer's primary + per-slot models all fail."
+        rows={form.fallbackDoer}
+        onChange={(rows) => setField("fallbackDoer", rows)}
+      />
 
-        <div className="mb-4">
-          <div className="mb-1.5 flex items-center justify-between">
-            <span className="text-[11px] font-medium text-muted-foreground">
-              Max revise rounds (per phase)
-            </span>
-            <span className="font-mono text-xs text-foreground">
-              {form.maxRounds}
-            </span>
-          </div>
-          <input
-            type="range"
-            min={1}
-            max={5}
-            step={1}
-            value={form.maxRounds}
-            onChange={(e) => setField("maxRounds", parseInt(e.target.value, 10))}
-            className="h-1 w-full cursor-pointer appearance-none rounded-full bg-muted accent-primary"
-          />
-        </div>
+      <FallbackList
+        title="Reviewer fallback"
+        hint="Engaged when any reviewer's primary + per-slot models all fail."
+        rows={form.fallbackReviewer}
+        onChange={(rows) => setField("fallbackReviewer", rows)}
+      />
+    </>
+  );
+}
 
+function FallbackList({
+  title,
+  hint,
+  rows,
+  onChange,
+}: {
+  title: string;
+  hint: string;
+  rows: FallbackVoice[];
+  onChange: (rows: FallbackVoice[]) => void;
+}) {
+  const addRow = () => {
+    onChange([...rows, { lineage: "claude", model: "" }]);
+  };
+  const removeRow = (idx: number) => {
+    onChange(rows.filter((_, i) => i !== idx));
+  };
+  const updateRow = (idx: number, patch: Partial<FallbackVoice>) => {
+    onChange(rows.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+  };
+  return (
+    <div className="rounded-lg border border-border bg-card/40 p-4">
+      <div className="mb-1 flex items-center justify-between">
+        <h4 className="text-[13px] font-semibold tracking-tight">{title}</h4>
         <button
           type="button"
-          onClick={() => setField("yoloDefault", !form.yoloDefault)}
-          className={cn(
-            "flex w-full items-center justify-between rounded-md border px-3 py-2 text-left transition",
-            form.yoloDefault
-              ? "border-rose-500/40 bg-rose-500/5"
-              : "border-border bg-card hover:border-foreground/30",
-          )}
+          onClick={addRow}
+          className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2.5 text-[11px] font-medium text-muted-foreground transition hover:border-primary/40 hover:text-primary"
         >
-          <div>
-            <div className="text-xs font-medium text-foreground">
-              🚀 Yolo by default
-            </div>
-            <div className="text-[10px] text-muted-foreground">
-              Auto-approve every gate. Only flip on for trusted templates or
-              trivial fixes. Cost cap still enforced.
-            </div>
-          </div>
-          <span
-            className={cn(
-              "flex h-5 w-9 shrink-0 items-center rounded-full border p-0.5 transition",
-              form.yoloDefault
-                ? "border-rose-500/40 bg-rose-500/20"
-                : "border-border bg-card",
-            )}
-          >
-            <span
-              className={cn(
-                "h-3.5 w-3.5 rounded-full transition-transform",
-                form.yoloDefault
-                  ? "translate-x-4 bg-rose-400"
-                  : "bg-muted-foreground/50",
-              )}
-            />
-          </span>
+          <Plus className="h-3 w-3" />
+          Add fallback
         </button>
       </div>
+      <p className="mb-3 text-[11px] leading-snug text-muted-foreground/80">
+        {hint}
+      </p>
+      {rows.length === 0 ? (
+        <p className="rounded-md border border-dashed border-border/60 bg-background/30 px-3 py-4 text-center text-[11px] text-muted-foreground">
+          None set — slot will fail its phase if the per-slot chain exhausts.
+        </p>
+      ) : (
+        <ul className="space-y-2">
+          {rows.map((row, idx) => (
+            <li key={idx} className="flex items-center gap-2">
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-card font-mono text-[10px] text-muted-foreground">
+                {idx + 1}
+              </span>
+              <select
+                value={row.lineage}
+                onChange={(e) =>
+                  updateRow(idx, {
+                    lineage: e.target.value as ReviewerLineage,
+                  })
+                }
+                className="h-8 rounded-md border border-border bg-background px-2 text-xs text-foreground focus:border-primary/60 focus:outline-none focus:ring-1 focus:ring-primary/20"
+              >
+                {(
+                  [
+                    "claude",
+                    "codex",
+                    "gemini",
+                    "opencode",
+                    "kimi",
+                    "openrouter",
+                  ] as const
+                ).map((l) => (
+                  <option key={l} value={l}>
+                    {l}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="text"
+                value={row.model}
+                onChange={(e) => updateRow(idx, { model: e.target.value })}
+                placeholder="model id (e.g. claude-sonnet-4-6)"
+                className="h-8 flex-1 rounded-md border border-border bg-background px-2 font-mono text-[11px] text-foreground placeholder:text-muted-foreground/50 focus:border-primary/60 focus:outline-none focus:ring-1 focus:ring-primary/20"
+              />
+              <button
+                type="button"
+                onClick={() => removeRow(idx)}
+                aria-label={`Remove fallback ${idx + 1}`}
+                className="grid h-7 w-7 place-items-center rounded-md border border-border bg-card text-muted-foreground transition hover:border-destructive/40 hover:text-destructive"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function QuorumStep({
+  form,
+  setField,
+}: {
+  form: FormState;
+  setField: <K extends keyof FormState>(k: K, v: FormState[K]) => void;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-card/40 p-4">
+      <h3 className="mb-3 text-[13px] font-semibold tracking-tight">
+        Across all phases
+      </h3>
+
+      <div className="mb-4">
+        <div className="mb-1.5 text-[11px] font-medium text-muted-foreground">
+          Agreement threshold (per review-style phase)
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          {THRESHOLDS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setField("threshold", t.id)}
+              className={cn(
+                "rounded-md border px-3 py-2 text-left transition",
+                form.threshold === t.id
+                  ? "border-primary/60 bg-primary/10 ring-1 ring-primary/40"
+                  : "border-border bg-card hover:border-muted-foreground/30 hover:bg-accent/40",
+              )}
+            >
+              <div className="text-xs font-medium">{t.label}</div>
+            </button>
+          ))}
+        </div>
+        <p className="mt-1.5 text-[11px] leading-snug text-muted-foreground/80">
+          {THRESHOLDS.find((t) => t.id === form.threshold)?.hint}
+        </p>
+      </div>
+
+      <div className="mb-4">
+        <div className="mb-1.5 text-[11px] font-medium text-muted-foreground">
+          When threshold is met
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          {ACTIONS.map((a) => (
+            <button
+              key={a.id}
+              type="button"
+              onClick={() => setField("onThresholdMet", a.id)}
+              className={cn(
+                "rounded-md border px-3 py-2 text-left transition",
+                form.onThresholdMet === a.id
+                  ? "border-primary/60 bg-primary/10 ring-1 ring-primary/40"
+                  : "border-border bg-card hover:border-muted-foreground/30 hover:bg-accent/40",
+              )}
+            >
+              <div className="text-xs font-medium">{a.label}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="mb-4">
+        <div className="mb-1.5 flex items-center justify-between">
+          <span className="text-[11px] font-medium text-muted-foreground">
+            Max revise rounds (per phase)
+          </span>
+          <span className="font-mono text-xs text-foreground">
+            {form.maxRounds}
+          </span>
+        </div>
+        <input
+          type="range"
+          min={1}
+          max={5}
+          step={1}
+          value={form.maxRounds}
+          onChange={(e) => setField("maxRounds", parseInt(e.target.value, 10))}
+          className="h-1 w-full cursor-pointer appearance-none rounded-full bg-muted accent-primary"
+        />
+      </div>
+
+      <button
+        type="button"
+        onClick={() => setField("yoloDefault", !form.yoloDefault)}
+        className={cn(
+          "flex w-full items-center justify-between rounded-md border px-3 py-2 text-left transition",
+          form.yoloDefault
+            ? "border-rose-500/40 bg-rose-500/5"
+            : "border-border bg-card hover:border-foreground/30",
+        )}
+      >
+        <div>
+          <div className="text-xs font-medium text-foreground">
+            🚀 Yolo by default
+          </div>
+          <div className="text-[10px] text-muted-foreground">
+            Auto-approve every gate. Only flip on for trusted templates or
+            trivial fixes. Cost cap still enforced.
+          </div>
+        </div>
+        <span
+          className={cn(
+            "flex h-5 w-9 shrink-0 items-center rounded-full border p-0.5 transition",
+            form.yoloDefault
+              ? "border-rose-500/40 bg-rose-500/20"
+              : "border-border bg-card",
+          )}
+        >
+          <span
+            className={cn(
+              "h-3.5 w-3.5 rounded-full transition-transform",
+              form.yoloDefault
+                ? "translate-x-4 bg-rose-400"
+                : "bg-muted-foreground/50",
+            )}
+          />
+        </span>
+      </button>
     </div>
   );
 }

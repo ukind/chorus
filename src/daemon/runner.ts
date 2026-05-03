@@ -24,6 +24,7 @@ import { atomicWriteJsonSync } from '../lib/atomic-write.js';
 import type { AgentShim } from './agents/types.js';
 import { detectGitContext, runShipPhase } from './ship.js';
 import { runWithModelFallback } from './runner/run-with-fallback.js';
+import { buildSlotFallbackChain } from './runner/template-fallback.js';
 
 export interface RunnerEvent {
   chatId: string;
@@ -166,6 +167,7 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
           errorDetector,
           onEvent,
           abortSignal,
+          templateFallbackReviewer: template.fallback?.reviewer,
         });
         if (outcome.allReviewersFailed) {
           anyPhaseAllReviewersFailed = true;
@@ -240,6 +242,7 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
           onEvent,
           abortSignal,
           repoPath,
+          template.fallback?.doer,
         );
 
         if (!doerAnswer) {
@@ -285,6 +288,7 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
             errorDetector,
             onEvent,
             abortSignal,
+            template.fallback?.reviewer,
           );
 
           if (consensus.allFailed) {
@@ -484,6 +488,7 @@ async function runDoer(
   onEvent: (e: RunnerEvent) => void,
   abortSignal: AbortSignal,
   repoPath?: string,
+  templateFallbackDoer?: ReadonlyArray<{ lineage: string; models: string[] }>,
 ): Promise<{ content: string; full: boolean } | null> {
   const doerModel = phase.doer.models?.[0];
   const shim = pickShimForVoice(phase.doer.lineage, doerModel);
@@ -613,8 +618,20 @@ async function runDoer(
       abortSignal,
     );
     try {
+      // Compose: per-slot chain + template-level fallback.doer (same lineage,
+      // dedup'd). Doer has only one slot, so the dedup just guards against
+      // re-trying the slot's own model.
+      const doerSlot = {
+        lineage: phase.doer.lineage,
+        models: phase.doer.models ?? [],
+      };
+      const extendedModels = buildSlotFallbackChain(
+        doerSlot,
+        [doerSlot],
+        templateFallbackDoer,
+      );
       return await runWithModelFallback(
-        phase.doer.models,
+        extendedModels,
         async (model) =>
           runDoerHeadless({
             shim,
@@ -818,6 +835,7 @@ async function runReviewers(
   errorDetector: ErrorDetector,
   onEvent: (e: RunnerEvent) => void,
   abortSignal: AbortSignal,
+  templateFallbackReviewer?: ReadonlyArray<{ lineage: string; models: string[] }>,
 ): Promise<{ agreed: boolean; summary: string; allFailed: boolean }> {
   if (!phase.reviewer || phase.reviewer.candidates.length === 0) {
     return { agreed: true, summary: '', allFailed: false };
@@ -867,6 +885,7 @@ async function runReviewers(
           errorDetector,
           onEvent,
           abortSignal,
+          templateFallbackReviewer,
         );
         reviews.push({
           reviewer: `${candidate.lineage}-${idx}`,
@@ -944,6 +963,7 @@ async function runReviewer(
   errorDetector: ErrorDetector,
   onEvent: (e: RunnerEvent) => void,
   abortSignal: AbortSignal,
+  templateFallbackReviewer?: ReadonlyArray<{ lineage: string; models: string[] }>,
 ): Promise<boolean | null> {
   // Returns:
   //   true  = reviewer ran and approved
@@ -1067,8 +1087,24 @@ async function runReviewer(
       abortSignal,
     );
     try {
+      // Compose: this slot's per-slot chain + template-level fallback.reviewer
+      // (same lineage, dedup'd against this slot AND every other reviewer slot
+      // in the phase so we don't spawn a duplicate voice).
+      const allReviewerSlots = (phase.reviewer?.candidates ?? []).map((c) => ({
+        lineage: c.lineage,
+        models: c.models ?? [],
+      }));
+      const thisSlot = {
+        lineage: candidate.lineage,
+        models: candidate.models ?? [],
+      };
+      const extendedModels = buildSlotFallbackChain(
+        thisSlot,
+        allReviewerSlots,
+        templateFallbackReviewer,
+      );
       return await runWithModelFallback(
-        candidate.models,
+        extendedModels,
         async (model) =>
           runReviewerHeadless({
             shim,
@@ -1253,6 +1289,7 @@ async function runReviewOnlyPhase(args: {
   errorDetector: ErrorDetector;
   onEvent: (e: RunnerEvent) => void;
   abortSignal: AbortSignal;
+  templateFallbackReviewer?: ReadonlyArray<{ lineage: string; models: string[] }>;
 }): Promise<{
   completed: boolean;
   allReviewersFailed: boolean;
@@ -1366,6 +1403,7 @@ async function runReviewOnlyPhase(args: {
     errorDetector,
     onEvent,
     abortSignal,
+    args.templateFallbackReviewer,
   );
 
   return {

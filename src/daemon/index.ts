@@ -664,6 +664,52 @@ async function main() {
         'chat created',
       );
 
+      // Auto-fire the runner. Earlier code left chats inert until a client
+      // hit /chats/:id/stream — fine for the cockpit (the run page subscribes
+      // on open), but the MCP path (autonomous batch reviews, scripts) had
+      // no way to trigger the run without a curl-trigger workaround. The
+      // runner is async; fire-and-forget here, the SSE route still attaches
+      // to the existing activeRuns entry rather than re-creating one.
+      //
+      // Skip when:
+      //   - template parsing failed earlier (nothing valid to run)
+      //   - chat is already in a terminal state (defensive — a fresh row
+      //     should always be drafting; this rules out manual DB seeds and
+      //     replay bugs)
+      //
+      // `yolo: false` is NOT checked because chat.status has no
+      // pre-run/pending state to pause at — yolo today only gates ship,
+      // not phase execution. If a future schema change adds an
+      // `awaiting-confirm` state, that's the right hook, not this guard.
+      const TERMINAL_STATUSES: ReadonlyArray<typeof chat.status> = [
+        'approved',
+        'merged',
+        'blocked',
+        'cancelled',
+        'failed',
+        'no_review',
+      ];
+      if (
+        parsedTemplateForArtifactCheck &&
+        !TERMINAL_STATUSES.includes(chat.status)
+      ) {
+        // Chain a `.catch` on the returned ActiveRun.promise so an async
+        // rejection inside runChat doesn't escape as an unhandled promise
+        // rejection (Node.js >=15 terminates the process on those).
+        // Flagged in retroactive PR #21 review by both opencode reviewers.
+        const entry = runWithMultiplex({
+          chatId: chat.id,
+          template: parsedTemplateForArtifactCheck,
+          chat,
+        });
+        entry.promise.catch((err: unknown) => {
+          chatLogger(chat.id).error(
+            { err: err instanceof Error ? err.message : String(err) },
+            'auto-fired chat runner failed',
+          );
+        });
+      }
+
       return successResponse(chat);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';

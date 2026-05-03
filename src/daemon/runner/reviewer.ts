@@ -84,8 +84,18 @@ export async function runReviewerHeadless(args: {
     timeoutMs: phase.timeoutMs ?? DEFAULT_PHASE_TIMEOUT_MS,
   });
 
+  // Safety net: if the stream closes without emitting ANY event (no text,
+  // no error, no message_done), the reviewer subprocess silently produced
+  // nothing — most often a CLI that wrote model output to /dev/tty instead
+  // of the pipe, or one that exited 0 with empty stdout. Without this
+  // counter the finally block has no signal to write a failure summary
+  // (errorSummary stays undefined), and answer.md ends up 0 bytes — the
+  // exact silent failure that hid opencode-cli for two days.
+  let eventCount = 0;
+
   try {
     for await (const event of stream) {
+      eventCount += 1;
       if (event.type === 'text_delta') {
         accumulated += event.text;
         writer.write(event.text);
@@ -231,6 +241,26 @@ export async function runReviewerHeadless(args: {
     });
   } finally {
     writer.flushNow();
+    // Stream closed with zero events — the CLI ran but produced nothing
+    // we could parse (e.g. opencode 1.14.x writing to /dev/tty instead of
+    // the pipe, or any future CLI that exits 0 with empty stdout).
+    // Synthesise a no_output failure so:
+    //   1. The reviewer card renders the kind+lineage instead of the
+    //      generic "didn't produce any output" stub.
+    //   2. answer.md carries a `## REVIEWER FAILED` block, matching the
+    //      contract every other failure mode writes.
+    //   3. The runner's verdict parser sees a definite "request changes"
+    //      shape, not an empty string the verdict logic is undefined on.
+    if (eventCount === 0 && !errorSummary) {
+      errored = true;
+      errorSummary = {
+        kind: 'no_output',
+        message:
+          `${candidateLineage} CLI closed without emitting any output. ` +
+          `Likely a transport bug (e.g. opencode 1.14.x writes JSON only to a TTY) ` +
+          `or a silent abort. Check the CLI's own log for details.`,
+      };
+    }
     // When the subprocess died without producing any content, write the
     // error summary to answer.md so the chat dir is self-explanatory.
     // Otherwise post-mortem inspection sees an empty file with no

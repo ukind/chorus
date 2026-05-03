@@ -17,6 +17,47 @@ import { spawnHeadless } from '../headless.js';
 import { parseOpencode, parseOpencodeExit } from './parsers.js';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
+
+/**
+ * Wrap a command in a PTY using `script` so the child sees stdout as a TTY.
+ *
+ * Why opencode needs this: opencode 1.14.x's `run --format json` calls
+ * isatty(stdout) before emitting any output. When stdout is a pipe (which
+ * is always true under our spawnHeadless path), it produces zero bytes —
+ * the model still runs to completion (visible in opencode's debug log)
+ * but nothing reaches our parser. PTY wrapping is the only known fix
+ * short of upstream patching opencode.
+ *
+ * Cross-platform notes:
+ *   - Linux (util-linux script ≥2.39): `script -qfec "<quoted>" /dev/null`
+ *     -q suppresses header/footer, -f flushes after every write (no JSON
+ *     buffering), -e forwards the child's exit code so cli_failed
+ *     detection still works, -c runs a single command instead of a shell.
+ *   - macOS (BSD script): `script -q /dev/null <cmd> <args...>` — the
+ *     command is positional, no -c, no -f (BSD script always flushes).
+ *   - Anywhere else (Windows, missing `script`): pass through unwrapped.
+ *     The reviewer runner's "no events at all" safety net (added in the
+ *     same fix) will surface a `## REVIEWER FAILED · no_output` instead
+ *     of a silent 0-byte answer.
+ */
+function wrapWithPty(
+  cmd: string,
+  args: readonly string[],
+): { command: string; args: string[] } {
+  const platform = os.platform();
+  if (platform === 'linux') {
+    // Shell-quote each arg; util-linux script -c parses the string with shell rules.
+    const quoted = [cmd, ...args]
+      .map((a) => `'${a.replace(/'/g, `'\\''`)}'`)
+      .join(' ');
+    return { command: 'script', args: ['-qfec', quoted, '/dev/null'] };
+  }
+  if (platform === 'darwin') {
+    return { command: 'script', args: ['-q', '/dev/null', cmd, ...args] };
+  }
+  return { command: cmd, args: [...args] };
+}
 
 export const opencodeShim: AgentShim = {
   lineage: 'opencode',
@@ -92,12 +133,29 @@ export const opencodeShim: AgentShim = {
       `Open the file at this absolute path using your read tool: ${promptPath} ` +
       `— follow the instructions inside exactly and respond with your full answer in this conversation, ending with ## DONE.`;
 
-    const args = ['run', '--format', 'json'];
-    if (opts.model) args.push('--model', opts.model);
-    args.push(directive);
+    const opencodeArgs = ['run', '--format', 'json'];
+    if (opts.model) opencodeArgs.push('--model', opts.model);
+    opencodeArgs.push(directive);
+
+    // PTY wrapping is non-optional: opencode 1.14.x's `run --format json`
+    // checks isatty(stdout) and refuses to emit JSON when stdout is a pipe.
+    // The headless path here always pipes stdout (spawn child_process), so
+    // without a PTY the child runs the model to completion (visible in the
+    // opencode log under `service=bus type=message.part.delta publishing`)
+    // but never writes a single byte to our pipe. The watcher then sees an
+    // empty stream, no message_done, no error — answer.md ends up 0 bytes
+    // and the reviewer card renders "errored — didn't produce any output".
+    //
+    // util-linux `script -qfec "<cmd>" /dev/null` allocates a PTY on stdout
+    // for the wrapped command; -q suppresses script's header/footer; -f
+    // flushes after every write so JSON-Lines arrive in real time; -e
+    // forwards the child exit code so cli_failed detection still works.
+    // Header/footer are absent under -q, so parseOpencode (which already
+    // tryJson's every line and discards non-JSON) needs no change.
+    const { command, args } = wrapWithPty('opencode', opencodeArgs);
 
     const run = spawnHeadless({
-      command: 'opencode',
+      command,
       args,
       cwd: opts.cwd,
       parseLine: parseOpencode,

@@ -58,7 +58,7 @@ This is the seed of the **template marketplace**: an asset class that didn't exi
 | Phase composition UI (drag/reorder, edit prompts) | 0.7 | 🟡 PARTIAL | per-slot persona binding shipped (PR #17 + #23). Drag-to-reorder, add/remove phases, fork-from-existing still PLANNED. |
 | Default chorus-on-chorus template (Sentinel + Cartographer + Accountant + Translator) | 0.7 | 📐 PLANNED | bakes meta-fix |
 | Squashed migration push to `chorus-codes/chorus` | 0.7 | ⏳ NEXT | piece-by-piece audit using personas. **Going live ~2026-05-04.** |
-| `npm publish @chorus-codes/chorus` | 0.7 | ⏳ NEXT | rotate token after first publish. **Going live ~2026-05-04.** |
+| `npm publish chorus-codes` | 0.7 | ⏳ NEXT | unscoped name (verified free). Rotate token after first publish. **Going live ~2026-05-04.** |
 | Cleanup `99xAgency/chorus-ship-e2e` sandbox repo | 0.7 | ⏳ TODO | |
 | Pre-audit cleanup sweep (12 findings fixed in one go) | 0.7 | ✅ DONE | 2026-05-01 — runner abort/done race, silent-empty doer, attached_files wire-up, builtin seed re-sync, version drift, brief wall, daemon logs, more. See "Pre-flagged" section. |
 | **Per-slot fallback voice chain** (HIGH PRIORITY user-pain) | 0.8 | 🔥 NEXT | **Live pain:** when one voice in a multi-voice template errors (quota_exhausted, network, CLI crash), the partial work from other voices is wasted — they have to re-run from scratch alongside whatever voice replaces the failed one. Fix: each phase slot carries a `fallback: voice[]` chain. On retryable errors (`quota_exhausted`, `network`, `timeout`, `cli_failed`), the runner tries the next fallback voice for THAT slot only — other voices' completed work is preserved. Schema: `phases[].voices[].fallback: ['claude-code', 'openrouter:openai/gpt-4', ...]`. Reuses the same persona binding. Surfaces in PhaseEditor as a "+ add fallback" affordance under each voice slot. **Forces lineage-diversity rule into the chain** — fallback voices should default to same lineage as primary (so quorum math doesn't shift). Dovetails with multi-account-per-CLI: a fallback can be the same CLI on a different account when `CHORUS_CODEX_HOME` rotation is wired up. |
@@ -74,7 +74,7 @@ This is the seed of the **template marketplace**: an asset class that didn't exi
 
 Legend: ✅ done · ⏳ in flight · 🔥 high-priority next · 🟡 partial · 📐 designed · 💭 idea
 
-> **Where we are (2026-05-03):** v0.7 substrate is essentially complete — voices, personas, review-only, token capture, cost surfacing, per-slot persona binding, runner-on-POST, SSE robustness all shipped. Last v0.7 mile: OpenRouter inline (in flight), then squash + publish to `chorus-codes/chorus`. **Going live ~2026-05-04.**
+> **Where we are (2026-05-03):** v0.7 substrate is essentially complete — voices, personas, review-only, token capture, cost surfacing, per-slot persona binding, runner-on-POST, SSE robustness all shipped. Last v0.7 mile: OpenRouter inline (in flight), then squash + publish as `chorus-codes` on npm (unscoped, `chorus.codes` domain match). **Going live ~2026-05-04.**
 
 ---
 
@@ -225,8 +225,8 @@ After v0.7 ships:
 
 1. Piece-by-piece audit via MCP — fire personas against critical files (`src/cli/index.ts`, `src/daemon/runner.ts`, etc.) using real chorus chats. The audit is the dogfood demo.
 2. Findings → cleanup branch → squashed push to `chorus-codes/chorus` (single clean snapshot, no 99xAgency history).
-3. Update `package.json` `name` → `@chorus-codes/chorus`, repository + bugs URLs.
-4. `npm publish --access public`. Rotate token after first publish.
+3. Update `package.json` `name` → `chorus-codes` (unscoped, verified free on npm 2026-05-03; `@chorus-codes` org also reserved for future sister packages), repository + bugs URLs.
+4. `npm publish` (unscoped, no `--access public` needed). Rotate token after first publish.
 5. Cleanup `99xAgency/chorus-ship-e2e` sandbox repo.
 
 ---

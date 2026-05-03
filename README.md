@@ -38,9 +38,9 @@ That's Chorus, but for code.
 ## 🚀 Quick start (3 commands)
 
 ```bash
-npm i -g @chorus-codes/chorus   # 📦 install
-chorus init                     # 🔌 auto-connects every AI CLI on your machine
-chorus start --ui               # 🎬 boots daemon + opens http://localhost:5050
+npm i -g chorus-codes   # 📦 install
+chorus init             # 🔌 auto-connects every AI CLI on your machine
+chorus start --ui       # 🎬 boots daemon + opens http://localhost:5050
 ```
 
 That's it. Open the page, paste some code, hit **Submit**. Watch the AIs argue. ✨

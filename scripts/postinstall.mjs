@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Printed once after `npm install -g @chorus-codes/chorus`.
+// Printed once after `npm install -g chorus-codes`.
 // Skipped when CHORUS_SKIP_POSTINSTALL=1 (used by CI / dev linking).
 
 if (process.env.CHORUS_SKIP_POSTINSTALL === "1") process.exit(0);

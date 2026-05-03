@@ -1,6 +1,6 @@
 # libsql migration — `better-sqlite3` → `@libsql/client`
 
-> Pure transport swap to make `npm install -g @chorus-codes/chorus` robust on Windows / locked-down dev machines without node-gyp. Out of scope: voices schema, persona schema additions.
+> Pure transport swap to make `npm install -g chorus-codes` robust on Windows / locked-down dev machines without node-gyp. Out of scope: voices schema, persona schema additions.
 
 ## Problem
 
@@ -11,7 +11,7 @@
 - Alpine / Bun runtimes: missing prebuild, falls back to source build
 - Node 22 → Node 24 jump: prebuild lag, source build needed
 
-This isn't theoretical — chorus's launch story is `npm install -g @chorus-codes/chorus && chorus init`. A first-impression failure on `install` kills adoption.
+This isn't theoretical — chorus's launch story is `npm install -g chorus-codes && chorus init`. A first-impression failure on `install` kills adoption.
 
 ## Approach
 

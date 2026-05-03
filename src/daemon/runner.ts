@@ -12,7 +12,7 @@ import { isReviewOnlyPhase, DEFAULT_TMUX_PHASE_TIMEOUT_MS } from '../lib/templat
 import { waitForAnswer } from './output-watcher.js';
 
 import type { TmuxManager } from './tmux-types.js';
-import { registry } from './agents/index.js';
+import { registry, pickShimForVoice, isHttpDispatchedShim } from './agents/index.js';
 import { ErrorDetector } from './error-detector.js';
 import { getPermissions } from '../lib/settings/permissions.js';
 import { personas } from '../lib/db/index.js';
@@ -484,31 +484,36 @@ async function runDoer(
   abortSignal: AbortSignal,
   repoPath?: string,
 ): Promise<{ content: string; full: boolean } | null> {
-  const shim = registry.pickShim(phase.doer.lineage);
+  const doerModel = phase.doer.models?.[0];
+  const shim = pickShimForVoice(phase.doer.lineage, doerModel);
   const agentName = shim.name;
 
   // Pre-spawn precheck: short-circuit doomed runs without paying the spawn
   // tax. Two cheap layers: (1) recent quota_exhausted with future resetAt,
   // (2) credential file missing → user not logged in. See cli-precheck.ts.
-  const preDoer = await precheckLineage(phase.doer.lineage as CliLineage);
-  if (!preDoer.ok) {
-    onEvent({
-      chatId,
-      type: 'cli_warning',
-      payload: {
-        phaseId: phase.id,
-        round,
-        role: 'doer',
-        agent: agentName,
-        lineage: phase.doer.lineage,
-        reason: preDoer.reason,
-        message: preDoer.message,
-        cta: preDoer.cta,
-        resetAt: preDoer.resetAt,
-      },
-      ts: Date.now(),
-    });
-    return null;
+  // HTTP-dispatched shims (openrouter) skip this — their auth is the secrets
+  // table, checked inside the shim itself.
+  if (!isHttpDispatchedShim(shim)) {
+    const preDoer = await precheckLineage(phase.doer.lineage as CliLineage);
+    if (!preDoer.ok) {
+      onEvent({
+        chatId,
+        type: 'cli_warning',
+        payload: {
+          phaseId: phase.id,
+          round,
+          role: 'doer',
+          agent: agentName,
+          lineage: phase.doer.lineage,
+          reason: preDoer.reason,
+          message: preDoer.message,
+          cta: preDoer.cta,
+          resetAt: preDoer.resetAt,
+        },
+        ts: Date.now(),
+      });
+      return null;
+    }
   }
 
   const roundDir = path.join(chatDir, `round-${round}`);
@@ -917,15 +922,19 @@ async function runReviewer(
   if (!phase.reviewer) return true;
   const candidate = phase.reviewer.candidates[reviewerIdx];
 
-  const shim = registry.pickShim(candidate.lineage);
+  const reviewerModel = candidate.models?.[0];
+  const shim = pickShimForVoice(candidate.lineage, reviewerModel);
   const agentName = shim.name;
 
   // Pre-spawn precheck — same gate as runDoer. A reviewer that fails precheck
   // is treated as "never produced a valid answer" (returns null), which the
   // phase loop already handles by counting it toward the all-reviewers-failed
   // threshold and continuing with the remaining reviewers.
-  const preRev = await precheckLineage(candidate.lineage as CliLineage);
-  if (!preRev.ok) {
+  // HTTP-dispatched shims (openrouter) skip this — auth is the secrets
+  // table, checked inside the shim.
+  if (!isHttpDispatchedShim(shim)) {
+   const preRev = await precheckLineage(candidate.lineage as CliLineage);
+   if (!preRev.ok) {
     onEvent({
       chatId,
       type: 'cli_warning',
@@ -943,6 +952,7 @@ async function runReviewer(
       ts: Date.now(),
     });
     return null;
+   }
   }
 
   const roundDir = path.join(chatDir, `round-${round}`);

@@ -107,17 +107,17 @@ export default function OpenRouterSettingsPage() {
 
       <div className="mx-auto max-w-3xl space-y-4 px-4 py-6">
         <Card className="space-y-3 p-4">
-          <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[12px] text-amber-200/90">
-            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-400" />
+          <div className="flex items-start gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-[12px] text-emerald-200/90">
+            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" />
             <div>
-              Voices are added <strong>disabled</strong> — the OpenRouter
-              dispatch shim is a follow-up. They&apos;ll appear in voice
-              settings; flip them on once the shim ships. Get a key at{" "}
+              Live dispatch — voices added here run via OpenRouter&apos;s
+              chat-completions API. Costs come back per-call from the API
+              and surface on the run page. Get a key at{" "}
               <a
                 href="https://openrouter.ai/keys"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 underline hover:text-amber-100"
+                className="inline-flex items-center gap-1 underline hover:text-emerald-100"
               >
                 openrouter.ai/keys
                 <ExternalLink className="h-3 w-3" />

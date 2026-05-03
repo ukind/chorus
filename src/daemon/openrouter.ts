@@ -197,10 +197,9 @@ export async function addModelsAsVoices(
     }
     const { lineage, vendor_family } = classifyOpencodeModel(modelId);
     const voiceId = `openrouter:${modelId}`;
-    // Inserted DISABLED. Reason: dispatch HTTP shim is a follow-up; until
-    // it lands, an enabled voice in the picker is a UX trap (user selects
-    // it, hits silent failure). User can flip enabled=true via the voices
-    // settings page once dispatch works. Flagged by reviewers in PR #27.
+    // Enabled by default — the HTTP dispatch shim now exists at
+    // src/daemon/agents/openrouter.ts, so a template referencing this
+    // voice will dispatch successfully via /api/v1/chat/completions.
     await voices.upsert({
       id: voiceId,
       label: meta.name,
@@ -211,7 +210,7 @@ export async function addModelsAsVoices(
       vendor_family: vendor_family ?? null,
       input_cost_per_mtok: meta.inputCostPerMtok ?? null,
       output_cost_per_mtok: meta.outputCostPerMtok ?? null,
-      enabled: false,
+      enabled: true,
     });
     added.push(voiceId);
   }

@@ -10,6 +10,7 @@ import { codexShim } from './codex.js';
 import { geminiShim } from './gemini.js';
 import { opencodeShim } from './opencode.js';
 import { kimiShim } from './kimi.js';
+import { openrouterShim } from './openrouter.js';
 
 const SHIMS: Record<Lineage, AgentShim> = {
   anthropic: claudeShim,
@@ -30,5 +31,25 @@ export const registry: AgentRegistry = {
   },
 };
 
+/**
+ * Pick a shim taking the model id into account. When the model has the
+ * `openrouter:` prefix, dispatch goes through the HTTP shim regardless of
+ * the slot's declared lineage — the lineage is preserved on the voice row
+ * for diversity scoring, but the actual transport is OpenRouter's
+ * chat-completions API.
+ *
+ * Callers that have a model hint (runner doer + reviewer dispatch) should
+ * use this; callers that don't (legacy paths) can keep using `registry.pickShim`.
+ */
+export function pickShimForVoice(lineage: Lineage, model?: string): AgentShim {
+  if (model && model.startsWith('openrouter:')) return openrouterShim;
+  return registry.pickShim(lineage);
+}
+
+/** True when this voice should bypass CLI-credential precheck (HTTP-auth instead). */
+export function isHttpDispatchedShim(shim: AgentShim): boolean {
+  return shim === openrouterShim;
+}
+
 // Re-export shims for direct access if needed
-export { claudeShim, codexShim, geminiShim, opencodeShim, kimiShim };
+export { claudeShim, codexShim, geminiShim, opencodeShim, kimiShim, openrouterShim };

@@ -6,7 +6,7 @@ You wrote some code with ChatGPT, Claude, or Gemini. It looks good… but the sa
 
 **Chorus** runs your code past 2–3 *other* AIs from *different companies*, in parallel, and tells you whether they agree it's safe to ship.
 
-[![Status](https://img.shields.io/badge/status-v0.7--dev-orange)]()
+[![Status](https://img.shields.io/badge/status-v0.7-brightgreen)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)]()
 
 ---
@@ -38,14 +38,14 @@ That's Chorus, but for code.
 ## 🚀 Quick start (3 commands)
 
 ```bash
-npm i -g chorus      # 📦 install
-chorus init          # 🔌 auto-connects every AI CLI on your machine
-chorus start         # 🎬 opens http://localhost:5050
+npm i -g @chorus-codes/chorus   # 📦 install
+chorus init                     # 🔌 auto-connects every AI CLI on your machine
+chorus start --ui               # 🎬 boots daemon + opens http://localhost:5050
 ```
 
 That's it. Open the page, paste some code, hit **Submit**. Watch the AIs argue. ✨
 
-> **Heads up:** Chorus needs at least one AI CLI installed (Claude Code, Codex, Gemini CLI, OpenCode, or Kimi). `chorus init` checks and warns if none are found.
+> **Heads up:** Chorus needs at least one AI CLI installed (Claude Code, Codex, Gemini CLI, OpenCode, or Kimi) **or an OpenRouter API key**. `chorus init` checks and warns if none are found. Requires Node ≥ 20.
 
 ---
 
@@ -73,17 +73,18 @@ Looks fine, right? Submit it to Chorus with the **Code Review** template (1 doer
 
 Chorus auto-detects whichever AI tools you already have installed:
 
-| AI Tool | Can call Chorus | Can act as reviewer |
-|---|---|---|
-| 🤖 Claude Code | ✅ | ✅ |
-| 🦾 Codex CLI | ✅ | ✅ |
-| 💎 Gemini CLI | ✅ | ✅ |
-| 🌊 OpenCode | ✅ | ✅ |
-| 🌙 Kimi CLI | ✅ | ✅ |
-| ⚡ Cursor | ✅ | — *(IDE, not headless)* |
-| 🏄 Windsurf | ✅ | — *(IDE, not headless)* |
+| AI Tool | Can call Chorus | Can act as reviewer | Notes |
+|---|---|---|---|
+| 🤖 Claude Code | ✅ | ✅ | local CLI |
+| 🦾 Codex CLI | ✅ | ✅ | local CLI |
+| 💎 Gemini CLI | ✅ | ✅ | local CLI |
+| 🌊 OpenCode | ✅ | ✅ | local CLI; routes to Kimi/DeepSeek/etc. |
+| 🌙 Kimi CLI | ✅ | ✅ | local CLI |
+| 🔌 OpenRouter | — | ✅ | API key, no CLI needed — add voices in Settings |
+| ⚡ Cursor | ✅ | — | IDE, not headless |
+| 🏄 Windsurf | ✅ | — | IDE, not headless |
 
-You don't need *all* of them. Even **two** different AIs is a meaningful improvement over one.
+You don't need *all* of them. Even **two** different AIs (or one CLI + one OpenRouter voice) is a meaningful improvement over one.
 
 ---
 
@@ -97,8 +98,10 @@ Pick one when you submit a chat:
 | 👨‍⚖️ `code-review` | Claude writes; Codex + Gemini review (both must agree) | Pre-merge gate |
 | 🏗️ `architect-review` | Cross-vendor critique of design proposals | Big decisions |
 | ⚔️ `red-green` | One AI writes tests, *another* writes the code (no peeking) | Adversarial testing |
+| 🔍 `review-only` | Paste a diff or draft — three reviewers critique it directly, no doer | Quick external audit |
+| 🔺 `tri-review` | Claude doer; Codex + Gemini + Kimi review (2-of-3) | Extra reviewer coverage |
 
-Want your own? Drop a YAML file in `~/.chorus/templates/` and it shows up automatically. You can also pair any template with a **Persona** — a worldview that frames how reviewers critique. Built-ins include Sentinel (security), Cartographer (cross-platform), Accountant (cost), Profiler (performance), and six more.
+Want your own? Drop a YAML file in `~/.chorus/templates/` and it shows up automatically. You can also assign a different **Persona** to each reviewer slot — so Gemini can wear Sentinel (security) while Codex wears Cartographer (cross-platform), all in the same chat. Built-ins include Sentinel, Cartographer, Accountant, Profiler, Inspector, Quartermaster, Concierge, Conservator, Librarian, Translator.
 
 ---
 

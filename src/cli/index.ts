@@ -198,7 +198,18 @@ program.addHelpText(
  * are installed — the cockpit would otherwise look healthy but every run
  * would hang on first dispatch.
  */
-async function detectReviewerClis(): Promise<string[]> {
+interface ReviewerDetect {
+  /** Detected CLI labels (empty when none found and detection succeeded). */
+  clis: string[];
+  /** True when the detector itself crashed; caller should surface a distinct
+   *  warning rather than the regular "no CLIs found" message. Pre-fix, the
+   *  crash was masked by returning a fake "(detection failed)" entry which
+   *  the success branch then printed as if it were a real CLI. */
+  detectFailed: boolean;
+  detectError?: string;
+}
+
+async function detectReviewerClis(): Promise<ReviewerDetect> {
   try {
     const { detectAllClis } = await import('../lib/cli-detect.js');
     const all = detectAllClis();
@@ -209,12 +220,16 @@ async function detectReviewerClis(): Promise<string[]> {
       'opencode-cli': 'opencode',
       'kimi-cli': 'kimi',
     };
-    return all
-      .filter((d) => d.found)
-      .map((d) => labelMap[d.id] ?? d.id);
-  } catch {
-    // detect crash — treat as "we can't tell", don't block init
-    return ['(detection failed)'];
+    return {
+      clis: all.filter((d) => d.found).map((d) => labelMap[d.id] ?? d.id),
+      detectFailed: false,
+    };
+  } catch (err) {
+    return {
+      clis: [],
+      detectFailed: true,
+      detectError: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
@@ -281,24 +296,29 @@ program
       }
 
       // Reviewer-CLI presence check — separate from orchestrator wiring above.
-      // Without at least one of claude/codex/gemini/opencode/kimi installed,
-      // Chorus has nothing to dispatch chats to. Used to be silent; now we
-      // surface it so the user doesn't reach the cockpit and wonder why
-      // every run hangs.
-      const reviewerClis = await detectReviewerClis();
-      if (reviewerClis.length === 0) {
+      // Without at least one of claude/codex/gemini/opencode/kimi installed
+      // OR an OpenRouter API key configured, Chorus has nothing to dispatch
+      // chats to. Used to be silent; now we surface it so the user doesn't
+      // reach the cockpit and wonder why every run hangs.
+      const detect = await detectReviewerClis();
+      if (detect.detectFailed) {
+        console.log('');
+        console.log(`  ${c.yellow('!')} ${c.bold(c.yellow('CLI detection crashed:'))} ${detect.detectError ?? 'unknown error'}`);
+        console.log(c.dim('    Init continued anyway — verify reviewers in Settings → Voices once you start the cockpit.'));
+      } else if (detect.clis.length === 0) {
         console.log('');
         console.log(`  ${c.yellow('!')} ${c.bold(c.yellow('No AI CLIs detected on this machine.'))}`);
-        console.log(c.dim('    Chorus needs at least one of:'));
-        console.log(c.dim('      claude    — https://docs.anthropic.com/en/docs/claude-code'));
-        console.log(c.dim('      codex     — https://github.com/openai/codex'));
-        console.log(c.dim('      gemini    — https://github.com/google-gemini/gemini-cli'));
-        console.log(c.dim('      opencode  — https://opencode.ai'));
-        console.log(c.dim('      kimi      — https://github.com/MoonshotAI/kimi-cli'));
-        console.log(c.dim('    Install at least one, then re-run `chorus init`.'));
+        console.log(c.dim('    Chorus needs at least one of these (or an OpenRouter API key):'));
+        console.log(c.dim('      claude     — https://docs.anthropic.com/en/docs/claude-code'));
+        console.log(c.dim('      codex      — https://github.com/openai/codex'));
+        console.log(c.dim('      gemini     — https://github.com/google-gemini/gemini-cli'));
+        console.log(c.dim('      opencode   — https://opencode.ai'));
+        console.log(c.dim('      kimi       — https://github.com/MoonshotAI/kimi-cli'));
+        console.log(c.dim('      openrouter — Settings → Voices → Add OpenRouter (uses your API key)'));
+        console.log(c.dim('    Install at least one CLI, or add an OpenRouter voice after `chorus start`.'));
       } else {
         console.log('');
-        console.log(`  ${sym.ok} ${c.dim('AI CLIs ready:')} ${c.cyan(reviewerClis.join(', '))}`);
+        console.log(`  ${sym.ok} ${c.dim('AI CLIs ready:')} ${c.cyan(detect.clis.join(', '))}`);
       }
 
       console.log('');

@@ -150,9 +150,21 @@ interface SSEEvent {
 }
 
 /** Build the participant key the run page uses for matching SSE events
- * to participant cards. Mirrors the directory-name suffix logic. */
-function participantKey(role: string, lineage: string): string {
-  return `${role}:${lineage}`;
+ * to participant cards. Must mirror the on-disk directory name format —
+ * `<role>-<agentName>` (where agentName for reviewers includes the trailing
+ * index, e.g. `opencode-cli-1`, `opencode-cli-2`).
+ *
+ * Was previously keyed on `role:lineage`, which collided whenever a phase
+ * had multiple reviewers of the SAME lineage (e.g. two opencode reviewers
+ * — deepseek + kimi). Both wrote to the same liveTails slot; whichever
+ * fired its phase_progress event last won, so one card rendered the
+ * other reviewer's stream. Run-page screenshot from the launch dogfood
+ * caught this — kimi's card was showing deepseek's review text.
+ *
+ * Keying on the full directory name guarantees uniqueness because the
+ * runner allocates a distinct -<idx> suffix per slot. */
+function participantKey(role: string, agent: string): string {
+  return `${role}-${agent}`;
 }
 
 export function LiveRunReal({
@@ -185,6 +197,16 @@ export function LiveRunReal({
   // immediately for instant feedback, falling back to disk-polled content
   // when the SSE event hasn't arrived yet.
   const [liveTails, setLiveTails] = useState<Record<string, string>>({});
+
+  // Live phase-completion counter, driven from phase_done SSE events. The
+  // status-only `completedPhaseCount` derivation below stays at 0 until the
+  // chat reaches a terminal state, which made multi-phase chats look
+  // frozen for their entire duration (gemini caught this on the launch-eve
+  // run-page review). Tracking phase_done events gives the stepper the
+  // signal it needs to advance during the run. We persist max-seen instead
+  // of last-seen because phase_done events have an explicit phaseIdx and
+  // out-of-order arrival (rare but possible after a reattach replay).
+  const [livePhaseDoneIdx, setLivePhaseDoneIdx] = useState<number>(-1);
 
   // Warnings keyed by participant dir name (the same key the on-disk
   // artifacts route returns). The runner emits cli_warning SSE events with
@@ -255,11 +277,13 @@ export function LiveRunReal({
           // user sees the agent typing, not a 4s-polled snapshot.
           const output = e.payload.output as string | undefined;
           if (typeof output === "string" && output.length > 0) {
-            // Map agent label (e.g. "claude-code", "gemini-cli") back to
-            // lineage. The phase_progress payload uses the shim name; we
-            // map by prefix because dir names embed the agent name fully.
-            const lineage = agent.split("-")[0];
-            const key = participantKey(role, lineage);
+            // Key by `<role>-<agentWithIdx>` — must match the on-disk
+            // directory name format. The phase_progress payload's `agent`
+            // field already includes the index suffix for reviewers
+            // (`opencode-cli-1`, `opencode-cli-2`), so two reviewers of
+            // the same lineage land in distinct liveTails entries instead
+            // of clobbering each other.
+            const key = participantKey(role, agent);
             setLiveTails((prev) => ({ ...prev, [key]: output }));
           }
         }
@@ -269,6 +293,15 @@ export function LiveRunReal({
           setActiveParticipants(new Set());
           // Don't clear liveTails — let the disk-poll update them with the
           // final answer instead of flashing empty.
+          // Advance the stepper on phase_done. phase_failed doesn't count
+          // as a completed phase (the chat will land in a non-success
+          // terminal status which the status-derived count handles).
+          if (e.type === "phase_done") {
+            const idx = (e.payload?.phaseIdx as number | undefined) ?? -1;
+            if (Number.isInteger(idx) && idx >= 0) {
+              setLivePhaseDoneIdx((prev) => (idx > prev ? idx : prev));
+            }
+          }
         }
 
         if (e.type === "cli_warning" && agent && role) {
@@ -351,11 +384,19 @@ export function LiveRunReal({
   }, [chatId, isTerminal]);
 
   const lineageMatchActive = (p: ParticipantSnapshot): boolean => {
-    // Best-effort: if any active key matches role + agent prefix, mark active.
+    // Active keys are built as `${role}-${agent}-${phaseId}` in the
+    // phase_start handler (where `agent` includes the per-slot index for
+    // reviewers — e.g. `opencode-cli-1`). The participant's `p.participant`
+    // is the on-disk dir name (`reviewer-opencode-cli-1`). Match by the
+    // dir name as a strict prefix so two same-lineage reviewers don't both
+    // light up when only one is streaming. Earlier code matched on
+    // `${p.role}-${p.lineage}-` which is identical for `opencode-cli-1` /
+    // `opencode-cli-2`, so the active glow leaked across cards. Same root
+    // cause as the liveTails key collision fix; surfaced by the launch-eve
+    // run-page review (deepseek + gemini both flagged it).
+    const prefix = `${p.participant}-`;
     for (const k of activeParticipants) {
-      if (k.startsWith(`${p.role}-${p.lineage}-`) || k.startsWith(`${p.role}-${p.agentName}-`)) {
-        return true;
-      }
+      if (k.startsWith(prefix)) return true;
     }
     return false;
   };
@@ -373,8 +414,16 @@ export function LiveRunReal({
     if (status === "approved" || status === "merged") return totalPhases;
     if (status === "no_review" || status === "blocked") return totalPhases;
     if (status === "failed" || status === "cancelled") return 0;
-    return 0; // drafting / reviewing — stepper stays on "active"
-  }, [status, totalPhases]);
+    // drafting / reviewing — use the live phase_done event count so the
+    // stepper advances mid-chat as each phase completes. Without this,
+    // multi-phase chats sat at "0/N done" the entire run and snapped to
+    // "N/N" only at terminal status — a bug gemini flagged in the
+    // launch-eve run-page review. livePhaseDoneIdx is the highest
+    // phaseIdx seen with phase_done; +1 converts to a count, clamped to
+    // totalPhases for safety in case a stale replay sends an out-of-range
+    // index.
+    return Math.min(Math.max(0, livePhaseDoneIdx + 1), totalPhases);
+  }, [status, totalPhases, livePhaseDoneIdx]);
 
   // Enrich rounds with model lookups + placeholder reviewer slots from the
   // template config. Without this, reviewer cards only appear once the

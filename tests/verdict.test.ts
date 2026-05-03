@@ -75,4 +75,36 @@ describe('verdictFromReviewerText', () => {
     const text = PAD + 'I approve this' + PAD + longTail + '\n## DONE';
     expect(verdictFromReviewerText(text)).toBe(true);
   });
+
+  // Contraction handling — added after launch-eve review (deepseek + gemini)
+  // flagged that "don't approve" / "can't approve" silently slipped past
+  // the negative regex, scanning as ambiguous (null) and letting a phase
+  // auto-pass on a reviewer who explicitly meant to block.
+  it('detects "don\'t approve" (straight apostrophe)', () => {
+    expect(verdictFromReviewerText(long("I don't approve — needs error handling"))).toBe(false);
+  });
+
+  it('detects "don’t approve" (typographic apostrophe — common from LLM emit)', () => {
+    expect(verdictFromReviewerText(long('I don’t approve, the diff is racy'))).toBe(false);
+  });
+
+  it('detects "can\'t approve"', () => {
+    expect(verdictFromReviewerText(long("Can't approve in current shape"))).toBe(false);
+  });
+
+  it('detects "can’t approve" (typographic)', () => {
+    expect(verdictFromReviewerText(long('I can’t approve this'))).toBe(false);
+  });
+
+  it('detects "do not approve"', () => {
+    expect(verdictFromReviewerText(long('Do not approve — too risky'))).toBe(false);
+  });
+
+  it('detects "cannot approve"', () => {
+    expect(verdictFromReviewerText(long('Cannot approve as-is'))).toBe(false);
+  });
+
+  it('detects "don\'t merge"', () => {
+    expect(verdictFromReviewerText(long("Don't merge yet"))).toBe(false);
+  });
 });

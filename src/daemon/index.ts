@@ -428,6 +428,24 @@ function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
       await Promise.allSettled(Array.from(pendingWrites));
     }
     activeRuns.delete(chatId);
+    // Server-initiated subscriber close. The cockpit's SSE consumer closes
+    // its EventSource on chat_done already, but a misbehaving / disconnected
+    // client can leave the subscriber object pinned in the set. Without this
+    // sweep the underlying hijacked socket lingers (held open by Fastify's
+    // raw.write reference) until the OS TCP keepalive eventually reaps it,
+    // and any race where a NEW SSE attaches between chat_done's onEvent
+    // dispatch and this finally would attach to an orphaned subscribers Set
+    // that never receives further events. Closing each sub releases the FD
+    // and signals EOF to the client. close() swallows its own errors, so
+    // a single dead subscriber doesn't abort the sweep.
+    for (const sub of Array.from(subscribers)) {
+      try {
+        sub.close();
+      } catch {
+        /* dead socket — already closed by the client */
+      }
+    }
+    subscribers.clear();
     // Drop any per-participant abort controllers left over by aborted /
     // crashed runners. They should already have released themselves via
     // their `finally` blocks, but a stale entry would leak across chats
@@ -1118,14 +1136,25 @@ async function main() {
       // RunnerEvent shape the live stream uses (phase_start / phase_done /
       // phase_failed). This is best-effort — DB doesn't capture phase_progress
       // or cli_error, so live tail is still richer.
+      //
+      // Backpressure: when subscriber.write() returns false (kernel buffer
+      // full), every subsequent reconstructed event must go to subscriber.queue
+      // — NOT keep calling write() into a paused socket. Earlier code set
+      // `subscriber.paused = true` but kept iterating with raw writes, causing
+      // unbounded user-space buffering for chats with hundreds of phase
+      // events. The drain handler set up below will flush the queue once the
+      // kernel buffer recovers.
       const pastEvents = await phaseEvents.list(chatId);
       for (const ev of pastEvents) {
         const reconstructed = phaseEventToRunnerEvent(chatId, ev);
-        if (reconstructed) {
-          const line = `data: ${JSON.stringify(reconstructed)}\n\n`;
-          if (!subscriber.write(line)) {
-            subscriber.paused = true;
-          }
+        if (!reconstructed) continue;
+        const line = `data: ${JSON.stringify(reconstructed)}\n\n`;
+        if (subscriber.paused) {
+          subscriber.queue.push(line);
+          continue;
+        }
+        if (!subscriber.write(line)) {
+          subscriber.paused = true;
         }
       }
 
@@ -1204,6 +1233,20 @@ async function main() {
         template,
         chat,
       });
+      // Mirror the POST /chats call site (line ~720): chain a `.catch` on the
+      // ActiveRun.promise so an async rejection from runChat doesn't escape
+      // as an unhandled rejection. Node >=15 hard-exits the daemon on those —
+      // exactly the failure the launch-eve gemini review of HTTP routes
+      // flagged on this stream-attached path. The caller of /chats/:id/stream
+      // never awaits this promise (we're just setting up subscribers and
+      // returning), so without an explicit handler here the reject path was
+      // a daemon-crash trigger.
+      run.promise.catch((err: unknown) => {
+        chatLogger(chatId).error(
+          { err: err instanceof Error ? err.message : String(err) },
+          'stream-attached runner failed',
+        );
+      });
       run.subscribers.add(subscriber);
       request.raw.on('close', () => {
         run.subscribers.delete(subscriber);
@@ -1214,6 +1257,21 @@ async function main() {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       request.log.error(error);
+      // Tell Fastify "I own this socket now" before writing on reply.raw,
+      // even on the error path — without this, when the throw happens
+      // BEFORE the success-path reply.hijack() (e.g. a DB error in
+      // chats.getBySlugOrId, or the YAML parse path failing), Fastify will
+      // try to auto-serialize the handler's return value AFTER we've
+      // already written headers + an error frame. That double-write throws
+      // ERR_HTTP_HEADERS_SENT inside fastify's reply pipeline and 500s the
+      // route's state machine. Calling hijack() here is idempotent if it
+      // was already called, so it's safe regardless of where the throw
+      // originated.
+      try {
+        reply.hijack();
+      } catch {
+        /* already hijacked; nothing to do */
+      }
       if (!reply.raw.headersSent) {
         reply.raw.writeHead(200, {
           'Content-Type': 'text/event-stream',

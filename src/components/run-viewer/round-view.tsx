@@ -57,7 +57,13 @@ export function RoundView({
             key={p.participant}
             participant={p}
             isActive={activeFor(p)}
-            liveTail={liveTails[`${p.role}:${p.lineage}`]}
+            // Look up the live tail by the participant's directory-name
+            // identity (`p.participant` is "reviewer-opencode-cli-1",
+            // "reviewer-opencode-cli-2", etc.) — must match the key format
+            // live-run-real builds in its phase_progress handler. The old
+            // `role:lineage` key collided across same-lineage reviewers
+            // and rendered one reviewer's stream in another's card.
+            liveTail={liveTails[p.participant]}
             chatTerminal={chatTerminal}
             chatId={chatId}
             reviewOnly={reviewOnly}

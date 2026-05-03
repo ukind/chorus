@@ -28,6 +28,7 @@ import { quoteValue, quotePath, validateValue } from './quote.js';
 import { spawnHeadless } from '../headless.js';
 import { parseOpencode, parseOpencodeExit, parseKimi } from './parsers.js';
 import { atomicWriteJsonSync } from '../../lib/atomic-write.js';
+import { wrapWithPty } from './opencode.js';
 
 /**
  * Two ways to talk to Kimi K2.6:
@@ -204,9 +205,19 @@ export const kimiShim: AgentShim = {
     const directive =
       `Open the file at this absolute path using your read tool: ${promptPath} ` +
       `— follow the instructions inside exactly and respond with your full answer in this conversation, ending with ## DONE.`;
-    const args = ['run', '--format', 'json', '--model', model, directive];
+    const opencodeArgs = ['run', '--format', 'json', '--model', model, directive];
+    // PTY-wrap the spawn — opencode 1.14.x's `run --format json` checks
+    // isatty(stdout) and emits zero bytes when piped (model still runs to
+    // completion, just no JSON output). The opencode shim's runHeadless
+    // wraps for the same reason. Without this, every Kimi reviewer routed
+    // through the opencode-go transport (the default when no standalone
+    // kimi config exists) silently produces 0-byte answer.md — exactly the
+    // failure mode the opencode PTY fix was written to prevent. Confirmed
+    // launch-eve by both deepseek and gemini reviewing the shims; the bug
+    // was a copy-paste oversight when the PTY fix landed in opencode.ts.
+    const { command, args } = wrapWithPty('opencode', opencodeArgs);
     const run = spawnHeadless({
-      command: 'opencode',
+      command,
       args,
       cwd: opts.cwd,
       parseLine: parseOpencode,

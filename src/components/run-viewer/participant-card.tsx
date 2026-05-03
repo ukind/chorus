@@ -50,20 +50,31 @@ export function ParticipantCard({
   // would briefly flicker the card to "idle" — making it look frozen
   // between phase_start and the first text_delta. Anchoring on chat status
   // closes that window.
-  const state: ParticipantState = participant.pending
-    ? "pending"
-    : participant.hasAnswer
-      ? "done"
-      : chatTerminal
-        ? "errored"
-        : "working";
-
   // When the runner wrote a `## REVIEWER FAILED` summary (PR #11
   // silent-failure preempt), surface its parsed Kind + body in the
   // errored state instead of the generic "didn't produce any output"
   // message. The summary always carries the reason the LLM CLI failed
   // (quota_exhausted, refresh_token_stale, cli_failed, ...).
   const failure = parseFailureSummary(participant.answer);
+
+  // State precedence — `failure` MUST come before the chatTerminal check.
+  // The runner writes `## REVIEWER FAILED ...` to answer.md when a CLI
+  // dies, but does NOT append `## DONE` (failure summaries aren't
+  // "answers"). Without elevating failure here, a single reviewer that
+  // crashes mid-chat would sit in `working` (showing "Thinking...") for
+  // the rest of the run, only flipping to `errored` when chatTerminal
+  // becomes true. Launch-eve gemini review of the run page caught this —
+  // a stuck-WORKING card is a UX trust hit. Same precedence applies to
+  // doer cards via the same helper.
+  const state: ParticipantState = participant.pending
+    ? "pending"
+    : participant.hasAnswer
+      ? "done"
+      : failure
+        ? "errored"
+        : chatTerminal
+          ? "errored"
+          : "working";
 
   return (
     <div

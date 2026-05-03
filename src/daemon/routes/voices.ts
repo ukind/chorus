@@ -29,6 +29,14 @@ const ListQuerySchema = z.object({
     .transform((v) => (v === undefined ? undefined : v === 'true')),
 });
 
+// Cost fields: $/Mtok must be a finite, non-negative number. `null` is a
+// distinct legitimate state ("unknown / not set"), `0` is also legitimate
+// (free tier, opencode-go subscription, plan-priced reviewers). Negative
+// or non-finite (NaN, Infinity) costs would corrupt downstream cost
+// dashboards and the run-page chips, so we reject them at the boundary
+// rather than letting bad values reach the DB.
+const Cost = z.number().finite().min(0).nullable().optional();
+
 const PostBodySchema = z.object({
   provider: z.string().min(1),
   model_id: z.string().min(1),
@@ -36,16 +44,16 @@ const PostBodySchema = z.object({
   source: Source.default('api'),
   lineage: Lineage,
   vendor_family: z.string().nullable().optional(),
-  input_cost_per_mtok: z.number().nullable().optional(),
-  output_cost_per_mtok: z.number().nullable().optional(),
+  input_cost_per_mtok: Cost,
+  output_cost_per_mtok: Cost,
   enabled: z.boolean().optional(),
 });
 
 const PutBodySchema = z.object({
   label: z.string().min(1).optional(),
   enabled: z.boolean().optional(),
-  input_cost_per_mtok: z.number().nullable().optional(),
-  output_cost_per_mtok: z.number().nullable().optional(),
+  input_cost_per_mtok: Cost,
+  output_cost_per_mtok: Cost,
 });
 
 export function registerVoiceRoutes(fastify: FastifyInstance): void {

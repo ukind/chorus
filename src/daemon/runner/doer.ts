@@ -312,9 +312,21 @@ export async function runDoerHeadless(args: {
     return null;
   }
 
+  // `full` means "the doer's answer is complete" — a truthful signal to
+  // downstream reviewers that they can review the artifact as-is. An
+  // errored stream that wrote partial bytes before the subprocess crashed
+  // must NOT be marked full: reviewers receiving truncated mid-paragraph
+  // text will silently produce nonsense verdicts on a half-written answer.
+  // Only treat as full when EITHER the parser saw a final message_done
+  // (finalText set) AND no error, OR we accumulated text without any
+  // error mid-stream. The launch-eve gemini review of runner orchestration
+  // flagged this — earlier code returned full=true whenever
+  // `accumulated.length > 0`, regardless of `errored` state.
+  const isFull = !errored && (finalText !== undefined || accumulated.length > 0);
+
   return {
     content,
-    full: finalText !== undefined || accumulated.length > 0,
+    full: isFull,
     ...(capturedUsage ? { usage: capturedUsage } : {}),
   };
 }

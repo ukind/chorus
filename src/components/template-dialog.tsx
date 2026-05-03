@@ -269,7 +269,7 @@ function formToDaemonShape(f: FormState): DaemonTemplateYaml {
     id,
     name: f.name || "Untitled template",
     description: f.description || "Describe what this template is for.",
-    author: f.author || "you",
+    author: f.author || "chorus",
     agreementThreshold:
       f.customThreshold !== undefined
         ? f.customThreshold
@@ -588,12 +588,22 @@ function parseYamlToForm(yamlText: string, existingId: string): ParseResult {
         exclude: p.inputs?.exclude ?? [],
       },
       iterate: {
-        max: p.iterate?.maxRounds ?? 3,
+        // maxRounds + onDisagreement defaults must mirror IterateSchema
+        // (template-schema.ts) so a YAML with omitted iterate fields
+        // round-trips identically. Earlier defaults (3 + 'ask-user') drifted
+        // schema defaults (2 + 'continue') — opening a builtin template,
+        // making any unrelated edit, then saving silently rewrote the
+        // phase's iteration policy from "loop with revisions" to "halt and
+        // ask the user", and bumped maxRounds 2→3.
+        max: p.iterate?.maxRounds ?? 2,
         // Inverse of the formToDaemonShape mapping above. Keep the two in
         // sync — daemon enum 'continue'/'escalate'/'accept-doer' →
-        // form 'loopback'/'ask-user'/'fail'.
+        // form 'loopback'/'ask-user'/'fail'. The undefined coalesce to
+        // 'continue' is critical: schema default is 'continue', so an
+        // omitted onDisagreement must round-trip as 'loopback' (form) →
+        // 'continue' (YAML), not as 'ask-user' (form) → 'escalate' (YAML).
         onMax:
-          p.iterate?.onDisagreement === "continue"
+          (p.iterate?.onDisagreement ?? "continue") === "continue"
             ? "loopback"
             : p.iterate?.onDisagreement === "accept-doer"
               ? "fail"
@@ -665,13 +675,22 @@ function parseYamlToForm(yamlText: string, existingId: string): ParseResult {
       id: parsed.id ?? existingId,
       name: parsed.name ?? "",
       description: parsed.description ?? "",
-      author: parsed.author ?? "you",
+      // author default 'chorus' must match TemplateSchema (template-schema.ts).
+      // Earlier `?? "you"` corrupted builtin templates' author on round-trip:
+      // schema parses missing author as 'chorus' → wizard sees absence → form
+      // shows 'you' → save emits 'you' → builtin row promoted to user with
+      // wrong author. Catch a missing-author from the YAML AND from the
+      // schema-applied default.
+      author: parsed.author ?? "chorus",
       category: deriveCategory(parsed.id ?? existingId),
       phases: phases.length > 0 ? phases : DEFAULT_FORM.phases,
       threshold,
       ...(customThreshold !== undefined ? { customThreshold } : {}),
       onThresholdMet: actionFromDaemon(parsed.onThresholdMet),
       ...(onThresholdMetRaw ? { onThresholdMetRaw } : {}),
+      // Template-level maxRounds default = 3 (template-schema.ts:209). The
+      // iterate.maxRounds inside each phase has its own default of 2 — fixed
+      // separately below in the per-phase parse.
       maxRounds: parsed.maxRounds ?? 3,
       yoloDefault: parsed.yoloDefault ?? false,
       // Flatten the daemon shape (`models: [...]`) into one form row per

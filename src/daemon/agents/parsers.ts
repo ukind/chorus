@@ -301,11 +301,21 @@ export function parseOpencodeExit(fullStdout: string): AgentEvent[] {
       // Aggregate tokens across every step_finish event in the stream.
       // finalText="" tells the runner to fall back to its text_delta
       // accumulator (mirrors parseClaude's `result` event handling).
+      //
+      // Always emit message_done — even when no step_finish was found.
+      // Earlier code returned [] when usage was undefined, which dropped
+      // the terminal event entirely and caused the runner's `for await`
+      // loop to exit without firing participant_done. The phase then sat
+      // in `working` until the watchdog timeout. A truncated stream
+      // (network drop mid-response) or any future opencode build that
+      // omits step_finish on the success path would hit this. Usage is
+      // attached only when we actually have it.
       const usage = aggregateOpencodeUsage(fullStdout);
-      if (usage) {
-        return [{ type: 'message_done', finalText: '', usage }];
-      }
-      return [];
+      return [
+        usage
+          ? { type: 'message_done', finalText: '', usage }
+          : { type: 'message_done', finalText: '' },
+      ];
     }
   }
   const obj = tryJson(fullStdout) as Record<string, unknown> | undefined;

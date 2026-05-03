@@ -18,8 +18,13 @@
 export function verdictFromReviewerText(content: string): boolean | null {
   const stripped = content.replace(/##\s*DONE\s*$/i, '').trim();
 
+  // Contractions matter: a reviewer writing "don't approve" or "can't
+  // approve" would slip past the spaced-out forms below if we only matched
+  // `do not approve` / `cannot approve`. Both spellings are common in real
+  // reviews. The optional `['’]?t` segment catches both straight (') and
+  // typographic (’) apostrophes — LLMs emit the latter often.
   const negatives =
-    /\b(request changes|requesting changes|disagree|reject(?:ed|ing)?|blocker|do not approve|do not merge|nack|cannot approve)\b/;
+    /\b(request changes|requesting changes|disagree|reject(?:ed|ing)?|blocker|(?:do not|don['’]?t) (?:approve|merge)|(?:cannot|can['’]?t) (?:approve|merge)|nack)\b/;
   const positives =
     /\b(approve(?:d|s)?|lgtm|looks good to me|no concerns|ship it|ack)\b/;
 

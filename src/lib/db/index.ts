@@ -292,38 +292,61 @@ export const chats = {
     // returned row is complete (no second SELECT/UPDATE round trip). The
     // collision check uses chats.slugExists which tolerates an in-flight
     // partner row (same slug requested concurrently) — the UNIQUE index
-    // catches any race during INSERT below.
+    // is the authoritative race-loser. Both reviewers (gemini + deepseek)
+    // flagged on the launch-eve DB-helpers review that the original code
+    // generated the slug, INSERTed, and let the UNIQUE constraint blow
+    // through unhandled — a concurrent POST /chats with similar `work`
+    // text would 500. Retry loop catches the constraint violation,
+    // regenerates the slug (which sees the partner row now and chooses
+    // a fresh suffix), and INSERTs again. Capped at 3 attempts: if we
+    // can't get a unique slug after 3 collisions there's something
+    // structurally wrong (clock skew, slug generator bug); fail loud.
     const { generateChatSlug } = await import('../chat-slug.js');
-    const slug = await generateChatSlug({
-      work: validated.work,
-      templateId: validated.template_id,
-      existsFn: chats.slugExists,
-    });
 
-    await db.execute({
-      sql: `
-        INSERT INTO chats (id, slug, work, template_id, status, current_phase_idx, yolo, attached_files, repo_path, artifact, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `,
-      args: [
-        ulid,
-        slug,
-        validated.work,
-        validated.template_id,
-        'drafting',
-        0,
-        validated.yolo ? 1 : 0,
-        validated.attached_files || null,
-        validated.repo_path || null,
-        validated.artifact || null,
-        now,
-        now,
-      ],
-    });
+    const MAX_SLUG_ATTEMPTS = 3;
+    for (let attempt = 1; attempt <= MAX_SLUG_ATTEMPTS; attempt++) {
+      const slug = await generateChatSlug({
+        work: validated.work,
+        templateId: validated.template_id,
+        existsFn: chats.slugExists,
+      });
 
-    const row = await chats.getById(ulid);
-    if (!row) throw new Error(`chats.create: row vanished after insert: ${ulid}`);
-    return row;
+      try {
+        await db.execute({
+          sql: `
+            INSERT INTO chats (id, slug, work, template_id, status, current_phase_idx, yolo, attached_files, repo_path, artifact, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+          args: [
+            ulid,
+            slug,
+            validated.work,
+            validated.template_id,
+            'drafting',
+            0,
+            validated.yolo ? 1 : 0,
+            validated.attached_files || null,
+            validated.repo_path || null,
+            validated.artifact || null,
+            now,
+            now,
+          ],
+        });
+        const row = await chats.getById(ulid);
+        if (!row) throw new Error(`chats.create: row vanished after insert: ${ulid}`);
+        return row;
+      } catch (err: unknown) {
+        // libsql surfaces SQLite UNIQUE violations as Error with message
+        // containing "UNIQUE constraint failed: ...idx_chats_slug" (the
+        // partial-index name). Retry on this exact pattern; rethrow
+        // anything else (FK violations, type errors, conn drops).
+        const message = err instanceof Error ? err.message : String(err);
+        const isSlugCollision = /UNIQUE constraint failed.*chats\.slug|idx_chats_slug/i.test(message);
+        if (!isSlugCollision || attempt === MAX_SLUG_ATTEMPTS) throw err;
+      }
+    }
+    // Unreachable — the loop above either returns or throws on the final attempt.
+    throw new Error('chats.create: unique slug allocation failed after retries');
   },
 
   /** Used by generateChatSlug — does any chat already use this slug? */

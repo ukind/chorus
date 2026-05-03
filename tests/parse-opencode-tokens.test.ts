@@ -110,18 +110,28 @@ describe("parseOpencodeExit — JSON-Lines aggregation", () => {
     expect(events[0].usage?.inputTokens).toBeUndefined();
   });
 
-  it("returns [] when JSON-Lines stream has no step_finish events at all", () => {
+  it("emits message_done with no usage when JSON-Lines stream has no step_finish events", () => {
+    // Updated post-launch-eve review (gemini + deepseek): previously this
+    // returned [], which dropped the terminal event entirely. The runner's
+    // `for await` loop would exit without firing participant_done, leaving
+    // the phase sitting in `working` until the watchdog timeout. The fix
+    // emits exactly one message_done whenever JSON-Lines is detected;
+    // usage is attached only when step_finish provided it.
     const stream = [TEXT_LINE, '{"type":"step_start","part":{}}'].join("\n");
-    expect(parseOpencodeExit(stream)).toEqual([]);
+    const events = parseOpencodeExit(stream);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toEqual({ type: "message_done", finalText: "" });
   });
 
-  it("returns [] when step_finish events have no usable tokens (malformed)", () => {
+  it("emits message_done with no usage when step_finish events have no usable tokens (malformed)", () => {
     const stream = [
       TEXT_LINE,
       '{"type":"step_finish","part":{"reason":"stop"}}',
       '{"type":"step_finish","part":{"tokens":{"input":"twelve","output":null}}}',
     ].join("\n");
-    expect(parseOpencodeExit(stream)).toEqual([]);
+    const events = parseOpencodeExit(stream);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toEqual({ type: "message_done", finalText: "" });
   });
 
   it("partially aggregates when some step_finish events lack a field", () => {

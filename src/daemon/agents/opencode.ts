@@ -41,7 +41,7 @@ import * as os from 'os';
  *     same fix) will surface a `## REVIEWER FAILED · no_output` instead
  *     of a silent 0-byte answer.
  */
-function wrapWithPty(
+export function wrapWithPty(
   cmd: string,
   args: readonly string[],
 ): { command: string; args: string[] } {

@@ -245,7 +245,13 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
           template.fallback?.doer,
         );
 
-        if (!doerAnswer) {
+        // Treat null OR partial-stream as a doer failure — `!doerAnswer.full`
+        // means runDoerHeadless saw a mid-stream error and only captured a
+        // partial transcript. Passing that to reviewers leads to verdicts on
+        // a half-written answer (gemini caught this on the launch-eve runner
+        // review). The runner already retries via the round loop, so failing
+        // this round is the right move; reviewing garbage is not.
+        if (!doerAnswer || !doerAnswer.full) {
           onEvent({
             chatId,
             type: 'phase_failed',
@@ -254,7 +260,7 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
               phaseIdx,
               kind: stdPhase.kind,
               role: 'doer',
-              reason: 'doer_timeout',
+              reason: doerAnswer ? 'doer_partial_stream' : 'doer_timeout',
             },
             ts: Date.now(),
           });
@@ -297,6 +303,17 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
 
           if (consensus.agreed) {
             doerSucceeded = true;
+            // Phase succeeded in this round — clear any all-reviewers-failed
+            // latch from prior rounds of THIS phase. Without this, a chat
+            // that had a flaky round 1 (e.g. one reviewer's CLI quota was
+            // briefly exhausted, or a subprocess crashed) but recovered to
+            // consensus in round 2 was being terminally classified as
+            // `no_review`. The latch is meant to surface "we never got a
+            // real review" — not "we briefly couldn't but eventually did".
+            // Subsequent phases set the flag again from their own
+            // round-1 outcomes, so cross-phase failure semantics are
+            // preserved.
+            anyPhaseAllReviewersFailed = false;
             break;
           }
 

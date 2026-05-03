@@ -93,6 +93,31 @@ describe('runDoerHeadless', () => {
     expect(handle.calls[0].options.timeoutMs).toBe(10 * 60 * 1000);
   });
 
+  it('uses phase.doer.models[0] when modelOverride is omitted', async () => {
+    const handle = makeFakeShim({ events: happyPathEvents('done\n## DONE') });
+    await callDoer(handle);
+    expect(handle.calls[0].options.model).toBe('claude-opus-4-7');
+  });
+
+  it('honours modelOverride over phase.doer.models[0] (per-attempt fallback)', async () => {
+    const handle = makeFakeShim({ events: happyPathEvents('done\n## DONE') });
+    await runDoerHeadless({
+      shim: handle.shim,
+      chatId: 'test-chat',
+      phase: fixturePhase,
+      round: 1,
+      agentName: 'fake',
+      askContent: 'do the thing',
+      answerFile,
+      doerCwd: tmp,
+      abortSignal: new AbortController().signal,
+      onEvent: (e) => events.push(e),
+      modelOverride: 'claude-sonnet-4-6',
+    });
+    expect(handle.calls).toHaveLength(1);
+    expect(handle.calls[0].options.model).toBe('claude-sonnet-4-6');
+  });
+
   it('happy path: streams deltas + finalText, returns full content with DONE sentinel', async () => {
     const handle = makeFakeShim({
       events: happyPathEvents('I made the fix.\n\nLooks good.\n## DONE'),

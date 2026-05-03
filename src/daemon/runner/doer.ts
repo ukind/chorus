@@ -36,6 +36,10 @@ export async function runDoerHeadless(args: {
   doerCwd: string;
   abortSignal: AbortSignal;
   onEvent: (e: RunnerEvent) => void;
+  /** Per-attempt model override for the slot's fallback chain. When set, wins
+   *  over `phase.doer.models?.[0]` so the outer runDoer can iterate the
+   *  models[] list without rewriting the phase fixture between attempts. */
+  modelOverride?: string;
 }): Promise<{
   content: string;
   full: boolean;
@@ -63,6 +67,7 @@ export async function runDoerHeadless(args: {
     doerCwd,
     abortSignal,
     onEvent,
+    modelOverride,
   } = args;
 
   if (!shim.runHeadless) {
@@ -94,7 +99,7 @@ export async function runDoerHeadless(args: {
   const stream = shim.runHeadless({
     cwd: doerCwd,
     promptText: askContent,
-    model: phase.doer.models?.[0],
+    model: modelOverride ?? phase.doer.models?.[0],
     sandbox: perms.sandboxProfile,
     autoApprove: perms.autoApprovePrompts,
     networkAccess: perms.networkAccess,
@@ -267,7 +272,7 @@ export async function runDoerHeadless(args: {
           `## DOER FAILED\n\n` +
             `**Kind:** ${errorSummary.kind}\n` +
             `**Lineage:** ${phase.doer.lineage}\n` +
-            `**Model:** ${phase.doer.models?.[0] ?? '(default)'}\n\n` +
+            `**Model:** ${modelOverride ?? phase.doer.models?.[0] ?? '(default)'}\n\n` +
             `${errorSummary.message}\n`,
         );
       } catch {

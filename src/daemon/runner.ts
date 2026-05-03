@@ -23,6 +23,7 @@ import { precheckLineage } from '../lib/cli-precheck.js';
 import { atomicWriteJsonSync } from '../lib/atomic-write.js';
 import type { AgentShim } from './agents/types.js';
 import { detectGitContext, runShipPhase } from './ship.js';
+import { runWithModelFallback } from './runner/run-with-fallback.js';
 
 export interface RunnerEvent {
   chatId: string;
@@ -596,6 +597,12 @@ async function runDoer(
   // Transport branch: headless when settings + shim support it; otherwise
   // fall through to the tmux flow below. Mixed-mode in a single chat is OK
   // — Claude can run headless while Gemini reviewer falls back to tmux.
+  //
+  // Per-slot model fallback: when phase.doer.models lists multiple models we
+  // try them in order, falling through to the next on a null return (no
+  // answer produced — quota, rate-limit, empty stream). Auth precheck is
+  // shared across the chain because every model in a slot inherits the
+  // slot's lineage. See run-with-fallback.ts.
   const transport = await getTransport();
   if (transport === 'headless' && shim.runHeadless) {
     // Register the doer for per-card cancel. Same combined-signal pattern
@@ -606,18 +613,41 @@ async function runDoer(
       abortSignal,
     );
     try {
-      return await runDoerHeadless({
-        shim,
-        chatId,
-        phase,
-        round,
-        agentName,
-        askContent: ask,
-        answerFile,
-        doerCwd,
-        abortSignal: handle.signal,
-        onEvent,
-      });
+      return await runWithModelFallback(
+        phase.doer.models,
+        async (model) =>
+          runDoerHeadless({
+            shim,
+            chatId,
+            phase,
+            round,
+            agentName,
+            askContent: ask,
+            answerFile,
+            doerCwd,
+            abortSignal: handle.signal,
+            onEvent,
+            modelOverride: model,
+          }),
+        (fromModel, toModel, fromIdx) => {
+          onEvent({
+            chatId,
+            type: 'cli_warning',
+            payload: {
+              phaseId: phase.id,
+              round,
+              role: 'doer',
+              agent: agentName,
+              reason: 'model_fallback',
+              fromModel: fromModel ?? '(default)',
+              toModel: toModel ?? '(default)',
+              fallbackIdx: fromIdx,
+              message: `Doer model "${fromModel ?? '(default)'}" produced no answer; retrying with "${toModel ?? '(default)'}".`,
+            },
+            ts: Date.now(),
+          });
+        },
+      );
     } finally {
       handle.release();
     }
@@ -1021,6 +1051,11 @@ async function runReviewer(
 
   // Headless branch — same pattern as runDoer. Mixed-mode is fine: doer can
   // run headless while a reviewer of a different lineage falls back to tmux.
+  //
+  // Per-slot model fallback: when candidate.models lists multiple models we
+  // try them in order, falling through on `null` (no answer produced). The
+  // boolean verdict `false` (disagreement) is a real result and stops the
+  // chain — runWithModelFallback only re-tries on literal null.
   const transport = await getTransport();
   if (transport === 'headless' && shim.runHeadless) {
     // Register this reviewer for per-card cancel. The combined signal
@@ -1032,21 +1067,43 @@ async function runReviewer(
       abortSignal,
     );
     try {
-      return await runReviewerHeadless({
-        shim,
-        chatId,
-        phase,
-        round,
-        reviewerIdx,
-        candidateLineage: candidate.lineage,
-        candidateModel: candidate.models?.[0],
-        agentName,
-        askContent: ask,
-        answerFile,
-        reviewerDir,
-        abortSignal: handle.signal,
-        onEvent,
-      });
+      return await runWithModelFallback(
+        candidate.models,
+        async (model) =>
+          runReviewerHeadless({
+            shim,
+            chatId,
+            phase,
+            round,
+            reviewerIdx,
+            candidateLineage: candidate.lineage,
+            candidateModel: model,
+            agentName,
+            askContent: ask,
+            answerFile,
+            reviewerDir,
+            abortSignal: handle.signal,
+            onEvent,
+          }),
+        (fromModel, toModel, fromIdx) => {
+          onEvent({
+            chatId,
+            type: 'cli_warning',
+            payload: {
+              phaseId: phase.id,
+              round,
+              role: 'reviewer',
+              agent: `${agentName}-${reviewerIdx}`,
+              reason: 'model_fallback',
+              fromModel: fromModel ?? '(default)',
+              toModel: toModel ?? '(default)',
+              fallbackIdx: fromIdx,
+              message: `Reviewer model "${fromModel ?? '(default)'}" produced no answer; retrying with "${toModel ?? '(default)'}".`,
+            },
+            ts: Date.now(),
+          });
+        },
+      );
     } finally {
       handle.release();
     }

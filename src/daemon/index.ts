@@ -314,7 +314,19 @@ function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
         (errorObj.message as string | undefined) ??
         (payload.message as string | undefined) ??
         'unknown error';
-      const errorKind = (errorObj.kind as string | undefined) ?? 'cli_error';
+      // Distinguish hard errors from informational warnings in the
+      // persisted row so post-mortem sqlite queries don't lie. Pre-fix
+      // every cli_warning landed as state='errored' / [cli_error] prefix,
+      // which made a successful per-slot model fallback look like a
+      // reviewer crash in the audit trail. cli_error ⇒ state='errored',
+      // cli_warning ⇒ state='warning'. The replay path
+      // (phaseEventToRunnerEvent) ignores both states the same way it
+      // always has, so live subscribers are unaffected.
+      const isWarning = event.type === 'cli_warning';
+      const persistedState: 'errored' | 'warning' = isWarning ? 'warning' : 'errored';
+      const tag =
+        (errorObj.kind as string | undefined) ??
+        (isWarning ? 'cli_warning' : 'cli_error');
       void trackWrite(
         phaseEvents
           .create({
@@ -323,11 +335,12 @@ function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
             phase_kind: phaseKind,
             role: (payload.role as 'doer' | 'reviewer') ?? 'reviewer',
             agent_id: (payload.agent as string) ?? null,
-            state: 'errored',
-            // Pack the error context into output so the cockpit's
-            // existing event-list rendering (which already shows
-            // `output`) surfaces the message without a schema change.
-            output: `[${errorKind}] ${message}`,
+            state: persistedState,
+            // Pack the failure / warning context into output so the
+            // cockpit's existing event-list rendering (which already
+            // shows `output`) surfaces the message without a schema
+            // change.
+            output: `[${tag}] ${message}`,
             cost_usd: 0,
             tokens_in: 0,
             tokens_out: 0,
@@ -337,7 +350,7 @@ function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
           .catch((err: unknown) => {
             chatLogger(chatId).error(
               { err: err instanceof Error ? err.message : String(err) },
-              'phaseEvents.create (cli_error) failed',
+              `phaseEvents.create (${persistedState}) failed`,
             );
           }),
       );

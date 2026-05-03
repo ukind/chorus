@@ -231,7 +231,14 @@ const PhaseEventSchema = z.object({
   phase_kind: z.enum(['plan', 'spec', 'tests', 'implement', 'review', 'verify', 'divergence', 'review_only']),
   role: z.enum(['doer', 'reviewer']),
   agent_id: z.string().nullable(),
-  state: z.enum(['drafting', 'submitted', 'reviewing', 'approved', 'revising', 'blocked', 'errored']),
+  // 'warning' is the new persisted state for cli_warning events that
+  // aren't terminal failures — model_fallback transitions in particular.
+  // Pre-fix every cli_warning was stored as 'errored', which made a
+  // successful per-slot fallback look like a reviewer crash in audit
+  // logs. Replay (phaseEventToRunnerEvent) ignores this state the same
+  // way it ignores 'errored' / 'reviewing' / 'approved' / 'revising', so
+  // live SSE traffic is unaffected.
+  state: z.enum(['drafting', 'submitted', 'reviewing', 'approved', 'revising', 'blocked', 'errored', 'warning']),
   output: z.string().nullable(),
   cost_usd: z.number().default(0),
   tokens_in: z.number().int().default(0),

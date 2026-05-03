@@ -63,7 +63,13 @@ const CRED_PATHS: Record<CliLineage, () => string[]> = {
   ],
   moonshot: () => [
     path.join(os.homedir(), '.kimi', 'auth.json'),
+    // OpenCode stores its auth in two places depending on install path. The
+    // kimi shim delegates to `opencode --model opencode-go/kimi-k2.6` when
+    // the requested model carries the opencode-go/ prefix, so a moonshot
+    // voice routed via opencode is actually authed by opencode's creds —
+    // not the kimi-cli ones. Both opencode candidates accepted here.
     path.join(os.homedir(), '.opencode', 'auth.json'),
+    path.join(os.homedir(), '.local', 'share', 'opencode', 'auth.json'),
   ],
 };
 

@@ -5,8 +5,6 @@ import { useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowRight,
   Layers,
-  Paperclip,
-  X,
   DollarSign,
   Info,
 } from "lucide-react";
@@ -31,6 +29,29 @@ interface Attachment {
   name: string;
   kind: "file" | "diff" | "url";
   size?: string;
+}
+
+// Pick the first meaningful line from a review-only artifact so the chat
+// title reflects what the user pasted instead of a static framing prompt.
+// Skips fence markers (``` / ~~~) and pure-whitespace lines, then truncates
+// to ~80 chars on a word boundary so it slugs cleanly. Falls back to the
+// previous static brief when nothing usable is found (empty input, all
+// fences, etc).
+function deriveReviewOnlyTitle(artifact: string): string {
+  const fallback = "Review the supplied artifact independently.";
+  if (!artifact) return fallback;
+  const lines = artifact.split("\n");
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (line.length === 0) continue;
+    if (line.startsWith("```") || line.startsWith("~~~")) continue;
+    const max = 80;
+    if (line.length <= max) return line;
+    const cut = line.slice(0, max);
+    const lastSpace = cut.lastIndexOf(" ");
+    return (lastSpace > 40 ? cut.slice(0, lastSpace) : cut) + "…";
+  }
+  return fallback;
 }
 
 function NewChatPageInner() {
@@ -68,7 +89,10 @@ function NewChatPageInner() {
   const templateId =
     params.get("template") ?? templates[0]?.id ?? "";
   const [prompt, setPrompt] = useState("");
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  // Attachments are deferred to v0.8 — see the removed File/Diff/URL row
+  // below. Kept the empty array so cost-estimate math doesn't have to
+  // branch and the daemon-call shape stays the same.
+  const attachments: Attachment[] = [];
 
   const template = templates.find((t) => t.id === templateId) ?? templates[0];
 
@@ -100,33 +124,6 @@ function NewChatPageInner() {
       maxRounds,
     };
   }, [prompt, attachments, template]);
-
-  function addMockAttachment(kind: Attachment["kind"]) {
-    const sample: Record<Attachment["kind"], Attachment> = {
-      file: {
-        id: `a-${Date.now()}`,
-        name: "src/jobs/process_batch.ts",
-        kind: "file",
-        size: "4.2 KB",
-      },
-      diff: {
-        id: `a-${Date.now()}`,
-        name: "PR #1421 diff",
-        kind: "diff",
-        size: "+165 −6",
-      },
-      url: {
-        id: `a-${Date.now()}`,
-        name: "github.com/99xAgency/aurora/issues/89",
-        kind: "url",
-      },
-    };
-    setAttachments((prev) => [...prev, sample[kind]]);
-  }
-
-  function removeAttachment(id: string) {
-    setAttachments((prev) => prev.filter((a) => a.id !== id));
-  }
 
   // Cost-cap gate uses the worst-case (with retries) projection so a chat
   // doesn't sneak under the cap on the headline number then exceed it on the
@@ -170,8 +167,11 @@ function NewChatPageInner() {
           // For review-only templates, `prompt` IS the artifact. work is a
           // static framing brief — reviewers see it but it doesn't drive
           // their critique. For standard templates, prompt becomes work as
-          // before.
-          work: reviewOnly ? "Review the supplied artifact independently." : prompt,
+          // before. For review-only we derive a recognisable title from the
+          // first non-empty, non-fenced line of the artifact so the sidebar
+          // and run header reflect what the user actually pasted, not the
+          // template's framing prompt.
+          work: reviewOnly ? deriveReviewOnlyTitle(prompt) : prompt,
           templateId: template.id,
           files: attachments.length > 0 ? attachments.map((a) => a.name) : undefined,
           ...(reviewOnly ? { artifact: prompt } : {}),
@@ -179,6 +179,10 @@ function NewChatPageInner() {
           // too, but skip wiring the repoPath so the cockpit doesn't pretend
           // it'll open a PR.
           ...(!reviewOnly && trimmedRepo.length > 0 ? { repoPath: trimmedRepo } : {}),
+          // Yolo only matters for chats with a ship phase; the daemon
+          // ignores it on review-only runs. Sending it unconditionally
+          // keeps the call signature simple.
+          yolo: yoloMode,
         });
         router.push(`/runs/${chat.slug || chat.id}`);
       } catch (err) {
@@ -277,10 +281,17 @@ function NewChatPageInner() {
         {/* Prompt textarea — for review-only templates, this becomes the
             artifact field directly: monospace, taller, explicit label. */}
         {reviewOnly && artifactSpec && (
-          <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+          <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             <span className="font-medium text-foreground">{artifactSpec.label}</span>
             <span className="text-muted-foreground/60">·</span>
             <span>cap {(artifactSpec.maxBytes / 1024).toLocaleString()} KB</span>
+            <span className="text-muted-foreground/60">·</span>
+            {/* Reviewers terminate their stream on a `## DONE` marker.
+                Surfaced in the label row so users know the convention
+                without having to read a template's `askContent`. */}
+            <span className="text-muted-foreground/80">
+              end your prompt with <code className="rounded bg-muted/40 px-1 font-mono text-[10px] text-foreground/80">## DONE</code> so reviewers know when to stop
+            </span>
           </div>
         )}
         <Card className="overflow-hidden p-0 mb-4">
@@ -299,56 +310,11 @@ function NewChatPageInner() {
             spellCheck={!reviewOnly}
           />
 
-          {/* Attachments row */}
-          <div className="flex flex-wrap items-center gap-2 border-t border-border bg-card/30 px-5 py-2.5">
-              {attachments.map((a) => (
-                <span
-                  key={a.id}
-                  className="group inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 font-mono text-[10px] text-foreground"
-                >
-                  <Paperclip className="h-3 w-3 text-muted-foreground" />
-                  {a.name}
-                  {a.size && (
-                    <span className="text-muted-foreground/60">· {a.size}</span>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => removeAttachment(a.id)}
-                    className="text-muted-foreground/50 transition hover:text-rose-400"
-                    aria-label="Remove attachment"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </span>
-              ))}
-              <div className="flex items-center gap-1 ml-auto">
-                <button
-                  type="button"
-                  onClick={() => addMockAttachment("file")}
-                  className="rounded-md border border-border bg-card px-2 py-1 text-[10px] text-muted-foreground transition hover:text-foreground"
-                  title="Attach files from project"
-                >
-                  <Paperclip className="mr-1 inline-block h-3 w-3" />
-                  File
-                </button>
-                <button
-                  type="button"
-                  onClick={() => addMockAttachment("diff")}
-                  className="rounded-md border border-border bg-card px-2 py-1 text-[10px] text-muted-foreground transition hover:text-foreground"
-                  title="Attach a PR diff"
-                >
-                  Diff
-                </button>
-                <button
-                  type="button"
-                  onClick={() => addMockAttachment("url")}
-                  className="rounded-md border border-border bg-card px-2 py-1 text-[10px] text-muted-foreground transition hover:text-foreground"
-                  title="Attach a URL"
-                >
-                  URL
-                </button>
-              </div>
-          </div>
+          {/* Attachments row removed for v0.7 — File / Diff / URL buttons
+              were calling `addMockAttachment` which only added decorative
+              chips; nothing was actually fetched, parsed, or sent to the
+              daemon. Re-add when the upload + URL-fetch + PR-diff parser
+              paths are wired (planning/v0.8.md). */}
 
           <div className="flex flex-col gap-3 border-t border-border bg-card/40 px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
@@ -367,16 +333,33 @@ function NewChatPageInner() {
               <span className="flex items-center gap-1.5">
                 <span className="h-1.5 w-1.5 rounded-full bg-blue-400" />
                 Reviewers:
-                {template.phases[0]?.reviewer.candidates.map((l) => (
-                  <span
-                    key={l}
-                    className="flex items-center gap-1"
-                    title={l}
-                  >
-                    <span className="h-1.5 w-1.5 rounded-full bg-blue-400" />
-                    {l}
-                  </span>
-                ))}
+                {(() => {
+                  // Two reviewer rows on the same lineage are indistinguishable
+                  // at "codex · gemini · opencode · opencode" — caught in the
+                  // 2026-05-03 UX walk. When ≥2 candidates share a lineage,
+                  // append the model so a user can tell e.g. opencode-go/kimi
+                  // apart from opencode-go/deepseek before submitting.
+                  const slots = template.phases[0]?.reviewer.candidatesWithModels ?? [];
+                  const lineageCounts = new Map<string, number>();
+                  for (const slot of slots) {
+                    lineageCounts.set(slot.lineage, (lineageCounts.get(slot.lineage) ?? 0) + 1);
+                  }
+                  return slots.map((slot, i) => {
+                    const dup = (lineageCounts.get(slot.lineage) ?? 0) > 1;
+                    const modelLabel = slot.models?.[0]?.split("/").pop() ?? slot.models?.[0];
+                    const label = dup && modelLabel ? `${slot.lineage} · ${modelLabel}` : slot.lineage;
+                    return (
+                      <span
+                        key={`${slot.lineage}-${slot.models?.[0] ?? "default"}-${i}`}
+                        className="flex items-center gap-1"
+                        title={slot.models?.[0] ? `${slot.lineage} · ${slot.models[0]}` : slot.lineage}
+                      >
+                        <span className="h-1.5 w-1.5 rounded-full bg-blue-400" />
+                        {label}
+                      </span>
+                    );
+                  });
+                })()}
                 {template.phases[0]?.reviewer.crossLineage && (
                   <Badge
                     variant="outline"
@@ -544,29 +527,9 @@ function NewChatPageInner() {
           </span>
         </button>
 
-        {/* A/B test option */}
-        <div className="rounded-lg border border-dashed border-border bg-card/30 p-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-medium">A/B test mode</span>
-                <Badge variant="outline" className="text-[10px]">
-                  beta
-                </Badge>
-              </div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Run this prompt against two templates in parallel — compare
-                findings side-by-side.
-              </p>
-            </div>
-            <button
-              type="button"
-              className="rounded-md border border-border bg-card px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:text-foreground"
-            >
-              Add second template
-            </button>
-          </div>
-        </div>
+        {/* A/B test option removed for v0.7 — "Add second template" had
+            no onClick, no dual-chat spawn logic, and no side-by-side run
+            view. Lands in v0.8 once those exist. */}
       </div>
     </AppShell>
   );

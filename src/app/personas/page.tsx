@@ -101,11 +101,12 @@ export default function PersonasPage() {
       setConfirmingDeleteId(target.id);
       setDeleteError(null);
       // Auto-disarm to avoid a long-lived primed Delete eating a later
-      // accidental click; matches the same 4s window users get inside
-      // the edit dialog.
+      // accidental click; bumped from 4s to 8s after a real-user test
+      // showed the original window timed out before the user could
+      // re-confirm a long row. Matches the dialog's window.
       setTimeout(() => {
         setConfirmingDeleteId((cur) => (cur === target.id ? null : cur));
-      }, 4000);
+      }, 8000);
       return;
     }
     setDeletingId(target.id);
@@ -338,7 +339,11 @@ export default function PersonasPage() {
                     {!p.builtin && (
                       <button
                         type="button"
-                        aria-label={`Delete persona ${p.label}`}
+                        aria-label={
+                          confirmingDeleteId === p.id
+                            ? `Confirm delete persona ${p.label}`
+                            : `Delete persona ${p.label}`
+                        }
                         title={
                           confirmingDeleteId === p.id
                             ? "Click again to confirm"

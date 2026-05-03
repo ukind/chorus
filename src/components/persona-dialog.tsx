@@ -220,10 +220,12 @@ export function PersonaDialog({
     if (!editing || isBuiltin || deleting) return;
     if (!confirmingDelete) {
       setConfirmingDelete(true);
-      // Auto-disarm after 4s so an abandoned arming doesn't fire on a much
-      // later stray click. Matches the per-row Trash icon's behavior on the
-      // personas page — same destructive action, same disarm rule.
-      setTimeout(() => setConfirmingDelete((cur) => (cur ? false : cur)), 4000);
+      // Auto-disarm after 8s so an abandoned arming doesn't fire on a much
+      // later stray click. 4s was too tight in real-user testing — anyone
+      // double-checking the row label blew the window. Matches the per-row
+      // Trash icon's behavior on the personas page; same window in both
+      // places.
+      setTimeout(() => setConfirmingDelete((cur) => (cur ? false : cur)), 8000);
       return;
     }
     setDeleting(true);

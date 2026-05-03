@@ -64,7 +64,7 @@ const KINDS: { id: PhaseKind; label: string }[] = [
 ];
 
 const LINEAGES: { id: ReviewerLineage; label: string; dot: string }[] = (
-  ["claude", "codex", "gemini", "opencode", "kimi"] as const
+  ["claude", "codex", "gemini", "opencode", "kimi", "openrouter"] as const
 ).map((id) => ({ id, label: UI_LINEAGE_LABEL[id], dot: UI_LINEAGE_BRAND[id].dot }));
 
 const DEFAULT_MODELS: Record<ReviewerLineage, string> = UI_LINEAGE_DEFAULT_MODEL;

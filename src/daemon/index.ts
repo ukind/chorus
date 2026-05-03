@@ -556,11 +556,11 @@ async function main() {
 
   // Create chat
   fastify.post<{
-    Body: { work: string; templateId: string; files?: string[]; repoPath?: string; artifact?: string };
+    Body: { work: string; templateId: string; files?: string[]; repoPath?: string; artifact?: string; yolo?: boolean };
     Reply: ApiResponse<object>;
   }>('/chats', async (request) => {
     try {
-      const { work, templateId, files, repoPath, artifact } = request.body;
+      const { work, templateId, files, repoPath, artifact, yolo } = request.body;
 
       if (!work || !templateId) {
         return errorResponse('validation', 'work and templateId are required');
@@ -651,6 +651,7 @@ async function main() {
         attached_files: files ? JSON.stringify(files) : undefined,
         repo_path: repoPath,
         artifact: artifact ?? undefined,
+        yolo: yolo === true,
       });
 
       // Note: tmux sessions are created on-demand via tmuxMgr.acquire() when phases run.

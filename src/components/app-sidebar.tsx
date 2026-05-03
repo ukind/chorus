@@ -10,8 +10,6 @@ import {
   Settings,
   Plus,
   ListChecks,
-  Search,
-  Command,
   PanelLeftClose,
   PanelLeftOpen,
   Users,
@@ -225,19 +223,11 @@ export function SidebarBody({ onNavigate, collapsed = false, onToggleCollapsed }
         <div className="min-h-0 flex-1" />
       ) : (
       <div className="flex min-h-0 flex-1 flex-col border-t border-border">
-        {/* Sticky header: Search + New chat + Recent label */}
+        {/* Sticky header: New chat + Recent label.
+            Search button removed for v0.7 — it had no onClick and no
+            backing API; clicking it would suggest a feature that doesn't
+            exist. Lands in v0.8 with a Cmd+K modal. */}
         <div className="flex shrink-0 flex-col gap-2 bg-card/40 px-3 py-3">
-          <button
-            type="button"
-            className="flex h-8 w-full items-center gap-2 overflow-hidden rounded-md border border-border bg-card px-2.5 text-xs text-muted-foreground transition hover:border-muted-foreground/40 hover:text-foreground"
-            aria-label="Search"
-          >
-            <Search className="h-3 w-3 shrink-0" />
-            <span className="truncate whitespace-nowrap">Search…</span>
-            <kbd className="ml-auto flex shrink-0 items-center gap-0.5 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">
-              <Command className="h-3 w-3" />K
-            </kbd>
-          </button>
           <Link
             href="/new"
             onClick={onNavigate}
@@ -288,7 +278,7 @@ export function SidebarBody({ onNavigate, collapsed = false, onToggleCollapsed }
                       href={href}
                       onClick={onNavigate}
                       className={cn(
-                        "group flex items-start gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
+                        "group flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
                         active
                           ? "bg-accent text-foreground"
                           : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
@@ -296,11 +286,17 @@ export function SidebarBody({ onNavigate, collapsed = false, onToggleCollapsed }
                     >
                       <span
                         className={cn(
-                          "mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full",
+                          "h-1.5 w-1.5 shrink-0 rounded-full",
                           STATUS_DOT[c.status],
                         )}
                       />
-                      <span className="line-clamp-2 leading-snug">{title}</span>
+                      {/* Single-line clamp keeps each item glanceable. The
+                       * 2-line wrap mode let multi-paragraph artifact prompts
+                       * dominate the sidebar at 4-6 lines per row.
+                       * `min-w-0` lets `truncate` shrink under the flex parent. */}
+                      <span className="min-w-0 flex-1 truncate leading-snug" title={display}>
+                        {title}
+                      </span>
                     </Link>
                   </li>
                 );

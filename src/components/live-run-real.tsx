@@ -24,6 +24,9 @@ import {
   RotateCw,
   Trash2,
   X,
+  Link2,
+  Repeat,
+  Check,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
@@ -51,6 +54,10 @@ interface Props {
   initialPrUrl?: string;
   /** Ship phase failure detail when status=blocked. */
   initialShipError?: string;
+  /** Reviewer-level outcome (separate from system-level status). When
+   * status='approved' but verdict='request_changes', the run finished
+   * but reviewers said no — header must reflect that, not green-stamp it. */
+  initialVerdict?: string;
 }
 
 // Used when synthesising placeholder participants — picks a sensible CLI
@@ -89,6 +96,25 @@ const STATUS_LABEL: Record<string, { text: string; color: string }> = {
   failed: { text: "FAILED", color: "destructive" },
   cancelled: { text: "CANCELLED", color: "muted" },
 };
+
+// When chat finishes with status='approved' (= run completed cleanly) the
+// reviewer verdict still decides whether the work actually passed. A green
+// "APPROVED" badge for a run where every reviewer said "request changes" was
+// found in real-user testing on 2026-05-03 and is the kind of misread that
+// gets bad code shipped. Verdict overrides the status label whenever it
+// disagrees with the optimistic green path.
+function deriveStatusMeta(
+  status: string,
+  verdict: string | undefined,
+): { text: string; color: string } {
+  if (status === "approved" && verdict && verdict !== "approved") {
+    if (verdict === "request_changes") {
+      return { text: "REVIEW · CHANGES REQUESTED", color: "amber" };
+    }
+    return { text: `REVIEW · ${verdict.toUpperCase()}`, color: "amber" };
+  }
+  return STATUS_LABEL[status] ?? { text: status.toUpperCase(), color: "muted" };
+}
 
 const STATUS_TEXT_COLOR: Record<string, string> = {
   primary: "text-primary",
@@ -136,8 +162,10 @@ export function LiveRunReal({
   projectName,
   initialPrUrl,
   initialShipError,
+  initialVerdict,
 }: Props) {
   const [status, setStatus] = useState(initialStatus);
+  const [verdict, setVerdict] = useState<string | undefined>(initialVerdict);
   const [rounds, setRounds] = useState<RoundSnapshot[]>(initialRounds);
   const [activeParticipants, setActiveParticipants] = useState<Set<string>>(
     new Set(),
@@ -145,6 +173,7 @@ export function LiveRunReal({
   const [prUrl, setPrUrl] = useState<string | undefined>(initialPrUrl);
   const [shipError, setShipError] = useState<string | undefined>(initialShipError);
   const [deleting, setDeleting] = useState(false);
+  const [copiedShare, setCopiedShare] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const router = useRouter();
 
@@ -290,6 +319,11 @@ export function LiveRunReal({
           else if (finalStatus === "cancelled") setStatus("cancelled");
           else setStatus("approved");
 
+          const finalVerdict = e.payload.verdict as string | undefined;
+          if (typeof finalVerdict === "string" && finalVerdict.length > 0) {
+            setVerdict(finalVerdict);
+          }
+
           // Capture ship-phase outcome for the result banner.
           const payloadPrUrl = e.payload.prUrl as string | undefined;
           if (typeof payloadPrUrl === "string" && payloadPrUrl.length > 0) {
@@ -324,7 +358,7 @@ export function LiveRunReal({
     return false;
   };
 
-  const meta = STATUS_LABEL[status] ?? { text: status.toUpperCase(), color: "muted" };
+  const meta = deriveStatusMeta(status, verdict);
   const totalPhases = template?.phases?.length ?? 1;
 
   // Phase completion is now driven by the chat's terminal status, not by
@@ -576,6 +610,48 @@ export function LiveRunReal({
                   Cancel
                 </button>
               )}
+              {/* "Run again" — once the chat is terminal, give the user a
+                  one-click re-entry to /new with the same template
+                  pre-selected. They paste their (possibly revised) artifact
+                  there. Without this button users had to find the template
+                  manually. */}
+              {isTerminal && template && (
+                <Link
+                  href={`/new?template=${encodeURIComponent(template.id)}`}
+                  className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:border-primary/40 hover:text-primary"
+                >
+                  <Repeat className="h-3.5 w-3.5" />
+                  Run again
+                </Link>
+              )}
+              {/* Copy URL — replaces an absent Share button. Two-second
+                  affirmation tick so the user knows the click registered. */}
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(window.location.href);
+                    setCopiedShare(true);
+                    setTimeout(() => setCopiedShare(false), 2000);
+                  } catch {
+                    /* clipboard rejected (insecure ctx) — silent */
+                  }
+                }}
+                title="Copy a link to this run"
+                className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:border-primary/40 hover:text-primary"
+              >
+                {copiedShare ? (
+                  <>
+                    <Check className="h-3.5 w-3.5" />
+                    Copied
+                  </>
+                ) : (
+                  <>
+                    <Link2 className="h-3.5 w-3.5" />
+                    Share
+                  </>
+                )}
+              </button>
               <button
                 type="button"
                 disabled={deleting}

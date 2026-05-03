@@ -200,6 +200,7 @@ export default async function RunPage({ params }: RunPageProps) {
         work={chat.work}
         initialPrUrl={chat.prUrl}
         initialShipError={chat.shipError}
+        initialVerdict={chat.verdict}
       />
     </AppShell>
   );

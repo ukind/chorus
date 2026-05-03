@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -16,6 +16,16 @@ export const metadata: Metadata = {
   title: "Chorus — many voices, one chorus",
   description:
     "The polished orchestrator over your AI fleet. Paste a task. Pick a template. Watch multiple LLMs reach consensus.",
+};
+
+// Without an explicit viewport, mobile browsers default to a 980px layout
+// width and zoom out — the cockpit is dense, that scales to unreadable
+// text. Setting width=device-width opts into responsive behaviour. The
+// app is desktop-first; this just stops mobile from rendering it as a
+// shrunken-down desktop screenshot.
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
 };
 
 interface RootLayoutProps {

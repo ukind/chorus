@@ -248,20 +248,26 @@ export default function SettingsPage() {
           />
         )}
 
-        {/* Save */}
-        <div className="mt-8 flex items-center justify-between rounded-md border border-border bg-card px-5 py-3">
+        {/* Save — most fields on this page are still preview surfaces;
+            the daemon only respects transport (above) and billing mode +
+            permissions (separate page). Showing a "saved" badge + a real
+            Apply button would lie to the user. Honest disclaimer instead;
+            wire-up tracked for v0.8. */}
+        <div className="mt-8 flex items-center justify-between rounded-md border border-amber-500/30 bg-amber-500/5 px-5 py-3">
           <Badge
             variant="outline"
-            className="border-emerald-500/30 bg-emerald-500/10 text-[10px] text-emerald-300"
+            className="border-amber-500/30 bg-amber-500/10 text-[10px] text-amber-300"
           >
-            <Check className="mr-1 h-3 w-3" />
-            All changes saved
+            <AlertTriangle className="mr-1 h-3 w-3" />
+            Preview — most form fields are not yet wired to the daemon
           </Badge>
           <button
             type="button"
-            className="rounded-md bg-primary px-4 py-1.5 text-xs font-medium text-primary-foreground transition hover:bg-primary/90"
+            disabled
+            title="Settings persistence wiring lands in v0.8. Transport (above) and Permissions / Billing (separate pages) save today."
+            className="rounded-md bg-muted px-4 py-1.5 text-xs font-medium text-muted-foreground cursor-not-allowed"
           >
-            Apply &amp; restart daemon
+            Save (v0.8)
           </button>
         </div>
       </div>

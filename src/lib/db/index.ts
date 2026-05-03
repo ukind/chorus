@@ -219,6 +219,9 @@ const CreateChatSchema = z.object({
   /** Artifact text for review-only templates. Optional at the DB layer; the
    *  chat-create endpoint enforces it when the template requires one. */
   artifact: z.string().optional(),
+  /** Skip ask-user gates for this run. The runner only honours this on the
+   *  ship phase today; safe to pass on any chat. */
+  yolo: z.boolean().optional(),
 });
 
 export type CreateChatInput = z.infer<typeof CreateChatSchema>;
@@ -309,7 +312,7 @@ export const chats = {
         validated.template_id,
         'drafting',
         0,
-        0,
+        validated.yolo ? 1 : 0,
         validated.attached_files || null,
         validated.repo_path || null,
         validated.artifact || null,

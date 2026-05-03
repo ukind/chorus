@@ -89,6 +89,10 @@ export async function createChat(options: {
    *  Capped at the template's phase.artifact.maxBytes (default 1 MiB) by
    *  the daemon — caller is expected to pre-check that. */
   artifact?: string;
+  /** Skip every ask-user gate for this run. Today the daemon only honours
+   *  this on the ship phase; safe to pass on review-only runs but with no
+   *  effect there. */
+  yolo?: boolean;
 }): Promise<Chat> {
   const row = await fetchFromDaemon<RawChatRow>("/chats", {
     method: "POST",

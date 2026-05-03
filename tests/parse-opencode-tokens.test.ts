@@ -84,7 +84,30 @@ describe("parseOpencodeExit — JSON-Lines aggregation", () => {
       inputTokens: 12712,
       outputTokens: 3,
       cachedInputTokens: 1920,
+      costUsd: 0.022,
     });
+  });
+
+  it("sums cost across multiple step_finish events", () => {
+    const stream = [
+      '{"type":"step_finish","part":{"tokens":{"input":1000,"output":50},"cost":0.015}}',
+      '{"type":"step_finish","part":{"tokens":{"input":500,"output":25},"cost":0.007}}',
+    ].join("\n");
+    const events = parseOpencodeExit(stream);
+    if (events[0].type !== "message_done") throw new Error("type guard");
+    expect(events[0].usage?.costUsd).toBeCloseTo(0.022, 4);
+  });
+
+  it("aggregates cost even when one step_finish has malformed tokens", () => {
+    const stream = [
+      // Real cost, malformed tokens — still surface the cost.
+      '{"type":"step_finish","part":{"tokens":{"input":"twelve"},"cost":0.0042}}',
+    ].join("\n");
+    const events = parseOpencodeExit(stream);
+    expect(events).toHaveLength(1);
+    if (events[0].type !== "message_done") throw new Error("type guard");
+    expect(events[0].usage?.costUsd).toBeCloseTo(0.0042, 4);
+    expect(events[0].usage?.inputTokens).toBeUndefined();
   });
 
   it("returns [] when JSON-Lines stream has no step_finish events at all", () => {

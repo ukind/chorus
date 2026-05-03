@@ -114,7 +114,12 @@ function readChatRounds(chatId: string): RoundSnapshot[] {
         // participant_done. Powers the time/tokens chips on the card.
         let durationMs: number | undefined;
         let usage:
-          | { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number }
+          | {
+              inputTokens?: number;
+              outputTokens?: number;
+              cachedInputTokens?: number;
+              costUsd?: number;
+            }
           | undefined;
         const statsPath = path.join(roundDir, d.name, "_stats.json");
         if (fs.existsSync(statsPath)) {
@@ -125,6 +130,7 @@ function readChatRounds(chatId: string): RoundSnapshot[] {
                 inputTokens?: unknown;
                 outputTokens?: unknown;
                 cachedInputTokens?: unknown;
+                costUsd?: unknown;
               };
             };
             if (typeof stats.durationMs === "number") durationMs = stats.durationMs;
@@ -136,6 +142,8 @@ function readChatRounds(chatId: string): RoundSnapshot[] {
                 u.outputTokens = stats.usage.outputTokens;
               if (typeof stats.usage.cachedInputTokens === "number")
                 u.cachedInputTokens = stats.usage.cachedInputTokens;
+              if (typeof stats.usage.costUsd === "number")
+                u.costUsd = stats.usage.costUsd;
               if (Object.keys(u).length > 0) usage = u;
             }
           } catch {

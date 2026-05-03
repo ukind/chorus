@@ -35,6 +35,7 @@ import { BriefHeading } from "./run-viewer/brief-heading";
 import { RoundView } from "./run-viewer/round-view";
 import type {
   ParticipantSnapshot,
+  ParticipantWarning,
   RoundSnapshot,
 } from "./run-viewer/types";
 import type { TemplatePhase as MockTemplatePhase } from "@/lib/mock-data";
@@ -150,6 +151,16 @@ export function LiveRunReal({
   // when the SSE event hasn't arrived yet.
   const [liveTails, setLiveTails] = useState<Record<string, string>>({});
 
+  // Warnings keyed by participant dir name (the same key the on-disk
+  // artifacts route returns). The runner emits cli_warning SSE events with
+  // payload.agent === participant identifier (e.g. "claude-code" for doer,
+  // "codex-cli-0" for reviewer). We accumulate per participant so multiple
+  // warnings from the same runner stack on the card. Cleared at session
+  // end when SSE closes.
+  const [participantWarnings, setParticipantWarnings] = useState<
+    Record<string, ParticipantWarning[]>
+  >({});
+
   const isTerminal = [
     "approved",
     "merged",
@@ -223,6 +234,33 @@ export function LiveRunReal({
           setActiveParticipants(new Set());
           // Don't clear liveTails — let the disk-poll update them with the
           // final answer instead of flashing empty.
+        }
+
+        if (e.type === "cli_warning" && agent && role) {
+          // Build the participant key in the same shape as the on-disk
+          // dir name so the renderer can attach warnings to the right
+          // card. doer → "doer-<agent>"; reviewer → already includes
+          // the index in agent (e.g. "codex-cli-0"). The runner emits
+          // agent="<name>-<idx>" for reviewers.
+          const key = role === "doer" ? `doer-${agent}` : `reviewer-${agent}`;
+          const kind = (e.payload.kind as string | undefined) ?? "warning";
+          const message =
+            (e.payload.message as string | undefined) ?? "(no detail)";
+          setParticipantWarnings((prev) => {
+            const next = { ...prev };
+            const existing = next[key] ?? [];
+            // Suppress duplicates (same kind + message). Repeated emissions
+            // from a retried runner shouldn't pile up identical banners.
+            if (
+              existing.some(
+                (w) => w.kind === kind && w.message === message,
+              )
+            ) {
+              return prev;
+            }
+            next[key] = [...existing, { kind, message, ts: e.ts ?? Date.now() }];
+            return next;
+          });
         }
 
         if (e.type === "participant_done") {
@@ -360,7 +398,13 @@ export function LiveRunReal({
           return idxFromName === slot.reviewerIdx;
         });
         if (real) {
-          enrichedParticipants.push({ ...real, model: slot.model });
+          enrichedParticipants.push({
+            ...real,
+            model: slot.model,
+            ...(participantWarnings[real.participant]
+              ? { warnings: participantWarnings[real.participant] }
+              : {}),
+          });
           seen.add(real.participant);
         } else {
           // Synthesise a pending placeholder so the user sees the slot
@@ -372,16 +416,26 @@ export function LiveRunReal({
             hasAnswer: false,
             model: slot.model,
             pending: true,
+            ...(participantWarnings[slotKey]
+              ? { warnings: participantWarnings[slotKey] }
+              : {}),
           });
         }
       }
       // Append any unexpected participants (shouldn't happen, defensive)
       for (const p of round.participants) {
-        if (!seen.has(p.participant)) enrichedParticipants.push(p);
+        if (!seen.has(p.participant)) {
+          enrichedParticipants.push({
+            ...p,
+            ...(participantWarnings[p.participant]
+              ? { warnings: participantWarnings[p.participant] }
+              : {}),
+          });
+        }
       }
       return { ...round, participants: enrichedParticipants };
     });
-  }, [rounds, template]);
+  }, [rounds, template, participantWarnings]);
 
   // Find the most recent round to show prominently. Older rounds collapse below.
   const latestRound = enrichedRounds[enrichedRounds.length - 1];

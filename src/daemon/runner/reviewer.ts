@@ -56,7 +56,12 @@ export async function runReviewerHeadless(args: {
   let finalText: string | undefined;
   let errored = false;
   let capturedUsage:
-    | { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number }
+    | {
+        inputTokens?: number;
+        outputTokens?: number;
+        cachedInputTokens?: number;
+        costUsd?: number;
+      }
     | undefined;
   // Captured from the first error event so we can write it to
   // answer.md when the subprocess dies before producing any content.

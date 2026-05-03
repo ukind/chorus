@@ -83,6 +83,7 @@ export async function runDoerHeadless(args: {
     inputTokens?: number;
     outputTokens?: number;
     cachedInputTokens?: number;
+    costUsd?: number;
   } | undefined;
   const startedAt = Date.now();
 

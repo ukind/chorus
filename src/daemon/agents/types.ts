@@ -206,6 +206,15 @@ export type AgentEvent =
         inputTokens?: number;
         outputTokens?: number;
         cachedInputTokens?: number;
+        /**
+         * Cost in USD reported natively by the CLI (opencode emits per-step
+         * `cost`, summed across step_finish events; other CLIs compute via
+         * voices.input_cost_per_mtok / output_cost_per_mtok in a follow-up).
+         * Persisted into the per-participant _stats.json sidecar so the
+         * cockpit's time/tokens chip can surface "0.02 USD" alongside the
+         * token count.
+         */
+        costUsd?: number;
       };
     }
   | { type: 'error'; kind: string; message: string };

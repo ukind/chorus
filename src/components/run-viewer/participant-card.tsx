@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { X } from "lucide-react";
+import { AlertTriangle, X } from "lucide-react";
 import { uiLineageDot, uiLineageLabel } from "@/lib/lineage-maps";
 import { LINEAGE_GRADIENT } from "./lineage-gradient";
 import { StateBadge } from "./state-badge";
@@ -77,7 +77,7 @@ export function ParticipantCard({
       }`}
     >
       <div className="flex items-center justify-between gap-2 border-b border-border bg-card/60 px-4 py-3">
-        <div className="flex min-w-0 items-center gap-2 text-sm leading-none">
+        <div className="flex min-w-0 items-center gap-2 text-xs leading-none">
           <span
             className={`h-2 w-2 shrink-0 rounded-full ${uiLineageDot(participant.lineage)} ${
               state === "working" ? "animate-pulse-soft" : ""
@@ -85,13 +85,13 @@ export function ParticipantCard({
           />
           <span className="font-medium capitalize text-foreground">{participant.role}</span>
           <span className="text-muted-foreground">·</span>
-          <span className="text-xs uppercase tracking-wider text-muted-foreground">
+          <span className="uppercase tracking-wider text-muted-foreground">
             {uiLineageLabel(participant.lineage)}
           </span>
           {(participant.modelUsed ?? participant.model) && (
             <>
               <span className="text-muted-foreground/60">·</span>
-              <span className="truncate font-mono text-xs text-muted-foreground">
+              <span className="truncate font-mono text-muted-foreground">
                 {participant.modelUsed ?? participant.model}
               </span>
             </>
@@ -152,6 +152,24 @@ export function ParticipantCard({
           <StateBadge state={state} />
         </div>
       </div>
+
+      {participant.warnings && participant.warnings.length > 0 && (
+        <div className="space-y-1 border-b border-amber-500/30 bg-amber-500/5 px-4 py-2 text-[11px] text-amber-200/90">
+          {participant.warnings.map((w, i) => (
+            <div key={i} className="flex items-start gap-1.5">
+              <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0 text-amber-400" />
+              <div className="min-w-0 flex-1">
+                <span className="font-medium uppercase tracking-wider text-[10px] text-amber-300">
+                  {w.kind}
+                </span>
+                <div className="mt-0.5 break-words font-mono text-[11px] leading-snug text-amber-100/85">
+                  {w.message}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="flex-1 px-4 py-3 font-mono text-xs leading-relaxed text-muted-foreground">
         {participant.findingsPreview && participant.findingsPreview.length > 0 ? (
@@ -224,6 +242,11 @@ export function ParticipantCard({
               {formatDuration(participant.durationMs)}
             </span>
           )}
+          {participant.usage?.costUsd !== undefined && (
+            <span title="USD cost reported by the CLI for this run.">
+              {formatCost(participant.usage.costUsd)}
+            </span>
+          )}
           {participant.usage && formatTokens(participant.usage) && (
             <span title={tokensTitle(participant.usage)}>
               {formatTokens(participant.usage)}
@@ -247,6 +270,19 @@ function formatDuration(ms: number): string {
   const m = Math.floor(s / 60);
   const r = Math.round(s - m * 60);
   return `${m}m${r.toString().padStart(2, "0")}s`;
+}
+
+/**
+ * Render USD cost as either `$0.022` (sub-dollar) or `$0.30` / `$2.45`.
+ * Sub-cent costs round to the nearest cent — opencode reports
+ * fractional cents (e.g. 0.000123) which clutter the chip; users care
+ * about totals, not micro-cost precision.
+ */
+function formatCost(usd: number): string {
+  if (usd <= 0) return "$0.00";
+  if (usd < 0.01) return "<$0.01";
+  if (usd < 1) return `$${usd.toFixed(3)}`;
+  return `$${usd.toFixed(2)}`;
 }
 
 function formatTokens(u: NonNullable<ParticipantSnapshot["usage"]>): string | null {

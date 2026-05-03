@@ -46,12 +46,34 @@ export interface ParticipantSnapshot {
    * Token usage reported by the upstream CLI's stream. Populated by shims
    * that surface usage in `message_done` (claude/anthropic today; others
    * fill in as parsers grow). Absent when the CLI didn't report it.
+   *
+   * `costUsd` is the dollar cost the CLI itself reports — opencode emits
+   * a per-step `cost` summed across step_finish events. CLIs that don't
+   * emit cost natively will get derived cost from voices.input_cost_per_mtok
+   * / output_cost_per_mtok in a follow-up.
    */
   usage?: {
     inputTokens?: number;
     outputTokens?: number;
     cachedInputTokens?: number;
+    costUsd?: number;
   };
+  /**
+   * Warnings emitted via cli_warning SSE events for this participant —
+   * persona id misconfigurations, transient CLI hiccups, etc. Threaded
+   * through from live-run-real.tsx state (not the disk sidecar — these
+   * are session-only signals the runner doesn't persist).
+   */
+  warnings?: ParticipantWarning[];
+}
+
+export interface ParticipantWarning {
+  /** Short identifier — `persona_missing`, `persona_lookup_failed`, etc. */
+  kind: string;
+  /** User-facing message the cockpit renders verbatim. */
+  message: string;
+  /** Wall-clock when the warning was received. */
+  ts: number;
 }
 
 export interface RoundSnapshot {

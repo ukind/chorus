@@ -226,12 +226,18 @@ interface OpencodeUsage {
   inputTokens?: number;
   outputTokens?: number;
   cachedInputTokens?: number;
+  costUsd?: number;
 }
 
 /**
- * Walk every line of opencode JSON-Lines stdout, sum tokens from every
- * `step_finish` event, return undefined when no step_finish carried any
- * usable counts. Exported for the inline test fixture.
+ * Walk every line of opencode JSON-Lines stdout, sum tokens + USD cost
+ * from every `step_finish` event, return undefined when no step_finish
+ * carried any usable counts. Exported for the inline test fixture.
+ *
+ * Cost summing rationale: opencode's step_finish carries a per-step
+ * `cost` (USD) computed against opencode-go's published per-token
+ * pricing. Multi-step sessions (tool calls) accrue cost per step, so
+ * summing across all step_finish events yields the total session cost.
  */
 function aggregateOpencodeUsage(fullStdout: string): OpencodeUsage | undefined {
   const acc: OpencodeUsage = {};
@@ -243,17 +249,26 @@ function aggregateOpencodeUsage(fullStdout: string): OpencodeUsage | undefined {
     const tokens = part?.tokens as
       | { input?: number; output?: number; cache?: { read?: number } }
       | undefined;
-    if (!tokens) continue;
-    if (typeof tokens.input === 'number') {
-      acc.inputTokens = (acc.inputTokens ?? 0) + tokens.input;
-      any = true;
+    if (tokens) {
+      if (typeof tokens.input === 'number') {
+        acc.inputTokens = (acc.inputTokens ?? 0) + tokens.input;
+        any = true;
+      }
+      if (typeof tokens.output === 'number') {
+        acc.outputTokens = (acc.outputTokens ?? 0) + tokens.output;
+        any = true;
+      }
+      if (typeof tokens.cache?.read === 'number') {
+        acc.cachedInputTokens = (acc.cachedInputTokens ?? 0) + tokens.cache.read;
+        any = true;
+      }
     }
-    if (typeof tokens.output === 'number') {
-      acc.outputTokens = (acc.outputTokens ?? 0) + tokens.output;
-      any = true;
-    }
-    if (typeof tokens.cache?.read === 'number') {
-      acc.cachedInputTokens = (acc.cachedInputTokens ?? 0) + tokens.cache.read;
+    // Cost tracks tokens — present on every step_finish opencode emits,
+    // independent of whether tokens.* fields were populated. Sum even
+    // when tokens were missing; a malformed-tokens-but-known-cost step
+    // still represents real spend.
+    if (typeof part?.cost === 'number') {
+      acc.costUsd = (acc.costUsd ?? 0) + (part.cost as number);
       any = true;
     }
   }

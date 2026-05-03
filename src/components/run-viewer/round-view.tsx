@@ -17,6 +17,7 @@ export function RoundView({
   liveTails,
   chatTerminal,
   reviewOnly,
+  chatId,
 }: {
   round: RoundSnapshot;
   isLatest?: boolean;
@@ -29,6 +30,10 @@ export function RoundView({
    *  out so the cockpit doesn't show "doer · pending" for the user's own
    *  artifact. */
   reviewOnly?: boolean;
+  /** Threaded down so each card's per-participant cancel button can
+   *  target the right chat. Optional for back-compat with any caller
+   *  that doesn't yet plumb it; the card silently hides the button. */
+  chatId?: string;
 }) {
   const visibleParticipants = reviewOnly
     ? round.participants.filter((p) => p.role !== "doer")
@@ -54,6 +59,7 @@ export function RoundView({
             isActive={activeFor(p)}
             liveTail={liveTails[`${p.role}:${p.lineage}`]}
             chatTerminal={chatTerminal}
+            chatId={chatId}
           />
         ))}
       </div>

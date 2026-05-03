@@ -4,6 +4,7 @@ import { chats, phaseEvents, templates } from '../lib/db';
 import { TmuxManagerImpl } from './tmux.js';
 import { startReaper } from './reaper.js';
 import { runChat } from './runner.js';
+import * as participantAborts from './participant-aborts.js';
 import { ErrorDetector } from './error-detector.js';
 import { TemplateSchema, isReviewOnlyPhase, templateRequiresArtifact } from '../lib/template-schema.js';
 import fs from 'fs';
@@ -413,6 +414,11 @@ function runWithMultiplex(args: RunWithMultiplexArgs): ActiveRun {
       await Promise.allSettled(Array.from(pendingWrites));
     }
     activeRuns.delete(chatId);
+    // Drop any per-participant abort controllers left over by aborted /
+    // crashed runners. They should already have released themselves via
+    // their `finally` blocks, but a stale entry would leak across chats
+    // if a runner exited abnormally.
+    participantAborts.cleanupChat(chatId);
   });
 
   const entry: ActiveRun = { promise, subscribers, abortController };
@@ -758,6 +764,48 @@ async function main() {
       }
 
       return successResponse(chat);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return errorResponse('db_error', message);
+    }
+  });
+
+  // Cancel a single participant (one reviewer or the doer) without
+  // collapsing the entire chat. Useful when one runner is stuck or the
+  // user wants to drop a low-value reviewer mid-flight.
+  //
+  // Path: POST /chats/:id/participants/:key/cancel
+  // Where `key` matches the format produced by participantAborts.participantKey:
+  //   `doer-<agentName>` or `reviewer-<agentName>-<idx>`
+  //
+  // Returns ok:true{aborted:bool}. aborted=false means the participant
+  // wasn't found in the registry (already finished, not yet started, or
+  // running on the legacy tmux transport which doesn't register).
+  fastify.post<{
+    Params: { id: string; key: string };
+    Reply: ApiResponse<{ aborted: boolean }>;
+  }>('/chats/:id/participants/:key/cancel', async (request) => {
+    try {
+      const id = request.params.id;
+      if (!isValidChatId(id)) {
+        return errorResponse('validation', 'invalid chat id');
+      }
+      const key = request.params.key;
+      // Strict key shape — both prefixes the registry uses. Reject
+      // unrecognised shapes so a malformed URL can't side-channel
+      // arbitrary registry inspection by guessing keys. The agent
+      // name MUST start with an alphanumeric (not `-`/`_`) so a key
+      // like `reviewer--0` (empty agent name) is rejected — caught
+      // in retroactive PR #24 review by gemini + opencode-deepseek.
+      if (!/^(doer-|reviewer-)[A-Za-z0-9][A-Za-z0-9_-]*(?:-\d+)?$/.test(key)) {
+        return errorResponse('validation', 'invalid participant key');
+      }
+      const existing = await chats.getBySlugOrId(id);
+      if (!existing) {
+        return errorResponse('not_found', `Chat ${id} not found`);
+      }
+      const aborted = participantAborts.abortParticipant(existing.id, key);
+      return successResponse({ aborted });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return errorResponse('db_error', message);

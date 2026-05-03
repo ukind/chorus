@@ -687,6 +687,7 @@ export function LiveRunReal({
               liveTails={liveTails}
               chatTerminal={isTerminal}
               reviewOnly={reviewOnly}
+              chatId={chatId}
             />
           )}
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { X } from "lucide-react";
 import { uiLineageDot, uiLineageLabel } from "@/lib/lineage-maps";
 import { LINEAGE_GRADIENT } from "./lineage-gradient";
 import { StateBadge } from "./state-badge";
@@ -21,6 +22,7 @@ export function ParticipantCard({
   isActive,
   liveTail,
   chatTerminal,
+  chatId,
 }: {
   participant: ParticipantSnapshot;
   isActive: boolean;
@@ -28,8 +30,13 @@ export function ParticipantCard({
   /** Chat itself reached a terminal state — distinguishes "errored (no
    *  output produced even though run finished)" from "still working". */
   chatTerminal: boolean;
+  /** When provided AND the card is in working state, render a per-card
+   *  cancel button. Routes to /chats/:id/participants/:key/cancel.
+   *  When omitted (older callers, terminal chats), the button is hidden. */
+  chatId?: string;
 }) {
   const [showFull, setShowFull] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
 
   // State precedence: pending (synthesised slot) → done (answer on disk) →
   // errored (chat terminal but no answer) → working (the implicit
@@ -90,7 +97,60 @@ export function ParticipantCard({
             </>
           )}
         </div>
-        <StateBadge state={state} />
+        <div className="flex shrink-0 items-center gap-1.5">
+          {state === "working" && chatId && (
+            <button
+              type="button"
+              disabled={cancelling}
+              onClick={async () => {
+                if (cancelling) return;
+                setCancelling(true);
+                try {
+                  const res = await fetch(
+                    `/api/daemon/chats/${chatId}/participants/${encodeURIComponent(participant.participant)}/cancel`,
+                    { method: "POST" },
+                  );
+                  if (!res.ok) {
+                    setCancelling(false);
+                    return;
+                  }
+                  const body = (await res.json()) as {
+                    ok: boolean;
+                    data?: { aborted?: boolean };
+                    error?: { message?: string };
+                  };
+                  if (!body.ok) {
+                    window.alert(
+                      `Couldn't cancel: ${body.error?.message ?? "unknown error"}`,
+                    );
+                    setCancelling(false);
+                    return;
+                  }
+                  // Leave `cancelling=true` until the SSE flips this
+                  // card's state away from working — avoids a re-click
+                  // before the runner actually exits. The chat-level
+                  // SSE handler will re-render with state==='errored'
+                  // (no output) once the abort propagates.
+                  //
+                  // Fallback: if SSE never fires (stalled stream, dead
+                  // chat, network drop) the button would otherwise be
+                  // disabled forever. Reset after 15s so the user can
+                  // retry. Flagged in retroactive PR #24 review by
+                  // gemini + opencode-deepseek.
+                  setTimeout(() => setCancelling(false), 15_000);
+                } catch {
+                  setCancelling(false);
+                }
+              }}
+              aria-label="Cancel this reviewer"
+              title="Cancel this reviewer (chat continues with others)"
+              className="grid h-6 w-6 shrink-0 place-items-center rounded-md border border-border bg-card/40 text-muted-foreground transition hover:border-destructive/40 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          )}
+          <StateBadge state={state} />
+        </div>
       </div>
 
       <div className="flex-1 px-4 py-3 font-mono text-xs leading-relaxed text-muted-foreground">

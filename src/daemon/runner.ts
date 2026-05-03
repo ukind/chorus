@@ -16,6 +16,7 @@ import { registry } from './agents/index.js';
 import { ErrorDetector } from './error-detector.js';
 import { getPermissions } from '../lib/settings/permissions.js';
 import { personas } from '../lib/db/index.js';
+import * as participantAborts from './participant-aborts.js';
 import { getTransport } from '../lib/settings/transport.js';
 import { recordHealth, kindToStatus, type CliLineage } from '../lib/cli-health.js';
 import { precheckLineage } from '../lib/cli-precheck.js';
@@ -592,18 +593,29 @@ async function runDoer(
   // — Claude can run headless while Gemini reviewer falls back to tmux.
   const transport = await getTransport();
   if (transport === 'headless' && shim.runHeadless) {
-    return runDoerHeadless({
-      shim,
+    // Register the doer for per-card cancel. Same combined-signal pattern
+    // as the reviewer path — chat-cancel still aborts everything.
+    const handle = participantAborts.register(
       chatId,
-      phase,
-      round,
-      agentName,
-      askContent: ask,
-      answerFile,
-      doerCwd,
+      participantAborts.participantKey('doer', agentName),
       abortSignal,
-      onEvent,
-    });
+    );
+    try {
+      return await runDoerHeadless({
+        shim,
+        chatId,
+        phase,
+        round,
+        agentName,
+        askContent: ask,
+        answerFile,
+        doerCwd,
+        abortSignal: handle.signal,
+        onEvent,
+      });
+    } finally {
+      handle.release();
+    }
   }
 
   // Acquire session — fresh per chat by default; reuses across rounds when
@@ -1001,21 +1013,33 @@ async function runReviewer(
   // run headless while a reviewer of a different lineage falls back to tmux.
   const transport = await getTransport();
   if (transport === 'headless' && shim.runHeadless) {
-    return runReviewerHeadless({
-      shim,
+    // Register this reviewer for per-card cancel. The combined signal
+    // fires when EITHER the chat-wide signal aborts OR the cockpit hits
+    // /chats/:id/participants/:key/cancel for this slot.
+    const handle = participantAborts.register(
       chatId,
-      phase,
-      round,
-      reviewerIdx,
-      candidateLineage: candidate.lineage,
-      candidateModel: candidate.models?.[0],
-      agentName,
-      askContent: ask,
-      answerFile,
-      reviewerDir,
+      participantAborts.participantKey('reviewer', agentName, reviewerIdx),
       abortSignal,
-      onEvent,
-    });
+    );
+    try {
+      return await runReviewerHeadless({
+        shim,
+        chatId,
+        phase,
+        round,
+        reviewerIdx,
+        candidateLineage: candidate.lineage,
+        candidateModel: candidate.models?.[0],
+        agentName,
+        askContent: ask,
+        answerFile,
+        reviewerDir,
+        abortSignal: handle.signal,
+        onEvent,
+      });
+    } finally {
+      handle.release();
+    }
   }
 
   // Reviewers don't share sessions across rounds — each round wants a fresh

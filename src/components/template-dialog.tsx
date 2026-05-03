@@ -235,7 +235,7 @@ interface DaemonPhaseYaml {
   /** Standard phases only — review_only is single-pass and has no iterate. */
   iterate?: {
     maxRounds: number;
-    onDisagreement: "continue" | "ask-user";
+    onDisagreement: "continue" | "escalate" | "accept-doer";
     shareSessionAcrossRounds: boolean;
     shareSessionAcrossPhases: boolean;
   };
@@ -359,7 +359,19 @@ function formToDaemonShape(f: FormState): DaemonTemplateYaml {
         inputs: { include: p.inputs.include, exclude: p.inputs.exclude },
         iterate: {
           maxRounds: p.iterate.max,
-          onDisagreement: p.iterate.onMax === "loopback" ? "continue" : "ask-user",
+          // Form's onMax → daemon's onDisagreement enum mapping:
+          //   loopback  → 'continue'    (keep iterating with revisions)
+          //   ask-user  → 'escalate'    (surface to user, halt loop)
+          //   fail      → 'accept-doer' (drop reviewer veto, accept doer)
+          // Pre-fix this emitted 'ask-user' which the schema rejects with
+          // "Expected 'continue' | 'escalate' | 'accept-doer'", causing
+          // every template saved from the wizard to fail validation.
+          onDisagreement:
+            p.iterate.onMax === "loopback"
+              ? "continue"
+              : p.iterate.onMax === "fail"
+                ? "accept-doer"
+                : "escalate",
           shareSessionAcrossRounds: true,
           shareSessionAcrossPhases: false,
         },
@@ -577,7 +589,15 @@ function parseYamlToForm(yamlText: string, existingId: string): ParseResult {
       },
       iterate: {
         max: p.iterate?.maxRounds ?? 3,
-        onMax: p.iterate?.onDisagreement === "continue" ? "loopback" : "ask-user",
+        // Inverse of the formToDaemonShape mapping above. Keep the two in
+        // sync — daemon enum 'continue'/'escalate'/'accept-doer' →
+        // form 'loopback'/'ask-user'/'fail'.
+        onMax:
+          p.iterate?.onDisagreement === "continue"
+            ? "loopback"
+            : p.iterate?.onDisagreement === "accept-doer"
+              ? "fail"
+              : "ask-user",
       },
       blindSpots: [],
       execution: "parallel",

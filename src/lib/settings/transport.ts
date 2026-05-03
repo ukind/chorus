@@ -24,6 +24,7 @@
 import { settings } from '../db';
 import { z } from 'zod';
 import { platform } from 'os';
+import { spawnSync } from 'child_process';
 
 export type Transport = 'headless' | 'tmux';
 
@@ -32,13 +33,24 @@ const TransportSchema = z.enum(['headless', 'tmux']);
 const TRANSPORT_KEY = 'transport';
 
 /**
- * tmux is a Unix-only userland tool — Windows hosts have no equivalent and
- * the spawn would fail with "tmux: not found". Headless transport works
- * everywhere, so we silently force-downgrade tmux→headless on Windows
- * regardless of stored setting or env override. Documented for the cockpit
- * settings page so the toggle can grey out when this returns true.
+ * tmux availability check.
+ *
+ *   1. Windows has no tmux equivalent — false unconditionally.
+ *   2. On Unix, probe `tmux -V` once at module load. If the binary isn't on
+ *      PATH, return false so `setTransport('tmux')` can refuse with an
+ *      actionable install hint instead of silently letting the user opt into
+ *      a mode whose first chat hangs.
+ *
+ * Cached at module load — tmux is rarely installed/uninstalled mid-process.
+ * Restart the daemon after `apt install tmux` to pick up the new state.
  */
-export const TMUX_AVAILABLE: boolean = platform() !== 'win32';
+function detectTmuxBinary(): boolean {
+  if (platform() === 'win32') return false;
+  const result = spawnSync('tmux', ['-V'], { stdio: 'ignore' });
+  return result.status === 0;
+}
+
+export const TMUX_AVAILABLE: boolean = detectTmuxBinary();
 
 /**
  * v0.5 default is 'headless' — the migration target. Existing users who had
@@ -82,8 +94,13 @@ export async function getTransport(): Promise<Transport> {
 export async function setTransport(value: Transport): Promise<Transport> {
   TransportSchema.parse(value);
   if (value === 'tmux' && !TMUX_AVAILABLE) {
+    if (platform() === 'win32') {
+      throw new Error(
+        'tmux transport is not available on Windows — headless transport works for everything tmux does plus more.',
+      );
+    }
     throw new Error(
-      'tmux transport is not available on Windows — headless transport works for everything tmux does plus more.',
+      'tmux is not installed on this host. Install it first (macOS: `brew install tmux` · Ubuntu/Debian: `sudo apt install tmux` · Fedora/RHEL: `sudo dnf install tmux`), then restart the chorus daemon and try again.',
     );
   }
   await settings.set(TRANSPORT_KEY, value);
@@ -102,6 +119,6 @@ export const TRANSPORT_DESCRIPTIONS: Record<Transport, { label: string; descript
   tmux: {
     label: 'Show live terminal sessions',
     description:
-      'Each CLI runs in a persistent tmux session you can attach to (`tmux attach -t <name>`) for visual debugging. Uses more RAM but lets you see exactly what each agent is doing step-by-step.',
+      'Each CLI runs in a persistent tmux session you can attach to (`tmux attach -t <name>`) to watch step-by-step or take over mid-run. Uses more RAM. Requires tmux installed on the host (brew/apt/dnf).',
   },
 };

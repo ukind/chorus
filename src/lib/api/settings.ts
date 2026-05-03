@@ -68,6 +68,10 @@ export type Transport = "headless" | "tmux";
 export interface TransportSettings {
   transport: Transport;
   descriptions?: Record<Transport, { label: string; description: string }>;
+  /** False on Windows OR when the tmux binary isn't on PATH — cockpit
+   *  greys out the Tmux card and shows an install hint instead of letting
+   *  the user opt into a mode whose first chat would hang. */
+  tmuxAvailable?: boolean;
 }
 
 export async function getTransport(): Promise<TransportSettings> {

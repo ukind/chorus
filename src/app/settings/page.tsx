@@ -906,6 +906,7 @@ function TransportSection() {
   const [descriptions, setDescriptions] = useState<
     Record<Transport, { label: string; description: string }> | undefined
   >(undefined);
+  const [tmuxAvailable, setTmuxAvailable] = useState<boolean>(true);
   const [pending, setPending] = useState<Transport | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -916,6 +917,7 @@ function TransportSection() {
         if (cancelled) return;
         setCurrent(res.transport);
         setDescriptions(res.descriptions);
+        setTmuxAvailable(res.tmuxAvailable !== false);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -956,27 +958,40 @@ function TransportSection() {
           const active = current === t;
           const isPending = pending === t;
           const meta = descriptions?.[t];
+          // Disable the Tmux card on hosts where the binary isn't reachable
+          // (Windows or no install). Greyed-out state plus an inline install
+          // hint beats a 400 on click.
+          const unavailable = t === "tmux" && !tmuxAvailable;
           return (
             <button
               key={t}
               type="button"
               onClick={() => onPick(t)}
-              disabled={pending !== null || current === null}
+              disabled={pending !== null || current === null || unavailable}
+              title={
+                unavailable
+                  ? "tmux is not installed on this host. Install it (brew/apt/dnf) then restart the daemon."
+                  : undefined
+              }
               className={`flex flex-col gap-1 rounded-lg border p-3 text-left transition ${
                 active
                   ? "border-primary/50 bg-primary/10"
                   : "border-border bg-card hover:border-muted-foreground/30"
-              } ${pending !== null ? "opacity-60" : ""}`}
+              } ${pending !== null || unavailable ? "opacity-60 cursor-not-allowed" : ""}`}
             >
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium">
                   {meta?.label ?? (t === "headless" ? "Headless" : "Tmux")}
                 </span>
-                {active && (
+                {active ? (
                   <span className="rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-primary">
                     {isPending ? "saving…" : "active"}
                   </span>
-                )}
+                ) : unavailable ? (
+                  <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                    not installed
+                  </span>
+                ) : null}
               </div>
               <p className="text-xs leading-relaxed text-muted-foreground">
                 {meta?.description ??
@@ -984,6 +999,11 @@ function TransportSection() {
                     ? "Subprocess per call. Lower RAM, faster cold start, no permission dialogs."
                     : "Persistent terminal sessions you can attach to for visual debug.")}
               </p>
+              {unavailable && (
+                <p className="mt-1 text-[10px] leading-relaxed text-amber-300/80">
+                  Install: macOS <code>brew install tmux</code> · Ubuntu <code>apt install tmux</code> · Fedora <code>dnf install tmux</code>. Restart the daemon afterwards.
+                </p>
+              )}
             </button>
           );
         })}

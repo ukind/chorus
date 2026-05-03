@@ -94,12 +94,15 @@ export function registerSettingsRoutes(fastify: FastifyInstance): void {
     '/settings/transport',
     async () => {
       try {
-        const { getTransport, TRANSPORT_DESCRIPTIONS } = await import(
+        const { getTransport, TRANSPORT_DESCRIPTIONS, TMUX_AVAILABLE } = await import(
           '../../lib/settings/transport.js'
         );
         return successResponse({
           transport: await getTransport(),
           descriptions: TRANSPORT_DESCRIPTIONS,
+          // Lets the cockpit grey out the Tmux card on hosts without tmux —
+          // the user gets the install hint up front instead of a 400 on click.
+          tmuxAvailable: TMUX_AVAILABLE,
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';

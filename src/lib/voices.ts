@@ -67,14 +67,36 @@ export function classifyOpencodeModel(qualified: string): {
 } {
   // Strip gateway prefix; everything after the first slash is the model name.
   const slash = qualified.indexOf('/');
+  const gateway = slash >= 0 ? qualified.slice(0, slash) : '';
   const tail = slash >= 0 ? qualified.slice(slash + 1) : qualified;
   const t = tail.toLowerCase();
 
+  // opencode-go gateway: every voice here runs through the `opencode`
+  // binary (no separate kimi/anthropic/openai CLI invocation). Lineage is
+  // 'opencode' regardless of model family — otherwise template editor
+  // renders impossible combos like (lineage=Kimi, model=opencode-go/kimi-k2.6),
+  // implying a kimi-CLI subscription that may not exist. Model family
+  // moves into `vendor_family` so diversity scoring and cost UX still
+  // see "moonshot" / "deepseek" / "anthropic" / etc.
+  if (gateway === 'opencode-go') {
+    if (t.includes('kimi')) return { lineage: 'opencode', vendor_family: 'moonshot' };
+    if (t.includes('claude')) return { lineage: 'opencode', vendor_family: 'anthropic' };
+    if (t.includes('gpt') || /(?:^|[^a-z])o[1-9](?:$|[^a-z0-9])/.test(t)) {
+      return { lineage: 'opencode', vendor_family: 'openai' };
+    }
+    if (t.includes('gemini')) return { lineage: 'opencode', vendor_family: 'google' };
+    if (t.includes('deepseek')) return { lineage: 'opencode', vendor_family: 'deepseek' };
+    if (t.includes('llama') || t.includes('meta')) return { lineage: 'opencode', vendor_family: 'meta' };
+    if (t.includes('mistral') || t.includes('mixtral')) return { lineage: 'opencode', vendor_family: 'mistral' };
+    if (t.includes('grok') || t.includes('xai')) return { lineage: 'opencode', vendor_family: 'xai' };
+    return { lineage: 'opencode', vendor_family: null };
+  }
+
+  // Native lineage matching (OpenRouter `anthropic/...`, `openai/...`,
+  // `google/...`, `moonshotai/...`, etc.) — the qualified prefix doesn't
+  // route through opencode binary, so lineage tracks the model family.
   if (t.includes('kimi')) return { lineage: 'moonshot', vendor_family: null };
   if (t.includes('claude')) return { lineage: 'anthropic', vendor_family: null };
-  // OpenAI naming includes both `gpt-*` (chat models) and `o1*`/`o3*`/`o4*`
-  // (reasoning models — round 1 gem-2 MED). Match the reasoning prefix at
-  // a word boundary so `gpt-o-something` isn't false-matched.
   if (t.includes('gpt') || /(?:^|[^a-z])o[1-9](?:$|[^a-z0-9])/.test(t)) {
     return { lineage: 'openai', vendor_family: null };
   }

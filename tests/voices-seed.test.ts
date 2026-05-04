@@ -42,8 +42,22 @@ afterEach(async () => {
 describe('classifyOpencodeModel', () => {
   const { classifyOpencodeModel } = _internals;
 
-  it('maps kimi → moonshot lineage', () => {
+  it('maps opencode-go/kimi → opencode lineage with moonshot vendor_family', () => {
+    // opencode-go gateway always routes through the opencode binary, so
+    // lineage = 'opencode' regardless of underlying model family. Model
+    // family preserved on vendor_family. Avoids the impossible-template
+    // combo (lineage=Kimi, model=opencode-go/kimi-k2.6) that implied a
+    // standalone kimi-CLI subscription users may not have.
     expect(classifyOpencodeModel('opencode-go/kimi-k2.6')).toEqual({
+      lineage: 'opencode',
+      vendor_family: 'moonshot',
+    });
+  });
+
+  it('maps non-gateway moonshotai/kimi → moonshot lineage', () => {
+    // OpenRouter-style native prefix isn't routed through opencode, so
+    // lineage tracks model family.
+    expect(classifyOpencodeModel('moonshotai/kimi-k2')).toEqual({
       lineage: 'moonshot',
       vendor_family: null,
     });
@@ -83,9 +97,17 @@ describe('classifyOpencodeModel', () => {
     expect(classifyOpencodeModel('opencode-go/grok-4').vendor_family).toBe('xai');
   });
 
-  it('maps OpenAI reasoning models o1/o3/o4 → openai (round 1 gem-2 MED)', () => {
+  it('maps OpenAI reasoning models o1/o3/o4 routed via opencode-go → opencode lineage with openai vendor_family', () => {
+    // opencode-go gateway ⇒ opencode binary ⇒ lineage=opencode. Model
+    // family preserved on vendor_family.
+    expect(classifyOpencodeModel('opencode-go/o3-mini')).toEqual({
+      lineage: 'opencode',
+      vendor_family: 'openai',
+    });
+    // Other gateways (opencode, opencode-zen) still classify by model family
+    // — they aren't opencode-binary-routed. This branch is OpenRouter-style
+    // native-prefix matching.
     expect(classifyOpencodeModel('opencode/o1-preview').lineage).toBe('openai');
-    expect(classifyOpencodeModel('opencode-go/o3-mini').lineage).toBe('openai');
     expect(classifyOpencodeModel('opencode-zen/o4').lineage).toBe('openai');
   });
 

@@ -36,10 +36,14 @@ phases:
         - lineage: anthropic
           models:
             - claude-opus-4-7
-        # opencode-go transports — kimi (moonshot lineage) routed via the
-        # kimi shim's opencode-go path, deepseek via the opencode shim.
-        # Adds two more independent voices on top of the cli-native trio.
-        - lineage: moonshot
+        # opencode-go transports — both run through the opencode binary
+        # (lineage=opencode). Different model families (Moonshot's Kimi
+        # vs DeepSeek) carried on the voice's vendor_family for diversity
+        # scoring, but both are listed under the opencode lineage because
+        # that's the binary that actually runs them. Listing kimi as
+        # `lineage: moonshot` would imply the standalone kimi-CLI
+        # subscription — an impossible combo for users without it.
+        - lineage: opencode
           models:
             - opencode-go/kimi-k2.6
         - lineage: opencode

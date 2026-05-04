@@ -6,6 +6,24 @@ import { uiLineageDot, uiLineageLabel } from "@/lib/lineage-maps";
 import { LINEAGE_GRADIENT } from "./lineage-gradient";
 import { StateBadge } from "./state-badge";
 import type { FallbackSwap, ParticipantSnapshot, ParticipantState } from "./types";
+import type { ReviewerLineage } from "@/lib/types";
+
+/**
+ * Display lineage = what to colour/label the card by.
+ *
+ * The slot's nominal lineage (e.g. "kimi") drives diversity scoring on the
+ * daemon side. But moonshot has dual transports — standalone `kimi` CLI
+ * vs `opencode -m opencode-go/kimi-k2.6`. Users without a Moonshot sub
+ * route everything through opencode, so badging the card "KIMI" is
+ * actively misleading: it implies a binary they don't have. When the
+ * runtime sidecar tells us the binary was `opencode-cli`, badge the card
+ * as opencode. The model id (`opencode-go/kimi-k2.6` vs
+ * `opencode-go/deepseek-v4-pro`) still distinguishes voices visually.
+ */
+function displayLineage(p: ParticipantSnapshot): ReviewerLineage {
+  if (p.binaryUsed === "opencode-cli") return "opencode";
+  return p.lineage;
+}
 
 /**
  * One reviewer/doer card in the run grid.
@@ -83,10 +101,12 @@ export function ParticipantCard({
           ? "errored"
           : "working";
 
+  const ui = displayLineage(participant);
+
   return (
     <div
       className={`flex min-h-[300px] flex-col overflow-hidden rounded-lg border transition-[opacity,border-color,box-shadow] duration-300 ${
-        LINEAGE_GRADIENT[participant.lineage] ?? "bg-card"
+        LINEAGE_GRADIENT[ui] ?? "bg-card"
       } ${
         state === "done"
           ? "border-emerald-500/30"
@@ -102,14 +122,14 @@ export function ParticipantCard({
       <div className="flex items-center justify-between gap-2 border-b border-border bg-card/60 px-4 py-3">
         <div className="flex min-w-0 items-center gap-2 text-xs leading-none">
           <span
-            className={`h-2 w-2 shrink-0 rounded-full ${uiLineageDot(participant.lineage)} ${
+            className={`h-2 w-2 shrink-0 rounded-full ${uiLineageDot(ui)} ${
               state === "working" ? "animate-pulse-soft" : ""
             }`}
           />
           <span className="font-medium capitalize text-foreground">{participant.role}</span>
           <span className="text-muted-foreground">·</span>
           <span className="uppercase tracking-wider text-muted-foreground">
-            {uiLineageLabel(participant.lineage)}
+            {uiLineageLabel(ui)}
           </span>
           {(participant.modelUsed ?? participant.model) && (
             <>

@@ -178,6 +178,9 @@ export const kimiShim: AgentShim = {
         cwd: opts.cwd,
         stdinPayload: opts.promptText,
         parseLine: parseKimi,
+        // cli tag is the binary that actually ran — error messages quote
+        // it as "{cli} exited N", so misattributing failures to the wrong
+        // binary sends the user looking at the wrong PATH/auth/install.
         cli: 'kimi',
         timeoutMs: opts.timeoutMs,
         abortSignal: opts.abortSignal,
@@ -217,7 +220,11 @@ export const kimiShim: AgentShim = {
       cwd: opts.cwd,
       parseLine: parseOpencode,
       onExit: (fullStdout) => parseOpencodeExit(fullStdout),
-      cli: 'kimi',
+      // Tag the failure as 'opencode' — that's the binary that runs.
+      // The previous 'kimi' tag emitted "kimi exited 127: opencode:
+      // command not found" which sent the user hunting for a kimi-CLI
+      // PATH issue when the actual missing binary is opencode.
+      cli: 'opencode',
       timeoutMs: opts.timeoutMs,
       abortSignal: opts.abortSignal,
       heartbeat: true,

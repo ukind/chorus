@@ -13,9 +13,9 @@ import {
   deriveReviewOnlyTitle,
   estimateCost,
   type Attachment,
-} from "./helpers.js";
-import { Picker } from "./picker.js";
-import { PromptCard } from "./prompt-card.js";
+} from "./helpers";
+import { Picker } from "./picker";
+import { PromptCard } from "./prompt-card";
 
 export default function NewChatPage() {
   return (

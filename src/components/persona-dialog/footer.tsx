@@ -2,7 +2,7 @@
 
 import { AlertTriangle, CheckCircle2, Loader2, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { ValidationIssue } from "./helpers.js";
+import type { ValidationIssue } from "./helpers";
 
 interface FooterProps {
   saveError: string | null;

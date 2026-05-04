@@ -10,8 +10,8 @@ import type { OpencodeModelsResult } from "@/lib/api/orchestrators";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { CLIS, manualBinaryName } from "./helpers.js";
-import { OpencodeModelPicker } from "./opencode-model-picker.js";
+import { CLIS, manualBinaryName } from "./helpers";
+import { OpencodeModelPicker } from "./opencode-model-picker";
 
 interface CliSectionProps {
   selectedClis: Set<string>;

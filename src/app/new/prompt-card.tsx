@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import type { BillingMode } from "@/lib/api/settings";
 import type { Template } from "@/lib/types";
-import type { CostEstimate } from "./helpers.js";
+import type { CostEstimate } from "./helpers";
 
 interface PromptCardProps {
   template: Template;

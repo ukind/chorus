@@ -5,7 +5,7 @@ import type {
   ParticipantWarning,
   RoundSnapshot,
 } from "../run-viewer/types.js";
-import { AGENT_LABEL, TEMPLATE_TO_UI_LINEAGE } from "./helpers.js";
+import { AGENT_LABEL, TEMPLATE_TO_UI_LINEAGE } from "./helpers";
 
 interface Slot {
   role: "doer" | "reviewer";

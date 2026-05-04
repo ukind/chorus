@@ -2,7 +2,7 @@
 
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { API_KEYS } from "./helpers.js";
+import { API_KEYS } from "./helpers";
 
 interface ApiKeysSectionProps {
   apiKeys: Record<string, string>;

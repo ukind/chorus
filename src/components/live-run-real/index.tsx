@@ -25,16 +25,16 @@ import type {
   ParticipantWarning,
   RoundSnapshot,
 } from "../run-viewer/types";
-import { enrichRounds } from "./enrich-rounds.js";
-import { HeaderActions } from "./header-actions.js";
+import { enrichRounds } from "./enrich-rounds";
+import { HeaderActions } from "./header-actions";
 import {
   deriveStatusMeta,
   participantKey,
   STATUS_DOT_COLOR,
   TERMINAL_STATUSES,
   type SSEEvent,
-} from "./helpers.js";
-import { PhaseProgress } from "./phase-progress.js";
+} from "./helpers";
+import { PhaseProgress } from "./phase-progress";
 
 interface Props {
   chatId: string;

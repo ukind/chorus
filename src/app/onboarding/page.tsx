@@ -16,10 +16,10 @@ import {
   listOpencodeModels,
   type OpencodeModelsResult,
 } from "@/lib/api/orchestrators";
-import { ApiKeysSection } from "./api-keys-section.js";
-import { CliSection } from "./cli-section.js";
-import { PermissionsSection } from "./permissions-section.js";
-import { describeError, submitOnboarding } from "./submit.js";
+import { ApiKeysSection } from "./api-keys-section";
+import { CliSection } from "./cli-section";
+import { PermissionsSection } from "./permissions-section";
+import { describeError, submitOnboarding } from "./submit";
 
 export default function OnboardingPage() {
   const router = useRouter();

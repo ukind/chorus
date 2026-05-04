@@ -7,7 +7,7 @@ import {
   LINEAGE_OPTIONS,
   type FormState,
   type ValidationIssue,
-} from "./helpers.js";
+} from "./helpers";
 
 interface FormBodyProps {
   form: FormState;

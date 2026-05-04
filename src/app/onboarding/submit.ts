@@ -8,7 +8,7 @@ import {
   updatePermissions,
   type SandboxProfile,
 } from "@/lib/api/settings";
-import { CLIS, classifyOpencodeClient } from "./helpers.js";
+import { CLIS, classifyOpencodeClient } from "./helpers";
 
 export interface OnboardingSubmitArgs {
   selectedClis: Set<string>;

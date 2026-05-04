@@ -26,9 +26,9 @@ import {
 } from "@/components/ui/dialog";
 import { DaemonError, deletePersona, savePersona } from "@/lib/api";
 import type { Persona } from "@/lib/api/personas";
-import { FormBody } from "./form-body.js";
-import { Footer } from "./footer.js";
-import { DEFAULT_FORM, slugify, validate, type FormState } from "./helpers.js";
+import { FormBody } from "./form-body";
+import { Footer } from "./footer";
+import { DEFAULT_FORM, slugify, validate, type FormState } from "./helpers";
 
 export interface PersonaDialogProps {
   /** When set, dialog opens in EDIT mode populated from this persona.

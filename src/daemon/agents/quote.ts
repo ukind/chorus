@@ -5,7 +5,7 @@
 
 const SHELL_METACHARACTERS = /[$\`;|&<>()\\"']/;
 
-export class InvalidValueError extends Error {
+class InvalidValueError extends Error {
   constructor(field: string, value: string) {
     super(
       `Invalid ${field}: contains shell metacharacters. ` +
@@ -42,17 +42,5 @@ export function validateValue(field: string, value: string | undefined): void {
   }
   if (SHELL_METACHARACTERS.test(value)) {
     throw new InvalidValueError(field, value);
-  }
-}
-
-/**
- * Validate multiple name-like values (accountId, model, etc.) upfront.
- * Throws InvalidValueError on first match.
- */
-export function validateNames(
-  values: Record<string, string | undefined>
-): void {
-  for (const [field, value] of Object.entries(values)) {
-    validateValue(field, value);
   }
 }

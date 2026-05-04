@@ -1,7 +1,12 @@
 "use client";
 
+import { FallbackSwapCard } from "./fallback-swap-card";
 import { ParticipantCard } from "./participant-card";
-import type { ParticipantSnapshot, RoundSnapshot } from "./types";
+import type {
+  FallbackSwap,
+  ParticipantSnapshot,
+  RoundSnapshot,
+} from "./types";
 
 /**
  * Single round of a chat — the doer card plus its reviewer cards.
@@ -18,6 +23,7 @@ export function RoundView({
   chatTerminal,
   reviewOnly,
   chatId,
+  swaps,
 }: {
   round: RoundSnapshot;
   isLatest?: boolean;
@@ -34,10 +40,14 @@ export function RoundView({
    *  target the right chat. Optional for back-compat with any caller
    *  that doesn't yet plumb it; the card silently hides the button. */
   chatId?: string;
+  /** Fallback swap events for this round — rendered as their own cards
+   *  alongside the participant cards. */
+  swaps?: FallbackSwap[];
 }) {
   const visibleParticipants = reviewOnly
     ? round.participants.filter((p) => p.role !== "doer")
     : round.participants;
+  const roundSwaps = (swaps ?? []).filter((s) => s.round === round.round);
 
   return (
     <section>
@@ -67,6 +77,12 @@ export function RoundView({
             chatTerminal={chatTerminal}
             chatId={chatId}
             reviewOnly={reviewOnly}
+          />
+        ))}
+        {roundSwaps.map((swap) => (
+          <FallbackSwapCard
+            key={`${swap.round}-${swap.agent}-${swap.fromLineage}-${swap.fromModel}`}
+            swap={swap}
           />
         ))}
       </div>

@@ -278,10 +278,17 @@ export function detectAllClis(): CliDetection[] {
  * Validate a user-supplied path for a given CLI. Used by the
  * "Set path manually" fallback when auto-detect misses.
  *
- * Surfaces the reason when validation fails so the UI can show it
- * inline (e.g. "no file at that path", "exit 127", "doesn't look like
- * the gemini CLI"). Caller treats `found: false` + `reason` as a
- * definite "this path is wrong" rather than a transient probe failure.
+ * Layered checks (any failure returns found=false + a reason):
+ *   1. Basename matches the expected binary name. Catches the common
+ *      paste-the-wrong-tool mistake — e.g. `/usr/bin/npm` for gemini-cli
+ *      passes the bare-version regex but its basename is `npm`, not
+ *      `gemini`. Both round-1 reviewers (claude + gemini) flagged this
+ *      gap when smoke-testing the previous version.
+ *   2. File exists.
+ *   3. `--version` exits 0 with output that matches the CLI's signature.
+ *
+ * Auto-detect doesn't need step 1 — pathLookup/fallback already bound
+ * the search to the expected binary name.
  */
 export function validateCliPath(
   cli: DetectableCli,
@@ -289,6 +296,19 @@ export function validateCliPath(
 ): CliDetection & { reason?: string } {
   const trimmed = customPath.trim();
   if (!trimmed) return { id: cli, found: false, reason: 'path is empty' };
+  // Basename gate — strip extension on Windows so claude.cmd / claude.exe
+  // both match `claude`.
+  const expectedBin = BINARY_NAME[cli];
+  const actualBase = isWindows
+    ? path.basename(trimmed).replace(/\.(cmd|exe)$/i, '')
+    : path.basename(trimmed);
+  if (actualBase.toLowerCase() !== expectedBin.toLowerCase()) {
+    return {
+      id: cli,
+      found: false,
+      reason: `that file is named "${actualBase}", but the ${cli} binary should be "${expectedBin}". Pasted the wrong path?`,
+    };
+  }
   if (!existsSync(trimmed))
     return { id: cli, found: false, reason: `no file at ${trimmed}` };
   const v = verifyRunnable(cli, trimmed);

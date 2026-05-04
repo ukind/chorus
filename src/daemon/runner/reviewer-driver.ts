@@ -15,6 +15,7 @@ import { buildReviewerAsk } from './prompt-builder.js';
 import { runReviewerHeadless } from './reviewer.js';
 import { runWithChainFallback, runWithModelFallback } from './run-with-fallback.js';
 import { sanitizeName } from './sanitize-name.js';
+import { appendSwapSidecar } from './swap-sidecar.js';
 import { buildSlotFallbackChain } from './template-fallback.js';
 import type { Lineage } from '../agents/types.js';
 import type { RunnerEvent } from './types.js';
@@ -291,6 +292,10 @@ async function runReviewer(
         },
         (from, to, fromIdx) => {
           const sameLineage = from.lineage === to.lineage;
+          const reason = sameLineage ? 'model_fallback' : 'lineage_fallback';
+          const message = sameLineage
+            ? `Reviewer model "${from.model ?? '(default)'}" produced no answer; retrying with "${to.model ?? '(default)'}".`
+            : `Reviewer ${from.lineage}/${from.model ?? '(default)'} failed; switching to ${to.lineage}/${to.model ?? '(default)'} (cross-lineage fallback).`;
           onEvent({
             chatId,
             type: 'cli_warning',
@@ -299,16 +304,32 @@ async function runReviewer(
               round,
               role: 'reviewer',
               agent: `${agentName}-${reviewerIdx}`,
-              reason: sameLineage ? 'model_fallback' : 'lineage_fallback',
+              reason,
               fromLineage: from.lineage,
               toLineage: to.lineage,
               fromModel: from.model ?? '(default)',
               toModel: to.model ?? '(default)',
               fallbackIdx: fromIdx,
-              message: sameLineage
-                ? `Reviewer model "${from.model ?? '(default)'}" produced no answer; retrying with "${to.model ?? '(default)'}".`
-                : `Reviewer ${from.lineage}/${from.model ?? '(default)'} failed; switching to ${to.lineage}/${to.model ?? '(default)'} (cross-lineage fallback).`,
+              message,
             },
+            ts: Date.now(),
+          });
+          // Persist a sidecar so swap cards survive page reloads — the
+          // SSE stream shuts off for terminal chats, and phase_events
+          // packs warnings as opaque text. Mirrors the _stats.json /
+          // _meta.json pattern: append-only JSON array, read by the
+          // run-artifacts route at the next refresh tick.
+          appendSwapSidecar(reviewerDir, {
+            round,
+            phaseId: phase.id,
+            role: 'reviewer',
+            agent: `${agentName}-${reviewerIdx}`,
+            reason,
+            fromLineage: from.lineage,
+            toLineage: to.lineage,
+            fromModel: from.model ?? '(default)',
+            toModel: to.model ?? '(default)',
+            fallbackIdx: fromIdx,
             ts: Date.now(),
           });
         },

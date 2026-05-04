@@ -28,6 +28,20 @@ interface RoundSnapshot {
   participants: ParticipantSnapshot[];
 }
 
+interface SwapEntry {
+  round: number;
+  phaseId: string;
+  role: "doer" | "reviewer";
+  agent: string;
+  reason: "lineage_fallback" | "model_fallback";
+  fromLineage: string;
+  toLineage: string;
+  fromModel: string;
+  toModel: string;
+  fallbackIdx: number;
+  ts: number;
+}
+
 const AGENT_TO_LINEAGE: Record<string, string> = {
   "claude-code": "claude",
   "codex-cli": "codex",
@@ -35,6 +49,47 @@ const AGENT_TO_LINEAGE: Record<string, string> = {
   "opencode-cli": "opencode",
   "kimi-cli": "kimi",
 };
+
+/**
+ * Walks every participant dir under a chat and aggregates the
+ * `_swaps.json` sidecars into a flat array. Mirrors how _stats.json
+ * is consumed: the run page renders one swap card per entry. Empty
+ * array when no swaps fired.
+ */
+function readChatSwaps(chatId: string): SwapEntry[] {
+  const chatDir = path.join(os.homedir(), ".chorus", "chats", chatId);
+  if (!fs.existsSync(chatDir)) return [];
+  const out: SwapEntry[] = [];
+  for (const round of fs
+    .readdirSync(chatDir, { withFileTypes: true })
+    .filter((d) => d.isDirectory() && d.name.startsWith("round-"))) {
+    const roundDir = path.join(chatDir, round.name);
+    for (const part of fs.readdirSync(roundDir, { withFileTypes: true })) {
+      if (!part.isDirectory()) continue;
+      const swapPath = path.join(roundDir, part.name, "_swaps.json");
+      if (!fs.existsSync(swapPath)) continue;
+      try {
+        const parsed = JSON.parse(fs.readFileSync(swapPath, "utf-8"));
+        if (Array.isArray(parsed)) {
+          for (const entry of parsed) {
+            // Defensive shape check — sidecar comes from disk, treat as untrusted.
+            if (
+              entry &&
+              typeof entry.round === "number" &&
+              typeof entry.fromLineage === "string" &&
+              typeof entry.toLineage === "string"
+            ) {
+              out.push(entry as SwapEntry);
+            }
+          }
+        }
+      } catch {
+        /* malformed sidecar — skip */
+      }
+    }
+  }
+  return out;
+}
 
 function readChatRounds(chatId: string): RoundSnapshot[] {
   const chatDir = path.join(os.homedir(), ".chorus", "chats", chatId);
@@ -182,5 +237,6 @@ export async function GET(
     return Response.json({ rounds: [] }, { status: 400 });
   }
   const rounds = readChatRounds(chatId);
-  return Response.json({ rounds });
+  const swaps = readChatSwaps(chatId);
+  return Response.json({ rounds, swaps });
 }

@@ -50,9 +50,12 @@ describe('buildSlotFallbackChain', () => {
     ]);
   });
 
-  it('v0.8: appends cross-lineage template fallbacks at the tail', () => {
-    // Codex slot with claude as a cross-lineage fallback — supported as of
-    // v0.8, runner picks the right shim per entry.
+  it('appends cross-lineage template fallbacks, diversity-first', () => {
+    // Codex slot, fallback chain mixes same-lineage and cross-lineage.
+    // Diversity-first ordering puts the lineage NOT in active slots
+    // (anthropic, count=0) before the same-lineage continuation
+    // (openai, count=1). User can override by manually re-ordering the
+    // fallback list — within a single lineage, declared order wins.
     const slot = { lineage: 'openai', models: ['gpt-5.5'] };
     const fallback = [
       { lineage: 'openai', models: ['gpt-5.4'] },
@@ -61,8 +64,29 @@ describe('buildSlotFallbackChain', () => {
     const chain = buildSlotFallbackChain(slot, [slot], fallback);
     expect(chain).toEqual([
       { lineage: 'openai', model: 'gpt-5.5' },
-      { lineage: 'openai', model: 'gpt-5.4' },
+      // anthropic absent from active slots → tried first.
       { lineage: 'anthropic', model: 'claude-opus-4-7' },
+      // openai already represented by the failing slot → tried last.
+      { lineage: 'openai', model: 'gpt-5.4' },
+    ]);
+  });
+
+  it('diversity-first: respects user order WITHIN the same lineage', () => {
+    // Two anthropic fallbacks, one openai. anthropic count=1 (one
+    // reviewer), openai count=1. Tie on counts → declared order
+    // preserved: opus before sonnet, both before openai/gpt-5.4 only
+    // when openai count is higher. Here openai matches anthropic so
+    // declared order wins outright.
+    const slot = { lineage: 'anthropic', models: ['claude-opus-4-7'] };
+    const fallback = [
+      { lineage: 'anthropic', models: ['claude-sonnet-4-6'] },
+      { lineage: 'anthropic', models: ['claude-haiku-4-5'] },
+    ];
+    const chain = buildSlotFallbackChain(slot, [slot], fallback);
+    expect(chain).toEqual([
+      { lineage: 'anthropic', model: 'claude-opus-4-7' },
+      { lineage: 'anthropic', model: 'claude-sonnet-4-6' },
+      { lineage: 'anthropic', model: 'claude-haiku-4-5' },
     ]);
   });
 
@@ -192,7 +216,31 @@ describe('buildSlotFallbackChain', () => {
     ]);
   });
 
-  it('v0.8: cross-lineage dedup uses (lineage, model) tuple — same model name on different lineages is allowed', () => {
+  it('diversity-first: prefers absent lineages over already-represented ones', () => {
+    // Reviewers: openai + google + anthropic (1 each).
+    // Fallbacks: anthropic/haiku, moonshot/kimi.
+    // Failing slot is openai. moonshot count=0, anthropic count=1 →
+    // kimi runs FIRST as the more diverse choice.
+    const failingSlot = { lineage: 'openai', models: ['gpt-5.5'] };
+    const activeSlots = [
+      failingSlot,
+      { lineage: 'google', models: ['gemini-3.1-pro-preview'] },
+      { lineage: 'anthropic', models: ['claude-opus-4-7'] },
+    ];
+    const fallback = [
+      { lineage: 'anthropic', models: ['claude-haiku-4-5'] },
+      { lineage: 'moonshot', models: ['kimi-k2.6'] },
+    ];
+    const chain = buildSlotFallbackChain(failingSlot, activeSlots, fallback);
+    expect(chain).toEqual([
+      { lineage: 'openai', model: 'gpt-5.5' },
+      // moonshot absent from active slots → tried before haiku.
+      { lineage: 'moonshot', model: 'kimi-k2.6' },
+      { lineage: 'anthropic', model: 'claude-haiku-4-5' },
+    ]);
+  });
+
+  it('cross-lineage dedup uses (lineage, model) tuple — same model name on different lineages is allowed', () => {
     // Highly unusual but valid: a model name shared across lineages stays
     // distinct because the dedup key is (lineage, model).
     const slot = { lineage: 'openai', models: ['shared-model'] };

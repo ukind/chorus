@@ -21,6 +21,7 @@ import { isReviewOnlyTemplate, type Template } from "@/lib/types";
 import { BriefHeading } from "../run-viewer/brief-heading";
 import { RoundView } from "../run-viewer/round-view";
 import type {
+  FallbackSwap,
   ParticipantSnapshot,
   ParticipantWarning,
   RoundSnapshot,
@@ -105,6 +106,35 @@ export function LiveRunReal({
     Record<string, ParticipantWarning[]>
   >({});
 
+  // Cross-lineage / cross-model fallback swaps, keyed nowhere — rendered
+  // as their own cards on the run page so the user sees "codex hit
+  // quota → claude took over" without having to read the warnings
+  // banner on the failed card. Sources merged into one array:
+  //   - SSE cli_warning events (live, while chat is in flight)
+  //   - _swaps.json sidecars from /api/run-artifacts (post-reload, when
+  //     the SSE is closed because the chat went terminal)
+  const [fallbackSwaps, setFallbackSwaps] = useState<FallbackSwap[]>([]);
+  const mergeSwapsFromArtifacts = (incoming: FallbackSwap[]) => {
+    setFallbackSwaps((prev) => {
+      // Dedup on (round, agent, fromLineage, fromModel) — the SSE may
+      // have already added a live entry. Disk wins on ties (it's the
+      // canonical post-flight source).
+      const seen = new Set(
+        prev.map(
+          (s) => `${s.round}:${s.agent}:${s.fromLineage}:${s.fromModel}`,
+        ),
+      );
+      const merged = [...prev];
+      for (const s of incoming) {
+        const key = `${s.round}:${s.agent}:${s.fromLineage}:${s.fromModel}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push(s);
+      }
+      return merged;
+    });
+  };
+
   const isTerminal = (TERMINAL_STATUSES as readonly string[]).includes(status);
 
   // Periodic refresh of artifacts from disk (cheap server fetch). The
@@ -119,8 +149,14 @@ export function LiveRunReal({
       try {
         const res = await fetch(`/api/run-artifacts/${chatId}`);
         if (!res.ok) return;
-        const data = (await res.json()) as { rounds: RoundSnapshot[] };
+        const data = (await res.json()) as {
+          rounds: RoundSnapshot[];
+          swaps?: FallbackSwap[];
+        };
         setRounds(data.rounds);
+        if (Array.isArray(data.swaps) && data.swaps.length > 0) {
+          mergeSwapsFromArtifacts(data.swaps);
+        }
       } catch {
         // ignore — next tick retries
       }
@@ -180,7 +216,12 @@ export function LiveRunReal({
           // doer → "doer-<agent>"; reviewer → already includes the
           // index in agent (e.g. "codex-cli-0").
           const key = role === "doer" ? `doer-${agent}` : `reviewer-${agent}`;
-          const kind = (e.payload.kind as string | undefined) ?? "warning";
+          const reason = (e.payload.reason as string | undefined) ?? undefined;
+          // Older runner code emitted `kind`; current runner emits
+          // `reason`. Accept either so reattach against an in-flight
+          // chat from a daemon-restart edge doesn't drop the banner.
+          const kind =
+            reason ?? (e.payload.kind as string | undefined) ?? "warning";
           const message =
             (e.payload.message as string | undefined) ?? "(no detail)";
           setParticipantWarnings((prev) => {
@@ -195,6 +236,55 @@ export function LiveRunReal({
             next[key] = [...existing, { kind, message, ts: e.ts ?? Date.now() }];
             return next;
           });
+
+          // Fallback swap signal — runner emits this with reason
+          // 'lineage_fallback' (cross-lineage) or 'model_fallback'
+          // (same-lineage, different model). Render as its own card on
+          // the round so the user sees voice-X-failed → voice-Y-active
+          // without having to expand a banner on the failed card.
+          if (
+            (reason === "lineage_fallback" || reason === "model_fallback") &&
+            typeof e.payload.fromLineage === "string" &&
+            typeof e.payload.toLineage === "string"
+          ) {
+            const round = (e.payload.round as number | undefined) ?? 1;
+            const phaseId = (e.payload.phaseId as string | undefined) ?? "";
+            const fromModel =
+              (e.payload.fromModel as string | undefined) ?? "(default)";
+            const toModel =
+              (e.payload.toModel as string | undefined) ?? "(default)";
+            const fallbackIdx =
+              (e.payload.fallbackIdx as number | undefined) ?? 0;
+            setFallbackSwaps((prev) => {
+              // Dedup on (round, agent, fromLineage, fromModel) — the
+              // runner can re-emit when the same warning gets replayed
+              // through reattach.
+              const dupe = prev.some(
+                (s) =>
+                  s.round === round &&
+                  s.agent === agent &&
+                  s.fromLineage === e.payload.fromLineage &&
+                  s.fromModel === fromModel,
+              );
+              if (dupe) return prev;
+              return [
+                ...prev,
+                {
+                  round,
+                  phaseId,
+                  role,
+                  agent,
+                  reason,
+                  fromLineage: e.payload.fromLineage as string,
+                  toLineage: e.payload.toLineage as string,
+                  fromModel,
+                  toModel,
+                  fallbackIdx,
+                  ts: e.ts ?? Date.now(),
+                },
+              ];
+            });
+          }
         }
 
         if (e.type === "participant_done") {
@@ -204,7 +294,11 @@ export function LiveRunReal({
           // tick.
           fetch(`/api/run-artifacts/${chatId}`)
             .then((r) => (r.ok ? r.json() : null))
-            .then((data) => data && setRounds(data.rounds))
+            .then((data) => {
+              if (!data) return;
+              setRounds(data.rounds);
+              if (Array.isArray(data.swaps)) mergeSwapsFromArtifacts(data.swaps);
+            })
             .catch(() => {});
         }
 
@@ -237,7 +331,11 @@ export function LiveRunReal({
           es.close();
           fetch(`/api/run-artifacts/${chatId}`)
             .then((r) => (r.ok ? r.json() : null))
-            .then((data) => data && setRounds(data.rounds))
+            .then((data) => {
+              if (!data) return;
+              setRounds(data.rounds);
+              if (Array.isArray(data.swaps)) mergeSwapsFromArtifacts(data.swaps);
+            })
             .catch(() => {});
         }
       } catch {
@@ -246,6 +344,27 @@ export function LiveRunReal({
     };
     return () => es.close();
   }, [chatId, isTerminal]);
+
+  // One-shot fetch on mount (incl. for terminal chats where the SSE
+  // useEffect early-returns). Without this, navigating to a completed
+  // chat would never load the swap sidecars — the periodic refresh and
+  // SSE branches both skip when isTerminal is true.
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/run-artifacts/${chatId}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        if (Array.isArray(data.swaps)) mergeSwapsFromArtifacts(data.swaps);
+      })
+      .catch(() => {
+        /* best-effort */
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatId]);
 
   /** Active keys are built as `${role}-${agent}-${phaseId}` in the
    * phase_start handler (where `agent` includes the per-slot index for
@@ -397,6 +516,7 @@ export function LiveRunReal({
               chatTerminal={isTerminal}
               reviewOnly={reviewOnly}
               chatId={chatId}
+              swaps={fallbackSwaps}
             />
           )}
 
@@ -419,6 +539,7 @@ export function LiveRunReal({
                       activeFor={() => false}
                       liveTails={{}}
                       chatTerminal={isTerminal}
+                      swaps={fallbackSwaps}
                     />
                   ))}
               </div>

@@ -7,9 +7,9 @@
  *
  * Template-level fallback (`template.fallback[]`) is the catch-all that fires
  * when ANY slot exhausts its per-slot chain. The user sets it once at the
- * template root, and chorus applies it to every slot — same lineage chains
- * first, then cross-lineage entries (v0.8: a codex reviewer hitting quota
- * can fall through to a claude or gemini fallback).
+ * template root, and chorus applies it to every slot — cross-lineage swaps
+ * are first-class: a codex reviewer hitting quota can fall through to a
+ * claude or kimi fallback.
  *
  * Strict (lineage, model) dedup:
  *   - Skip a fallback row that matches the slot's own current model — would
@@ -20,7 +20,16 @@
  *   - Cross-lineage fallback dedup uses (lineage, model) tuples so two slots
  *     of different lineages on the same model name (rare) don't collide.
  *
- * v0.8 cross-lineage swap:
+ * Diversity-first ordering:
+ *   When multiple fallbacks survive dedup, sort by lineage occurrence
+ *   across active slots (least-represented first). With reviewers
+ *   [openai, google, anthropic] and fallbacks [anthropic/haiku,
+ *   moonshot/kimi], the kimi entry runs FIRST — moonshot has 0 active
+ *   slots, anthropic has 1. Within a single lineage, user-declared
+ *   order wins. Lets the user spec a long fallback list without having
+ *   to manually micro-order it for diversity.
+ *
+ * Cross-lineage swap mechanics:
  *   When a fallback's lineage differs from the slot's, the runner re-resolves
  *   the shim from the agent registry (`pickShimForVoice(entry.lineage,
  *   entry.model)`) for that one attempt. The slot's identity (agentName,
@@ -93,19 +102,54 @@ export function buildSlotFallbackChain(
   // Pre-compute the dedup set: every (lineage, model) currently active in
   // this phase, including the slot's own per-slot fallbacks.
   const skipKeys = new Set<string>();
+  // Lineage-occurrence count across active slots — used to prefer
+  // cross-lineage fallbacks first ("most unique combination" = least
+  // represented lineage). A slot whose primary lineage is openai pulls
+  // the openai count up; a fallback into a lineage with count=0 wins
+  // ties over one with count=1.
+  const lineageCount = new Map<string, number>();
   for (const s of activeSlots) {
+    lineageCount.set(s.lineage, (lineageCount.get(s.lineage) ?? 0) + 1);
     for (const m of s.models ?? []) {
       skipKeys.add(`${s.lineage}:${m}`);
     }
   }
 
+  // Flatten user-declared fallback rows into individual entries while
+  // remembering each entry's original order so we can stable-sort by
+  // diversity without losing user intent for ties within a lineage.
+  interface FbEntry {
+    lineage: string;
+    model: string;
+    declaredIdx: number;
+  }
+  const candidates: FbEntry[] = [];
+  let declared = 0;
   for (const fb of templateFallback) {
     for (const m of fb.models ?? []) {
       const key = `${fb.lineage}:${m}`;
-      if (skipKeys.has(key)) continue;
+      if (skipKeys.has(key)) {
+        declared++;
+        continue;
+      }
       skipKeys.add(key);
-      chain.push({ lineage: fb.lineage, model: m });
+      candidates.push({ lineage: fb.lineage, model: m, declaredIdx: declared });
+      declared++;
     }
+  }
+
+  // Sort: lineages absent from active slots first (count=0), then less-
+  // represented lineages, then user-declared order within a lineage.
+  // Stable sort — equal keys preserve declared order.
+  candidates.sort((a, b) => {
+    const ca = lineageCount.get(a.lineage) ?? 0;
+    const cb = lineageCount.get(b.lineage) ?? 0;
+    if (ca !== cb) return ca - cb;
+    return a.declaredIdx - b.declaredIdx;
+  });
+
+  for (const c of candidates) {
+    chain.push({ lineage: c.lineage, model: c.model });
   }
   return chain;
 }

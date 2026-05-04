@@ -15,6 +15,7 @@ import { runDoerHeadless } from './doer.js';
 import { buildAsk } from './prompt-builder.js';
 import { runWithChainFallback, runWithModelFallback } from './run-with-fallback.js';
 import { sanitizeName } from './sanitize-name.js';
+import { appendSwapSidecar } from './swap-sidecar.js';
 import { buildSlotFallbackChain } from './template-fallback.js';
 import type { Lineage } from '../agents/types.js';
 import type { RunnerEvent } from './types.js';
@@ -192,6 +193,10 @@ export async function runDoer(
         },
         (from, to, fromIdx) => {
           const sameLineage = from.lineage === to.lineage;
+          const reason = sameLineage ? 'model_fallback' : 'lineage_fallback';
+          const message = sameLineage
+            ? `Doer model "${from.model ?? '(default)'}" produced no answer; retrying with "${to.model ?? '(default)'}".`
+            : `Doer ${from.lineage}/${from.model ?? '(default)'} failed; switching to ${to.lineage}/${to.model ?? '(default)'} (cross-lineage fallback).`;
           onEvent({
             chatId,
             type: 'cli_warning',
@@ -200,16 +205,30 @@ export async function runDoer(
               round,
               role: 'doer',
               agent: agentName,
-              reason: sameLineage ? 'model_fallback' : 'lineage_fallback',
+              reason,
               fromLineage: from.lineage,
               toLineage: to.lineage,
               fromModel: from.model ?? '(default)',
               toModel: to.model ?? '(default)',
               fallbackIdx: fromIdx,
-              message: sameLineage
-                ? `Doer model "${from.model ?? '(default)'}" produced no answer; retrying with "${to.model ?? '(default)'}".`
-                : `Doer ${from.lineage}/${from.model ?? '(default)'} failed; switching to ${to.lineage}/${to.model ?? '(default)'} (cross-lineage fallback).`,
+              message,
             },
+            ts: Date.now(),
+          });
+          // Persist to sidecar (see reviewer-driver.ts for rationale).
+          // doerDir is the chat-scoped scratch dir, used here even when
+          // doerCwd was overridden to the user's repo.
+          appendSwapSidecar(doerDir, {
+            round,
+            phaseId: phase.id,
+            role: 'doer',
+            agent: agentName,
+            reason,
+            fromLineage: from.lineage,
+            toLineage: to.lineage,
+            fromModel: from.model ?? '(default)',
+            toModel: to.model ?? '(default)',
+            fallbackIdx: fromIdx,
             ts: Date.now(),
           });
         },

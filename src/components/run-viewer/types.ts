@@ -76,6 +76,36 @@ export interface ParticipantWarning {
   ts: number;
 }
 
+/**
+ * One cross-lineage / cross-model fallback swap event. Emitted when a
+ * slot's primary lineage exhausts and the runner switches to a fallback
+ * (per-slot or template-level). Rendered as its own card on the run
+ * page so the user can SEE that voice X failed and voice Y took over —
+ * the slot's on-disk identity stays bound to the primary, but the
+ * actual review came from the fallback.
+ */
+export interface FallbackSwap {
+  /** Round number this swap belongs to (1-indexed). */
+  round: number;
+  /** Phase id — currently always the single review phase, future-proofed. */
+  phaseId: string;
+  /** "doer" or "reviewer". */
+  role: string;
+  /** Participant identifier from the original slot — same key the
+   *  participant card uses (e.g. "codex-cli-0"). */
+  agent: string;
+  /** "lineage_fallback" (cross-lineage) or "model_fallback" (same-lineage). */
+  reason: "lineage_fallback" | "model_fallback";
+  fromLineage: string;
+  toLineage: string;
+  fromModel: string;
+  toModel: string;
+  /** 0-indexed position in the slot's chain when the swap fired. */
+  fallbackIdx: number;
+  /** Wall-clock when the swap was received. */
+  ts: number;
+}
+
 export interface RoundSnapshot {
   round: number;
   participants: ParticipantSnapshot[];

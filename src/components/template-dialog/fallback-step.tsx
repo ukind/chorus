@@ -26,10 +26,13 @@ export function FallbackStep({
           </span>
         </div>
         Tried in order whenever a slot exhausts its own per-slot model chain.
-        Same-lineage only (cross-lineage swap lands in v0.8). Strict
-        <span className="font-mono"> (lineage, model)</span> dedup —
-        if your reviewers already include kimi, a kimi fallback is skipped
-        when another reviewer fails.
+        Cross-lineage swap supported — a codex slot can fall through to a
+        claude or kimi entry. Strict
+        <span className="font-mono"> (lineage, model)</span> dedup keeps
+        diversity: a fallback whose model already runs as another reviewer
+        in this phase is skipped, so you never review the same code twice
+        with the same voice. Order matters — list your most-preferred
+        fallback first.
       </div>
 
       <FallbackList

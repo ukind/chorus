@@ -29,7 +29,11 @@ export default function OnboardingPage() {
 
   const [selectedClis, setSelectedClis] = useState<Set<string>>(new Set());
   const [cliVoices, setCliVoices] = useState<Voice[]>([]);
-  const [savingVoiceId, setSavingVoiceId] = useState<string | null>(null);
+  // Set rather than scalar so concurrent toggles don't fight over the
+  // single "in-flight" id — mashing 5 toggles used to clear the lock the
+  // moment the first request finished, briefly re-enabling the other 4
+  // buttons while their requests were still pending.
+  const [savingVoiceIds, setSavingVoiceIds] = useState<Set<string>>(new Set());
   const [voiceSaveError, setVoiceSaveError] = useState<string | null>(null);
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
   const [sandboxProfile, setSandboxProfile] =
@@ -60,8 +64,13 @@ export default function OnboardingPage() {
   );
 
   useEffect(() => {
+    // `cancelled` guards every setter against unmount-during-fetch
+    // (StrictMode double-mount + nav-away mid-flight). Without it,
+    // React logs warnings + we can land stale data on a dead component.
+    let cancelled = false;
     detectInstalledClis()
       .then((rows) => {
+        if (cancelled) return;
         const map: Record<string, CliDetection> = {};
         const preTick = new Set<string>();
         for (const row of rows) {
@@ -75,19 +84,26 @@ export default function OnboardingPage() {
         // Detection is best-effort; if the daemon probe fails the user
         // can still tick boxes manually. No need to surface an error.
       })
-      .finally(() => setDetecting(false));
+      .finally(() => {
+        if (!cancelled) setDetecting(false);
+      });
     // Voices are seeded server-side on daemon boot — fetch the current
     // state so each CLI card can render its actual model list with
     // toggles, not just "default model auto-enabled."
     listVoices({ source: "cli" })
-      .then(setCliVoices)
+      .then((v) => {
+        if (!cancelled) setCliVoices(v);
+      })
       .catch(() => {
         /* best-effort — seeding may not have completed yet */
       });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const toggleVoice = async (v: Voice) => {
-    setSavingVoiceId(v.id);
+    setSavingVoiceIds((prev) => new Set(prev).add(v.id));
     setVoiceSaveError(null);
     try {
       const next = await updateVoice(v.id, { enabled: !v.enabled });
@@ -97,7 +113,11 @@ export default function OnboardingPage() {
         err instanceof Error ? err.message : "Couldn't save voice toggle.",
       );
     } finally {
-      setSavingVoiceId(null);
+      setSavingVoiceIds((prev) => {
+        const next = new Set(prev);
+        next.delete(v.id);
+        return next;
+      });
     }
   };
 
@@ -279,7 +299,7 @@ export default function OnboardingPage() {
           detection={detection}
           detecting={detecting}
           cliVoices={cliVoices}
-          savingVoiceId={savingVoiceId}
+          savingVoiceIds={savingVoiceIds}
           voiceSaveError={voiceSaveError}
           toggleVoice={toggleVoice}
           manualOpen={manualOpen}

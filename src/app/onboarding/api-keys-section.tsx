@@ -48,6 +48,11 @@ type SaveState =
   | { kind: "idle" }
   | { kind: "saving" }
   | { kind: "invalid"; message: string }
+  // Key validated + persisted, but the catalog fetch failed. User can
+  // retry just the catalog without re-saving the key (which would be a
+  // wasted round-trip).
+  | { kind: "catalog_failed"; message: string }
+  | { kind: "loading_catalog" }
   | { kind: "valid"; modelCount: number };
 
 interface ApiKeysSectionProps {
@@ -75,13 +80,29 @@ export function ApiKeysSection({ apiKeys, updateApiKey }: ApiKeysSectionProps) {
         });
         return;
       }
+      // Key is now persisted server-side. From this point a catalog
+      // failure transitions to `catalog_failed` (recoverable via the
+      // Reload button), not back to `invalid` (which would imply the
+      // key itself was bad).
+      await loadCatalog();
+    } catch (err) {
+      setSaveState({
+        kind: "invalid",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  async function loadCatalog() {
+    setSaveState({ kind: "loading_catalog" });
+    try {
       const { models } = await listOpenRouterModels();
       models.sort((a, b) => a.id.localeCompare(b.id));
       setCatalog(models);
       setSaveState({ kind: "valid", modelCount: models.length });
     } catch (err) {
       setSaveState({
-        kind: "invalid",
+        kind: "catalog_failed",
         message: err instanceof Error ? err.message : String(err),
       });
     }
@@ -148,7 +169,9 @@ export function ApiKeysSection({ apiKeys, updateApiKey }: ApiKeysSectionProps) {
               setCatalog(null);
             }}
             className="flex-1 font-mono text-xs"
-            disabled={saveState.kind === "saving"}
+            disabled={
+              saveState.kind === "saving" || saveState.kind === "loading_catalog"
+            }
           />
           <button
             type="button"
@@ -156,6 +179,7 @@ export function ApiKeysSection({ apiKeys, updateApiKey }: ApiKeysSectionProps) {
             disabled={
               apiKey.trim().length === 0 ||
               saveState.kind === "saving" ||
+              saveState.kind === "loading_catalog" ||
               saveState.kind === "valid"
             }
             className={cn(
@@ -165,15 +189,18 @@ export function ApiKeysSection({ apiKeys, updateApiKey }: ApiKeysSectionProps) {
                 : "border-primary/40 bg-primary/10 text-primary hover:bg-primary/20",
             )}
           >
-            {saveState.kind === "saving" && (
+            {(saveState.kind === "saving" ||
+              saveState.kind === "loading_catalog") && (
               <Loader2 className="h-3 w-3 animate-spin" />
             )}
             {saveState.kind === "valid" && <Check className="h-3 w-3" />}
             {saveState.kind === "saving"
               ? "Validating…"
-              : saveState.kind === "valid"
-                ? "Validated"
-                : "Validate & save"}
+              : saveState.kind === "loading_catalog"
+                ? "Loading models…"
+                : saveState.kind === "valid"
+                  ? "Validated"
+                  : "Validate & save"}
           </button>
         </div>
 
@@ -182,6 +209,25 @@ export function ApiKeysSection({ apiKeys, updateApiKey }: ApiKeysSectionProps) {
             <AlertTriangle className="h-3 w-3" />
             {saveState.message}
           </p>
+        )}
+
+        {saveState.kind === "catalog_failed" && (
+          <div className="flex items-start justify-between gap-3 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2">
+            <p className="flex items-start gap-1.5 text-xs text-amber-100">
+              <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+              <span>
+                Key saved, but couldn&apos;t load the model catalog:{" "}
+                {saveState.message}
+              </span>
+            </p>
+            <button
+              type="button"
+              onClick={loadCatalog}
+              className="shrink-0 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium text-amber-100 hover:bg-amber-500/20"
+            >
+              Reload models
+            </button>
+          </div>
         )}
 
         {saveState.kind === "valid" && catalog && (

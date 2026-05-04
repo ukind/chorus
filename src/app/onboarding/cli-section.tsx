@@ -63,7 +63,7 @@ interface CliSectionProps {
   /** All CLI-source voices, fetched on the page. The card filters by
    *  provider locally so its model list reflects the live DB state. */
   cliVoices: Voice[];
-  savingVoiceId: string | null;
+  savingVoiceIds: Set<string>;
   voiceSaveError: string | null;
   toggleVoice: (v: Voice) => void;
   manualOpen: Set<string>;
@@ -227,7 +227,7 @@ export function CliSection(props: CliSectionProps) {
                   <SingleCliVoiceList
                     cliId={cli.id}
                     voices={props.cliVoices}
-                    savingVoiceId={props.savingVoiceId}
+                    savingVoiceIds={props.savingVoiceIds}
                     saveError={props.voiceSaveError}
                     onToggle={props.toggleVoice}
                   />
@@ -253,7 +253,12 @@ export function CliSection(props: CliSectionProps) {
 interface SingleCliVoiceListProps {
   cliId: string;
   voices: Voice[];
-  savingVoiceId: string | null;
+  /** Set of voice ids currently mid-save. Concurrent toggles each
+   *  push their id in and remove it on settle, so two in-flight saves
+   *  keep both buttons disabled until each one finishes — earlier
+   *  scalar version cleared the lock on the first settle, leaking
+   *  enabled state to the still-pending button. */
+  savingVoiceIds: Set<string>;
   saveError: string | null;
   onToggle: (v: Voice) => void;
 }
@@ -261,7 +266,7 @@ interface SingleCliVoiceListProps {
 function SingleCliVoiceList({
   cliId,
   voices,
-  savingVoiceId,
+  savingVoiceIds,
   saveError,
   onToggle,
 }: SingleCliVoiceListProps) {
@@ -309,7 +314,7 @@ function SingleCliVoiceList({
             <button
               key={v.id}
               type="button"
-              disabled={savingVoiceId === v.id}
+              disabled={savingVoiceIds.has(v.id)}
               onClick={() => onToggle(v)}
               title={v.model_id}
               className={cn(

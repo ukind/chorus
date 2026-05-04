@@ -57,11 +57,7 @@ export const CLIS: CliRow[] = [
 ];
 
 export const API_KEYS: ApiKeyRow[] = [
-  { provider: "anthropic", label: "Anthropic", placeholder: "sk-ant-..." },
-  { provider: "openai", label: "OpenAI", placeholder: "sk-..." },
-  { provider: "openrouter", label: "OpenRouter", placeholder: "sk-or-..." },
-  { provider: "google", label: "Google AI", placeholder: "AIza..." },
-  { provider: "xai", label: "xAI (Grok)", placeholder: "xai-..." },
+  { provider: "openrouter", label: "OpenRouter", placeholder: "sk-or-v1-..." },
 ];
 
 /** Best-effort lineage classifier — mirrors the daemon's

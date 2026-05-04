@@ -56,7 +56,12 @@ export async function validateKey(apiKey: string): Promise<ValidateResult> {
     return { valid: false, error: 'API key is empty' };
   }
   try {
-    const res = await fetch(`${OPENROUTER_BASE}/models`, {
+    // Hit /auth/key — the only catalog-side endpoint that actually
+    // requires the bearer to be valid. /models is public and returns
+    // 200 for ANY auth header (including junk), so the previous
+    // implementation rubber-stamped invalid keys as valid. Verified
+    // behaviour: 401 on invalid bearer, 200 with key metadata on valid.
+    const res = await fetch(`${OPENROUTER_BASE}/auth/key`, {
       headers: { Authorization: `Bearer ${apiKey}` },
       signal: AbortSignal.timeout(VALIDATE_TIMEOUT_MS),
     });

@@ -84,7 +84,10 @@ export default function OnboardingPage() {
   useEffect(() => {
     if (!selectedClis.has("opencode-cli")) return;
     if (!detection["opencode-cli"]?.found) return;
-    if (opencodeModels || opencodeModelsLoading) return;
+    // Skip when we already succeeded, are mid-flight, OR previously
+    // errored. Without the error check, finally() flipping loading=false
+    // re-runs this effect (loading is in deps), which retries forever.
+    if (opencodeModels || opencodeModelsLoading || opencodeModelsError) return;
     setOpencodeModelsLoading(true);
     setOpencodeModelsError(null);
     listOpencodeModels()
@@ -104,7 +107,13 @@ export default function OnboardingPage() {
         );
       })
       .finally(() => setOpencodeModelsLoading(false));
-  }, [selectedClis, detection, opencodeModels, opencodeModelsLoading]);
+  }, [
+    selectedClis,
+    detection,
+    opencodeModels,
+    opencodeModelsLoading,
+    opencodeModelsError,
+  ]);
 
   const toggleOpencodeModel = (m: string) => {
     setSelectedOpencodeModels((prev) => {

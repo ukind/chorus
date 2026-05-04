@@ -121,10 +121,23 @@ export function registerSystemRoutes(
     }>;
   }>('/orchestrators/opencode/models', async () => {
     try {
+      // Resolve the actual installed path rather than spawning bare
+      // 'opencode' — when the daemon's $PATH doesn't include the
+      // installer's bin dir (common: opencode lives at
+      // ~/.opencode/bin, not in /usr/local/bin), bare lookup ENOENTs
+      // even when detection found the binary fine.
+      const { detectAllClis } = await import('../../lib/cli-detect.js');
+      const opencode = detectAllClis().find((c) => c.id === 'opencode-cli');
+      if (!opencode?.found || !opencode.path) {
+        return errorResponse(
+          'cli_failed',
+          'opencode CLI not found on this host. Install from https://opencode.ai or set its path manually in onboarding.',
+        );
+      }
       const { execFile } = await import('node:child_process');
       const { promisify } = await import('node:util');
       const run = promisify(execFile);
-      const { stdout } = await run('opencode', ['models'], { timeout: 10_000 });
+      const { stdout } = await run(opencode.path, ['models'], { timeout: 10_000 });
       const flat = stdout
         .split('\n')
         .map((l) => l.trim())

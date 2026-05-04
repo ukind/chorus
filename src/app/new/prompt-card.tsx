@@ -39,17 +39,6 @@ export function PromptCard({
           <span className="font-medium text-foreground">{artifactSpec.label}</span>
           <span className="text-muted-foreground/60">·</span>
           <span>cap {(artifactSpec.maxBytes / 1024).toLocaleString()} KB</span>
-          <span className="text-muted-foreground/60">·</span>
-          {/* Reviewers terminate their stream on a `## DONE` marker.
-              Surfaced in the label row so users know the convention
-              without having to read a template's `askContent`. */}
-          <span className="text-muted-foreground/80">
-            end your prompt with{" "}
-            <code className="rounded bg-muted/40 px-1 font-mono text-[10px] text-foreground/80">
-              ## DONE
-            </code>{" "}
-            so reviewers know when to stop
-          </span>
         </div>
       )}
       <Card className="overflow-hidden p-0 mb-4">

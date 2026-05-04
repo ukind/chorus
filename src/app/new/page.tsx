@@ -263,39 +263,48 @@ function NewChatPageInner() {
           </div>
         )}
 
-        {/* Hidden for review-only templates — no doer means no diff to
-            commit; the runner force-skips ship anyway. */}
-        {!reviewOnly && (
-          <div className="mb-4 rounded-lg border border-dashed border-border bg-card/30 p-4">
-            <div className="mb-2 flex items-center gap-2">
-              <span className="text-sm font-medium text-foreground">
-                Target repo{" "}
-                <span className="text-muted-foreground">(optional)</span>
-              </span>
-              <Badge
-                variant="outline"
-                className="border-emerald-500/30 bg-emerald-500/10 font-mono text-[10px] uppercase text-emerald-300"
-              >
-                opens PR
-              </Badge>
-            </div>
-            <input
-              type="text"
-              value={repoPath}
-              onChange={(e) => setRepoPath(e.target.value)}
-              placeholder="/absolute/path/to/repo"
-              className="w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary"
-              spellCheck={false}
-            />
-            <p className="mt-2 text-[11px] text-muted-foreground">
-              When set: doer makes real edits in this repo. After reviewers
-              agree, chorus opens a PR via{" "}
-              <code className="rounded bg-muted px-1">gh pr create</code> (no
-              auto-merge — you review + click Merge in GitHub). Leave blank to
-              skip the Ship phase.
-            </p>
+        {/* Always render so the row's vertical position is stable across
+            templates. Disabled on review-only since there's no doer to make
+            edits and no Ship phase to open a PR — but keeping it visible
+            tells the user what they'd unlock by switching templates. */}
+        <div
+          className={`mb-4 rounded-lg border border-dashed border-border bg-card/30 p-4 ${reviewOnly ? "opacity-50" : ""}`}
+        >
+          <div className="mb-2 flex items-center gap-2">
+            <span className="text-sm font-medium text-foreground">
+              Target repo{" "}
+              <span className="text-muted-foreground">(optional)</span>
+            </span>
+            <Badge
+              variant="outline"
+              className="border-emerald-500/30 bg-emerald-500/10 font-mono text-[10px] uppercase text-emerald-300"
+            >
+              opens PR
+            </Badge>
           </div>
-        )}
+          <input
+            type="text"
+            value={reviewOnly ? "" : repoPath}
+            onChange={(e) => setRepoPath(e.target.value)}
+            disabled={reviewOnly}
+            placeholder="/absolute/path/to/repo"
+            className="w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary disabled:cursor-not-allowed disabled:opacity-60"
+            spellCheck={false}
+          />
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            {reviewOnly
+              ? "Review-only templates have no doer and no Ship phase, so there's nothing to commit. Pick a template with a doer (e.g. Tri-Review) to open a PR."
+              : (
+                <>
+                  When set: doer makes real edits in this repo. After reviewers
+                  agree, chorus opens a PR via{" "}
+                  <code className="rounded bg-muted px-1">gh pr create</code> (no
+                  auto-merge — you review + click Merge in GitHub). Leave blank
+                  to skip the Ship phase.
+                </>
+              )}
+          </p>
+        </div>
 
         <button
           type="button"

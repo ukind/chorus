@@ -243,7 +243,10 @@ export default function TemplatesPage() {
                       ? "opacity-100"
                       : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
                   }`}
-                  onClick={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSelectedId(t.id);
+                  }}
                   onKeyDown={(e) => e.stopPropagation()}
                 >
                   <TemplateDialog

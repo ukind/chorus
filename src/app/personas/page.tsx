@@ -9,7 +9,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { Copy, Loader2, Trash2 } from "lucide-react";
+import { Copy, Loader2, Pencil, Trash2 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -319,7 +319,10 @@ export default function PersonasPage() {
                         ? "opacity-100"
                         : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
                     }`}
-                    onClick={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedId(p.id);
+                    }}
                     onKeyDown={(e) => e.stopPropagation()}
                   >
                     <button
@@ -364,7 +367,7 @@ export default function PersonasPage() {
                         )}
                       </button>
                     )}
-                    {selectedFull && selectedFull.id === p.id && (
+                    {selectedFull && selectedFull.id === p.id ? (
                       <PersonaDialog
                         key={`${p.id}:${autoOpenId === p.id ? "auto" : "manual"}`}
                         editing={selectedFull}
@@ -378,6 +381,25 @@ export default function PersonasPage() {
                           refresh();
                         }}
                       />
+                    ) : (
+                      // Placeholder pencil for unselected rows. The real
+                      // PersonaDialog only mounts once selectedFull lands
+                      // for this id, so on hover we show a stand-in that
+                      // selects the card and queues auto-open. Once the
+                      // right-pane fetch resolves the dialog re-renders
+                      // above with defaultOpen=true.
+                      <button
+                        type="button"
+                        aria-label={`Edit persona ${p.label}`}
+                        title="Edit"
+                        onClick={() => {
+                          setSelectedId(p.id);
+                          setAutoOpenId(p.id);
+                        }}
+                        className="grid h-7 w-7 place-items-center rounded-md border border-border bg-card text-muted-foreground transition hover:border-muted-foreground/40 hover:bg-accent/60 hover:text-foreground"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
                     )}
                   </div>
                 </div>

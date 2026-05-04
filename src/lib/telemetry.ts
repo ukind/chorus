@@ -76,6 +76,48 @@ export async function isTelemetryEnabled(): Promise<boolean> {
   return true;
 }
 
+export interface TelemetryStatus {
+  /** Effective enabled state — what the next heartbeat will use. */
+  enabled: boolean;
+  /** True when CHORUS_TELEMETRY is set to a recognised disable value. */
+  envOverride: boolean;
+  /** True when ~/.chorus/no-telemetry exists. */
+  fileOverride: boolean;
+  /** Settings-DB value: true / false (explicit) / undefined (default-on). */
+  settingValue: boolean | undefined;
+  /** Endpoint the heartbeat targets. Surfaced for transparency. */
+  endpoint: string;
+}
+
+/**
+ * Detailed status used by the cockpit UI: same effective answer as
+ * `isTelemetryEnabled` plus a breakdown of which path is winning, so the
+ * settings page can explain "disabled by env var" rather than show a toggle
+ * that secretly does nothing.
+ */
+export async function getTelemetryStatus(): Promise<TelemetryStatus> {
+  const env = process.env.CHORUS_TELEMETRY;
+  const envOverride =
+    env !== undefined && ENV_DISABLE_VALUES.has(env.toLowerCase());
+  const fileOverride = fs.existsSync(noTelemetryPath());
+  let settingValue: boolean | undefined;
+  try {
+    const raw = await settings.get(SETTINGS_KEY);
+    if (raw === true || raw === false) settingValue = raw;
+  } catch {
+    /* DB not ready — leave undefined */
+  }
+  const enabled =
+    !envOverride && !fileOverride && settingValue !== false;
+  return { enabled, envOverride, fileOverride, settingValue, endpoint: ENDPOINT };
+}
+
+/** Set the persisted opt-in flag. Env / file overrides still trump it. */
+export async function setTelemetryEnabled(value: boolean): Promise<TelemetryStatus> {
+  await settings.set(SETTINGS_KEY, value);
+  return getTelemetryStatus();
+}
+
 /**
  * Read or mint an anonymous install ID. Lives in `~/.chorus/install-id`
  * as a single line; user can `rm` it to reset (a new UUID is minted on

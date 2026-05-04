@@ -128,6 +128,37 @@ export function registerSettingsRoutes(fastify: FastifyInstance): void {
     }
   });
 
+  // ─── Telemetry (anonymous heartbeat opt-out) ─────────────────────────
+  fastify.get<{ Reply: ApiResponse<object> }>(
+    '/settings/telemetry',
+    async () => {
+      try {
+        const { getTelemetryStatus } = await import('../../lib/telemetry.js');
+        return successResponse(await getTelemetryStatus());
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return errorResponse('internal', message);
+      }
+    },
+  );
+
+  fastify.put<{
+    Body: { enabled: boolean };
+    Reply: ApiResponse<object>;
+  }>('/settings/telemetry', async (request) => {
+    try {
+      const body = request.body ?? ({} as { enabled: boolean });
+      if (typeof body.enabled !== 'boolean') {
+        return errorResponse('validation', 'enabled must be a boolean');
+      }
+      const { setTelemetryEnabled } = await import('../../lib/telemetry.js');
+      return successResponse(await setTelemetryEnabled(body.enabled));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return errorResponse('validation', message);
+    }
+  });
+
   // ─── Billing mode (subscription vs API) ──────────────────────────────
   fastify.get<{ Reply: ApiResponse<object> }>('/settings/billing', async () => {
     try {

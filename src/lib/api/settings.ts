@@ -107,6 +107,27 @@ export async function updateBillingMode(
   });
 }
 
+export interface TelemetryStatus {
+  enabled: boolean;
+  envOverride: boolean;
+  fileOverride: boolean;
+  settingValue: boolean | undefined;
+  endpoint: string;
+}
+
+export async function getTelemetryStatus(): Promise<TelemetryStatus> {
+  return fetchFromDaemon<TelemetryStatus>("/settings/telemetry");
+}
+
+export async function updateTelemetryEnabled(
+  enabled: boolean,
+): Promise<TelemetryStatus> {
+  return fetchFromDaemon<TelemetryStatus>("/settings/telemetry", {
+    method: "PUT",
+    body: JSON.stringify({ enabled }),
+  });
+}
+
 export async function listSecrets(): Promise<Secret[]> {
   return fetchFromDaemon<Secret[]>("/secrets");
 }

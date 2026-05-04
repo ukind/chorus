@@ -4,6 +4,7 @@ import { Clock, Shield } from "lucide-react";
 import { BillingModeSection } from "./billing-section";
 import { PreviewSections, type PreviewSectionsProps } from "./preview-sections";
 import { Section } from "./primitives";
+import { TelemetrySection } from "./telemetry-section";
 import { TransportSection } from "./transport-section";
 
 export function FormView(props: PreviewSectionsProps) {
@@ -25,6 +26,7 @@ export function FormView(props: PreviewSectionsProps) {
 
       <TransportSection />
       <BillingModeSection />
+      <TelemetrySection />
 
       <div
         className="mt-12 flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100"

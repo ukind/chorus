@@ -16,6 +16,8 @@
     "src/components/ui/**"
   ],
   "ignoreDependencies": [
-    "postcss"
+    "postcss",
+    "tailwindcss",
+    "tw-animate-css"
   ]
 }

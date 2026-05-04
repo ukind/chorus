@@ -4,6 +4,7 @@ import { ArrowRight, DollarSign } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import type { BillingMode } from "@/lib/api/settings";
+import { uiLineageDot } from "@/lib/lineage-maps";
 import type { Template } from "@/lib/types";
 import type { CostEstimate } from "./helpers";
 
@@ -101,7 +102,9 @@ function RoleSummary({
       {!reviewOnly && (
         <>
           <span className="flex items-center gap-1.5">
-            <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${uiLineageDot(template.phases[0]?.doer.lineage)}`}
+            />
             Doer: {template.phases[0]?.doer.lineage}
           </span>
           <span className="text-muted-foreground/50">·</span>
@@ -133,8 +136,7 @@ function ReviewerChips({ template }: { template: Template }) {
   }
   return (
     <span className="flex items-center gap-1.5">
-      <span className="h-1.5 w-1.5 rounded-full bg-blue-400" />
-      Reviewers:
+      <span className="text-muted-foreground/80">Reviewers:</span>
       {slots.map((slot, i) => {
         const dup = (lineageCounts.get(slot.lineage) ?? 0) > 1;
         const modelLabel = slot.models?.[0]?.split("/").pop() ?? slot.models?.[0];
@@ -145,7 +147,9 @@ function ReviewerChips({ template }: { template: Template }) {
             className="flex items-center gap-1"
             title={slot.models?.[0] ? `${slot.lineage} · ${slot.models[0]}` : slot.lineage}
           >
-            <span className="h-1.5 w-1.5 rounded-full bg-blue-400" />
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${uiLineageDot(slot.lineage)}`}
+            />
             {label}
           </span>
         );

@@ -3,7 +3,9 @@
 **Goal:** ship 99xAgency/chorus to public on GitHub with no embarrassing
 launch-day bugs. Audit-only first; fix later.
 
-**Status:** dogfood pass in flight (5-way fan-out × 5 specialised briefs).
+**Status:** all BLOCKERs shipped (commits `1a3dadd`, `f2983c8`,
+`f9e9ae4`, `be30940`). Awaiting final green-light audit (Phase 4)
+before flipping the GitHub repo public.
 
 ---
 
@@ -89,18 +91,18 @@ For every reported finding, classify:
 
 | # | Audit | Sev | Finding | Action | Status |
 |---|---|---|---|---|---|
-| 1 | E1 | BLOCKER | LICENSE missing | Add Apache-2.0 LICENSE at repo root | _pending_ |
-| 2 | A1 | BLOCKER | `.gitignore` missing `.env.*` | Add `.env.*` + db sidecars (`-shm`, `-wal`) + `~/.chorus` residue | _pending_ |
-| 3 | A2 | BLOCKER | DB world-readable + plaintext secrets | `chmod 700 ~/.chorus`, `chmod 600 chorus.db` after init | _pending_ |
-| 4 | D2 | BLOCKER | `repoPath` symlink traversal | Add `realpathSync` + `lstatSync` + `isDirectory` checks | _pending_ |
-| 5 | D3 | HIGH | `validateCliPath` symlink check | Add `lstatSync().isFile()` guard | _pending_ |
-| 6 | D1 | BLOCKER | OpenCode/Kimi shims ignore sandbox | Fail-closed when `sandbox==='strict'` and shim can't enforce | _pending_ |
-| 7 | B1 | BLOCKER | Lineage diversity claim not enforced | Soften README claim to reality OR add validator | _pending_ |
-| 8 | B2 | HIGH | README "lazy execution" claim stale | Update README to "auto-fires on POST /chats" | _pending_ |
-| 9 | B3 | HIGH | README says Next.js 15, code is 16 | Patch README architecture deep-dive | _pending_ |
-| 10 | B4 | MEDIUM | Mermaid diagram MCP arrow | Patch diagram (REST + SSE not JSON-RPC) | _pending_ |
-| 11 | E2 | HIGH | CONTRIBUTING/COC/SECURITY missing | Add stub files | _pending_ |
-| 12 | E3 | MEDIUM | Issue + PR templates missing | Add `.github/ISSUE_TEMPLATE/` + PR template | _pending_ |
+| 1 | E1 | BLOCKER | LICENSE missing | Add Apache-2.0 LICENSE at repo root | ✅ `1a3dadd` |
+| 2 | A1 | BLOCKER | `.gitignore` missing `.env.*` | Add `.env.*` + db sidecars + `~/.chorus` residue | ✅ `1a3dadd` |
+| 3 | A2 | BLOCKER | DB world-readable + plaintext secrets | `chmod 700 ~/.chorus`, `chmod 600 chorus.db` at init | ✅ `f2983c8` |
+| 4 | D2 | BLOCKER | `repoPath` symlink traversal | `realpathSync` + `statSync` + `isDirectory` checks | ✅ `f2983c8` |
+| 5 | D3 | HIGH | `validateCliPath` symlink TOCTOU | lstat + canonical-path persistence (symlinks allowed but resolved) | ✅ `f2983c8` |
+| 6 | D1 | BLOCKER | OpenCode/Kimi shims ignore sandbox | Fail-closed via `sandbox-guard.ts` when `sandbox==='strict'` | ✅ `f2983c8` |
+| 7 | B1 | BLOCKER | Lineage diversity claim not enforced | Softened README claim to per-template reality | ✅ `f9e9ae4` |
+| 8 | B2 | HIGH | README "lazy execution" claim stale | Updated to "auto-fires on POST /chats" | ✅ `f9e9ae4` |
+| 9 | B3 | HIGH | README says Next.js 15, code is 16 | Patched architecture deep-dive | ✅ `f9e9ae4` |
+| 10 | B4 | MEDIUM | Mermaid diagram MCP arrow | Patched arrow label to REST + SSE | ✅ `f9e9ae4` |
+| 11 | E2 | HIGH | CONTRIBUTING/COC/SECURITY missing | Added stub files | ✅ `1a3dadd` |
+| 12 | E3 | MEDIUM | Issue + PR templates missing | Added bug.yml + feature.yml + PR template | ✅ `1a3dadd` |
 | 13 | A3 | HIGH | No daemon HTTP API auth | Bearer token in `~/.chorus/auth-token` (post-launch — too risky to change wire protocol now) | DEFER |
 | 14 | C1 | HIGH | No `/api/v1` versioning prefix | Apply prefix everywhere — DEFER (cockpit lock-step) | DEFER |
 | 15 | C2 | HIGH | List endpoints unpaginated | DEFER — same shape risk as C1 | DEFER |

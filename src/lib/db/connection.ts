@@ -70,10 +70,12 @@ async function initDb(): Promise<Client> {
     // other local users `cat ~/.chorus/chorus.db` and read every API
     // key in the secrets table. Audit A2 BLOCKER.
     fs.mkdirSync(dbDir, { recursive: true, mode: 0o700 });
-  } else {
-    // Existing dir from before this fix shipped — tighten retroactively
-    // on first boot of an upgraded install. Best-effort; failure on
-    // exotic filesystems (FAT, samba) is non-fatal.
+  } else if (path.basename(dbDir) === '.chorus') {
+    // Existing ~/.chorus from before this fix shipped — tighten
+    // retroactively on first boot of an upgraded install. Guard on the
+    // dirname so a CHORUS_DB_PATH override pointing at a system dir
+    // (e.g. tests using /tmp/chorus-foo.db) doesn't chmod /tmp to 0700.
+    // Best-effort; failure on exotic filesystems is non-fatal.
     try {
       fs.chmodSync(dbDir, 0o700);
     } catch {

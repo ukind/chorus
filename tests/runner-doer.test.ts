@@ -14,10 +14,12 @@
  *   - StreamFileWriter buffer is flushed in the finally block on every path
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { runDoerHeadless } from '../src/daemon/runner';
+import { _resetDbForTests } from '../src/lib/db/connection';
 import type { StandardPhase } from '../src/lib/template-schema';
 import type { RunnerEvent } from '../src/daemon/runner';
 import { makeFakeShim, happyPathEvents } from './helpers/fake-agent-shim';
@@ -25,13 +27,23 @@ import { makeFakeShim, happyPathEvents } from './helpers/fake-agent-shim';
 let tmp: string;
 let answerFile: string;
 let events: RunnerEvent[];
+let dbPath: string;
 
-beforeEach(() => {
+beforeEach(async () => {
+  // Each test gets a unique DB so parallel vitest workers don't race
+  // on a shared ~/.chorus/chorus.db (CI hit SQLITE_BUSY otherwise).
+  dbPath = path.join(os.tmpdir(), `chorus-runner-doer-${randomUUID()}.db`);
+  process.env.CHORUS_DB_PATH = dbPath;
+  await _resetDbForTests();
+
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'chorus-doer-'));
   answerFile = path.join(tmp, 'answer.md');
   events = [];
 });
-afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
+afterEach(() => {
+  fs.rmSync(tmp, { recursive: true, force: true });
+  delete process.env.CHORUS_DB_PATH;
+});
 
 const fixturePhase: StandardPhase = {
   id: 'review',

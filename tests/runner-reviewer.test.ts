@@ -7,10 +7,12 @@
  * paths fail closed (null).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { runReviewerHeadless } from '../src/daemon/runner';
+import { _resetDbForTests } from '../src/lib/db/connection';
 import type { StandardPhase } from '../src/lib/template-schema';
 import type { RunnerEvent } from '../src/daemon/runner';
 import { makeFakeShim, happyPathEvents } from './helpers/fake-agent-shim';
@@ -19,15 +21,25 @@ let tmp: string;
 let reviewerDir: string;
 let answerFile: string;
 let events: RunnerEvent[];
+let dbPath: string;
 
-beforeEach(() => {
+beforeEach(async () => {
+  // Each test gets a unique DB so parallel vitest workers don't race
+  // on a shared ~/.chorus/chorus.db (CI hit SQLITE_BUSY otherwise).
+  dbPath = path.join(os.tmpdir(), `chorus-runner-reviewer-${randomUUID()}.db`);
+  process.env.CHORUS_DB_PATH = dbPath;
+  await _resetDbForTests();
+
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'chorus-reviewer-'));
   reviewerDir = path.join(tmp, 'reviewer-codex-0');
   fs.mkdirSync(reviewerDir, { recursive: true });
   answerFile = path.join(reviewerDir, 'answer.md');
   events = [];
 });
-afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
+afterEach(() => {
+  fs.rmSync(tmp, { recursive: true, force: true });
+  delete process.env.CHORUS_DB_PATH;
+});
 
 const fixturePhase: StandardPhase = {
   id: 'review',

@@ -91,6 +91,44 @@ describe('parseGemini — real fixture (gemini-cli, captured 2026-04-30)', () =>
     expect(events).toHaveLength(1);
     expect(events[0].type).toBe('error');
   });
+
+  it('detects quota exhaustion and surfaces the reset window', () => {
+    const events = parseGemini(
+      '{"type":"result","status":"error","error":{"message":"You have exhausted your capacity on this model. Your quota will reset after 6h23m52s."}}',
+    );
+    expect(events).toHaveLength(1);
+    expect((events[0] as { kind: string }).kind).toBe('quota_exhausted');
+    const message = (events[0] as { message: string }).message;
+    expect(message).toMatch(/quota/i);
+    expect(message).toMatch(/6h23m52s/);
+  });
+
+  it('digs nested error.cause.message when result.error is an object', () => {
+    const events = parseGemini(
+      '{"type":"result","status":"error","error":{"cause":{"message":"upstream is on fire"}}}',
+    );
+    expect(events).toHaveLength(1);
+    expect((events[0] as { message: string }).message).toBe('upstream is on fire');
+  });
+});
+
+describe('parseGeminiExit — stderr-driven quota detection', () => {
+  it('emits quota_exhausted with reset window from stderr', async () => {
+    const { parseGeminiExit } = await import('@/daemon/agents/parsers/gemini');
+    const stderr =
+      'Error: You have exhausted your capacity on this model. Your quota will reset after 8h14m16s.\n' +
+      '    at handle ()  cause: { code: 429, reason: "QUOTA_EXHAUSTED" }';
+    const events = parseGeminiExit('', stderr, 1);
+    expect(events).toHaveLength(1);
+    expect((events[0] as { kind: string }).kind).toBe('quota_exhausted');
+    expect((events[0] as { message: string }).message).toMatch(/8h14m16s/);
+  });
+
+  it('returns no events when stderr does not look like a quota error', async () => {
+    const { parseGeminiExit } = await import('@/daemon/agents/parsers/gemini');
+    expect(parseGeminiExit('', 'random stderr noise', 1)).toEqual([]);
+    expect(parseGeminiExit('', '', 0)).toEqual([]);
+  });
 });
 
 describe('parseOpencodeExit — single-blob fallback (older opencode builds)', () => {

@@ -14,7 +14,7 @@ import type {
 } from './types.js';
 import { quoteValue, quotePath, validateValue } from './quote.js';
 import { spawnHeadless } from '../headless.js';
-import { parseGemini } from './parsers/index.js';
+import { parseGemini, parseGeminiExit } from './parsers/index.js';
 
 export const geminiShim: AgentShim = {
   lineage: 'google',
@@ -105,6 +105,14 @@ export const geminiShim: AgentShim = {
         GEMINI_CLI_TRUST_WORKSPACE: 'true',
       },
       parseLine: parseGemini,
+      // gemini-cli logs upstream API errors (notably 429 quota
+      // exhaustion) to stderr without mirroring them in the JSON
+      // result line. parseGeminiExit scans the captured stderr on
+      // exit and emits a `quota_exhausted` event with the parsed
+      // reset window — without this, the cockpit only sees the
+      // generic "Gemini result status=error" from the parser and
+      // the user can't tell when their quota will reset.
+      onExit: (out, err, code) => parseGeminiExit(out, err, code),
       cli: 'gemini',
       timeoutMs: opts.timeoutMs,
       abortSignal: opts.abortSignal,

@@ -223,7 +223,26 @@ export async function runReviewerHeadless(args: {
             console.error('[chorus] recordHealth failed for openrouter:', healthErr);
           });
         }
-        if (!errorSummary) {
+        // First error wins by default — but a more-specific later
+        // kind can supersede a vague earlier one. The gemini parser
+        // emits a generic `gemini_result_error` from the JSON result
+        // line; the on-exit handler then emits a precise
+        // `quota_exhausted` from stderr with the reset window. Without
+        // this upgrade rule the cockpit shows the vague first message
+        // and the user has no idea when their quota resets.
+        const VAGUE_KINDS = new Set(['gemini_result_error']);
+        const SPECIFIC_KINDS = new Set([
+          'quota_exhausted',
+          'rate_limit',
+          'auth_error',
+          'sandbox_unsupported',
+          'cli_not_in_path',
+        ]);
+        const isUpgrade =
+          errorSummary &&
+          VAGUE_KINDS.has(errorSummary.kind) &&
+          SPECIFIC_KINDS.has(event.kind);
+        if (!errorSummary || isUpgrade) {
           errorSummary = {
             kind: event.kind,
             message: classified?.message ?? event.message,

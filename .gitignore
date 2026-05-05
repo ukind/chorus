@@ -5,13 +5,24 @@ dist/
 *.log
 
 .env
+.env.*
+!.env.example
 .env.local
 .env*.local
 
-# Local Chorus data (per-user, never committed)
+# Local Chorus data (per-user, never committed). Schema covers all
+# WAL-mode SQLite sidecars + every per-host residue file the daemon
+# writes — auth tokens, install IDs, pidfiles, log dirs.
 .chorus/
 chorus.db
 chorus.db-journal
+chorus.db-wal
+chorus.db-shm
+install-id
+daemon.pid
+web.pid
+auth-token
+no-telemetry
 
 # Build artifacts
 *.tsbuildinfo

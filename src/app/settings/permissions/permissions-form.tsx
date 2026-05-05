@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { Loader2, Check, AlertTriangle, ShieldCheck, FolderLock, Globe } from "lucide-react";
 import {
   type PermissionSettings,
@@ -34,7 +34,11 @@ export function PermissionsForm({ initial }: Props) {
       full: { label: "Full access", description: "" },
     };
 
-  const persist = async (patch: Partial<PermissionSettings>) => {
+  // useCallback so the React Compiler treats the body as deferred-
+  // execution (event-handler time, not render time). Without this,
+  // `Date.now()` is flagged as an impure call during render even
+  // though it only fires when the user toggles a switch.
+  const persist = useCallback(async (patch: Partial<PermissionSettings>) => {
     setBusy(true);
     setError(null);
     try {
@@ -50,7 +54,7 @@ export function PermissionsForm({ initial }: Props) {
     } finally {
       setBusy(false);
     }
-  };
+  }, []);
 
   return (
     <div className="space-y-6">

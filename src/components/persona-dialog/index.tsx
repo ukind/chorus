@@ -84,15 +84,32 @@ export function PersonaDialog({
   // typing in the label stops auto-syncing the slug.
   const [idDirty, setIdDirty] = useState(isEdit);
 
+  // Reset internal form state when the parent passes a different
+  // persona (id+updated_at change). The "right" pattern per React
+  // Compiler is to remount via parent's `key` prop, but this dialog
+  // also owns its own open/close state — a key change mid-edit would
+  // close the dialog and discard pending edits. Keeping the
+  // controlled-reset pattern; migration to lifted open state is v0.8.
   useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect */
     setForm(initial);
     setSaveError(null);
     setConfirmingDelete(false);
     setIdDirty(isEdit);
+    /* eslint-enable react-hooks/set-state-in-effect */
   }, [initial, isEdit]);
 
+  // Hold the latest `initial` in a ref so the setTimeout-based reset
+  // (`reset()` 200ms after dialog close) always reads the freshest value
+  // — without it, save → close → 200ms-later reset captured the OLD
+  // initial via closure. Assignment moved into useEffect so the React
+  // Compiler purity check passes; the timing change is safe because the
+  // only reader is `reset()`, which runs from setTimeout 200ms after
+  // the close, well after this effect has committed.
   const initialRef = useRef(initial);
-  initialRef.current = initial;
+  useEffect(() => {
+    initialRef.current = initial;
+  });
 
   const issues = useMemo(() => validate(form, isEdit), [form, isEdit]);
   const valid = issues.length === 0;

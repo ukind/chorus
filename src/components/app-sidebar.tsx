@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -17,6 +17,10 @@ import {
 import { TriadLogo } from "@/components/triad-logo";
 import { listChats, DaemonError } from "@/lib/api";
 import { chatDisplayTitle } from "@/lib/chat-title";
+import {
+  readCollapsed,
+  writeCollapsed,
+} from "@/lib/sidebar-collapsed-storage";
 import type { Chat } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -363,34 +367,46 @@ export function SidebarBody({ onNavigate, collapsed = false, onToggleCollapsed }
  * Collapse state persists across reloads via localStorage. Width transitions
  * smoothly (200ms) for a Linear/Raycast feel.
  */
-const COLLAPSED_KEY = "chorus.sidebar.collapsed";
+// Subscribe-to-storage adapter for `useSyncExternalStore`. The browser
+// fires `storage` events on OTHER tabs only, so a same-tab toggle
+// re-renders via the local tick bump in `toggle`; the listener handles
+// cross-tab sync (open chorus in two tabs → toggle in one → both
+// update).
+const subscribeToStorage = (callback: () => void): (() => void) => {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener("storage", callback);
+  return () => window.removeEventListener("storage", callback);
+};
+const getCollapsedSnapshot = (): boolean =>
+  readCollapsed(typeof window === "undefined" ? null : window.localStorage);
+// SSR snapshot: render expanded so the first paint matches the default
+// for new users. Hydration may flip to collapsed after mount; the CSS
+// width transition makes the swap feel intentional rather than jumpy.
+const getServerCollapsedSnapshot = (): boolean => false;
 
 export function AppSidebar() {
-  const [collapsed, setCollapsed] = useState(false);
+  // useSyncExternalStore subscribes to localStorage directly so we
+  // don't need a useEffect+setState hydration step (which trips the
+  // React Compiler `set-state-in-effect` rule). Same-tab toggles
+  // bypass the storage event, so we bump a tick to force re-read.
+  const [tick, bumpTick] = useState(0);
+  const collapsed = useSyncExternalStore(
+    subscribeToStorage,
+    () => {
+      void tick; // include the tick in the snapshot so same-tab writes re-read
+      return getCollapsedSnapshot();
+    },
+    getServerCollapsedSnapshot,
+  );
 
-  // Hydrate from localStorage on mount. Default false (expanded) on first
-  // visit so new users see the full sidebar before discovering the toggle.
-  useEffect(() => {
+  const toggle = useCallback(() => {
     if (typeof window === "undefined") return;
-    try {
-      const stored = window.localStorage.getItem(COLLAPSED_KEY);
-      if (stored === "1") setCollapsed(true);
-    } catch {
-      /* localStorage unavailable — fall through with default */
-    }
+    const next = !readCollapsed(window.localStorage);
+    writeCollapsed(window.localStorage, next);
+    // Bump the tick so the snapshot getter re-reads — `storage` events
+    // don't fire same-tab.
+    bumpTick((n) => n + 1);
   }, []);
-
-  const toggle = () => {
-    setCollapsed((prev) => {
-      const next = !prev;
-      try {
-        window.localStorage.setItem(COLLAPSED_KEY, next ? "1" : "0");
-      } catch {
-        /* ignore */
-      }
-      return next;
-    });
-  };
 
   return (
     <aside

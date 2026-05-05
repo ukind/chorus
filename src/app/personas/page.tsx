@@ -24,6 +24,7 @@ import {
   DaemonError,
 } from "@/lib/api";
 import type { Persona } from "@/lib/api/personas";
+import { nextDuplicateId } from "@/lib/persona-duplicate-id";
 import { lineageDot, lineageLabel } from "@/lib/lineage-maps";
 
 export default function PersonasPage() {
@@ -77,23 +78,16 @@ export default function PersonasPage() {
     }
   }, []);
 
+  // Mount-only data load. `refresh()` is async + uses setState
+  // internally; React Compiler's set-state-in-effect rule flags this
+  // because it can't track through the closure. The pattern is
+  // intentional and equivalent to the canonical "fetch on mount"
+  // recipe — switching to a Suspense-based loader is a v0.8 cockpit
+  // refactor, not a v0.7 launch fix.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     refresh();
   }, [refresh]);
-
-  // Walk `<sourceId>-copy`, `<sourceId>-copy-2`, … until we find a free
-  // slot in the current personas list. The bound is a sanity cap; the
-  // user almost certainly wouldn't intentionally duplicate the same row 99
-  // times, so falling through to a timestamp suffix is safe.
-  function nextDuplicateId(sourceId: string, taken: Set<string>): string {
-    const base = `${sourceId}-copy`;
-    if (!taken.has(base)) return base;
-    for (let i = 2; i < 100; i++) {
-      const candidate = `${base}-${i}`;
-      if (!taken.has(candidate)) return candidate;
-    }
-    return `${base}-${Date.now()}`;
-  }
 
   async function handleDeleteRow(target: Persona) {
     if (deletingId || target.builtin) return;
@@ -142,7 +136,7 @@ export default function PersonasPage() {
           ? source
           : await getPersona(source.id);
       const taken = new Set(personas.map((p) => p.id));
-      const newId = nextDuplicateId(source.id, taken);
+      const newId = nextDuplicateId({ sourceId: source.id, taken });
       const saved = await savePersona({
         id: newId,
         label: `${full.label} (copy)`,
@@ -176,12 +170,19 @@ export default function PersonasPage() {
   }
 
   // Fetch the full persona (with system_prompt) when selection changes.
+  // The two synchronous setStates inside this effect (clearing on empty
+  // selection + flipping the loading flag) trip React Compiler's
+  // set-state-in-effect rule. Migrating to Suspense + use(promise) is
+  // a v0.8 cockpit refactor; the canonical async-fetch pattern is
+  // intentional here.
   useEffect(() => {
     if (!selectedId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSelectedFull(null);
       return;
     }
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoadingFull(true);
     getPersona(selectedId)
       .then((p) => {

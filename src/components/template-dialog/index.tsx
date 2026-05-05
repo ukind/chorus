@@ -107,7 +107,12 @@ export function TemplateDialog({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [serverIssues, setServerIssues] = useState<TemplateValidationIssue[]>([]);
 
+  // Reset internal form state when the parent passes a different
+  // template. Same trade-off as persona-dialog: this component owns
+  // its own dirty/tab/error state which would be discarded by a
+  // key-based remount mid-edit. Migration to lifted state is v0.8.
   useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect */
     setForm(initial.form);
     setYamlText(initial.yaml);
     setYamlDirty(false);
@@ -115,15 +120,21 @@ export function TemplateDialog({
     setTab(initial.lossy ? "yaml" : "form");
     setSaveError(null);
     setServerIssues([]);
+    /* eslint-enable react-hooks/set-state-in-effect */
   }, [initial]);
 
   // Hold the latest `initial` in a ref so the setTimeout-based reset on
   // dialog close always reads the freshest value. Without this, save →
   // close → 200ms-later reset captured the OLD initial via closure, then
   // overwrote the new state already set by the [initial] useEffect when
-  // the parent re-rendered with the saved template.
+  // the parent re-rendered with the saved template. Assignment moved
+  // into useEffect to satisfy the React Compiler refs-during-render
+  // rule; the only reader is `reset()` invoked 200ms after dialog close,
+  // long after this effect has committed.
   const initialRef = useRef(initial);
-  initialRef.current = initial;
+  useEffect(() => {
+    initialRef.current = initial;
+  });
 
   // Source-of-truth precedence — see selectLiveYaml docstring. The
   // "return original yaml verbatim" step is what prevents builtin

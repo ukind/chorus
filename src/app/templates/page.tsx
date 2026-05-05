@@ -55,9 +55,13 @@ export default function TemplatesPage() {
     [selectedId],
   );
 
+  // Mount-only data load. `refreshTemplates()` is async + uses setState
+  // internally; React Compiler's set-state-in-effect rule flags this
+  // because it can't track through the closure. Canonical fetch-on-
+  // mount pattern; Suspense migration deferred to v0.8.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps
     refreshTemplates();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function handleDeleteRow(target: Template) {

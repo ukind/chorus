@@ -9,11 +9,13 @@
  */
 
 import { useState } from "react";
+import Link from "next/link";
 import {
   CheckCircle2,
   ChevronDown,
   Check,
   AlertTriangle,
+  ArrowRight,
   Clock,
 } from "lucide-react";
 import { UI_LINEAGE_BRAND } from "@/lib/lineage-maps";
@@ -37,7 +39,10 @@ export function OpenRouterFleetCard({
   voices: initialVoices,
   health,
 }: OpenRouterFleetCardProps) {
-  const [open, setOpen] = useState(false);
+  // Auto-expand when auth is broken so the "Fix on Connect" CTA is visible
+  // without the user having to discover that the card is clickable.
+  const isBroken = health?.status === "auth_invalid";
+  const [open, setOpen] = useState(isBroken);
   const [voices, setVoices] = useState<Voice[]>(initialVoices);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
@@ -85,14 +90,6 @@ export function OpenRouterFleetCard({
               {enabledCount} model{enabledCount === 1 ? "" : "s"} enabled
             </span>
           </div>
-          {health &&
-            health.status !== "healthy" &&
-            health.status !== "unknown" &&
-            health.message && (
-              <div className="mt-1 truncate text-[10px] text-muted-foreground">
-                {health.message}
-              </div>
-            )}
         </div>
         <ChevronDown
           className={cn(
@@ -104,6 +101,24 @@ export function OpenRouterFleetCard({
 
       {open && (
         <div className="space-y-2 border-t border-border bg-card/50 p-3">
+          {isBroken && (
+            <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-2.5">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive" />
+              <div className="min-w-0 flex-1 space-y-1.5">
+                <p className="text-[11px] leading-relaxed text-destructive">
+                  OpenRouter rejected the saved API key
+                  {health?.message ? `: ${health.message}` : "."}
+                </p>
+                <Link
+                  href="/connect"
+                  className="inline-flex items-center gap-1 rounded border border-destructive/50 bg-destructive/10 px-2 py-1 text-[11px] font-medium text-destructive transition hover:bg-destructive/20"
+                >
+                  Fix on Connect
+                  <ArrowRight className="h-3 w-3" />
+                </Link>
+              </div>
+            </div>
+          )}
           {saveError && <p className="text-[11px] text-destructive">{saveError}</p>}
           {voices.length === 0 ? (
             <p className="text-[11px] text-muted-foreground">
@@ -140,9 +155,11 @@ export function OpenRouterFleetCard({
               ))}
             </div>
           )}
-          <p className="text-[11px] leading-relaxed text-muted-foreground/70">
-            Add or replace your API key on Connect. Toggles save automatically.
-          </p>
+          {!isBroken && (
+            <p className="text-[11px] leading-relaxed text-muted-foreground/70">
+              Add or replace your API key on Connect. Toggles save automatically.
+            </p>
+          )}
         </div>
       )}
     </div>

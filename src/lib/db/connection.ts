@@ -65,14 +65,52 @@ async function initDb(): Promise<Client> {
   const dbPath = resolveDbPath();
   const dbDir = path.dirname(dbPath);
   if (!fs.existsSync(dbDir)) {
-    fs.mkdirSync(dbDir, { recursive: true });
+    // 0700: only the owner traverses ~/.chorus. Without this the dir
+    // inherits umask (typically 0755 → world-traversable), which lets
+    // other local users `cat ~/.chorus/chorus.db` and read every API
+    // key in the secrets table. Audit A2 BLOCKER.
+    fs.mkdirSync(dbDir, { recursive: true, mode: 0o700 });
+  } else {
+    // Existing dir from before this fix shipped — tighten retroactively
+    // on first boot of an upgraded install. Best-effort; failure on
+    // exotic filesystems (FAT, samba) is non-fatal.
+    try {
+      fs.chmodSync(dbDir, 0o700);
+    } catch {
+      /* non-fatal */
+    }
   }
   const isNew = !fs.existsSync(dbPath);
   const db = createClient({ url: `file:${dbPath}` });
 
+  // Lock down the SQLite file (and WAL/SHM sidecars when they appear)
+  // to owner-only read/write. Best-effort on every boot — covers fresh
+  // creation, retroactive hardening, and the case where a sidecar was
+  // recreated by libsql with default umask after a rare crash.
+  for (const f of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`]) {
+    try {
+      if (fs.existsSync(f)) fs.chmodSync(f, 0o600);
+    } catch {
+      /* non-fatal */
+    }
+  }
+
   // libsql defaults to WAL on local file URLs. Setting it explicitly
   // keeps the intent visible in code reviews; no-op if already WAL.
   await db.execute('PRAGMA journal_mode = WAL');
+
+  // PRAGMA journal_mode=WAL creates the -wal/-shm sidecars if they
+  // didn't already exist. Re-chmod now so a brand-new DB never lives
+  // even briefly with default-umask permissions on the WAL file.
+  // Round-tripping the chmod loop is cheaper than risking a fast
+  // attacker who can read the WAL between init and first write.
+  for (const f of [`${dbPath}-wal`, `${dbPath}-shm`]) {
+    try {
+      if (fs.existsSync(f)) fs.chmodSync(f, 0o600);
+    } catch {
+      /* non-fatal */
+    }
+  }
 
   if (isNew) {
     const schema = readFileSync(resolveSchemaPath(), 'utf-8');

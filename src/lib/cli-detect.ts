@@ -12,7 +12,7 @@
  */
 
 import { spawnSync } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, lstatSync } from 'fs';
 import { homedir, platform } from 'os';
 import path from 'path';
 
@@ -378,9 +378,63 @@ export function validateCliPath(
       reason: `that file is named "${actualBase}", but the ${cli} binary should be "${expectedBin}". Pasted the wrong path?`,
     };
   }
-  if (!existsSync(trimmed))
+  // Symlink-aware validation:
+  //   - Reject sockets / pipes / directories outright (lstat).
+  //   - For symlinks, realpath the target and re-check it's a regular
+  //     file. This keeps Homebrew / asdf / mise / npm-global / fnm /
+  //     volta installs working (most ship the user-facing binary as a
+  //     symlink) while neutralising the TOCTOU attack from Audit D3:
+  //     we persist the CANONICAL path, so a later swap of the symlink
+  //     can't redirect daemon spawns to a malicious binary.
+  //   - existsSync alone (the pre-fix call) followed symlinks silently
+  //     and stored the symlink path — that's the attack surface we're
+  //     closing.
+  let canonical = trimmed;
+  let lstat: import('fs').Stats;
+  try {
+    lstat = lstatSync(trimmed);
+  } catch {
     return { id: cli, found: false, reason: `no file at ${trimmed}` };
+  }
+  if (lstat.isSymbolicLink()) {
+    try {
+      canonical = path.resolve(
+        path.dirname(trimmed),
+        // realpath resolves the chain; spawning the canonical target
+        // means a later symlink-swap can't redirect us.
+        require('node:fs').realpathSync(trimmed),
+      );
+      const realStat = lstatSync(canonical);
+      if (!realStat.isFile()) {
+        return {
+          id: cli,
+          found: false,
+          reason: `symlink target is not a regular file: ${canonical}`,
+        };
+      }
+    } catch {
+      return {
+        id: cli,
+        found: false,
+        reason: `symlink could not be resolved: ${trimmed}`,
+      };
+    }
+  } else if (!lstat.isFile()) {
+    return {
+      id: cli,
+      found: false,
+      reason: `path is not a regular file: ${trimmed}`,
+    };
+  }
+  // Verify via the user-pasted path so verifyRunnable's internal
+  // basename check passes — "claude" symlinked to a versioned target
+  // like "2.1.126" is the canonical real-world install (npm/Homebrew
+  // both do this). Spawning the symlink path runs the same binary as
+  // spawning the resolved target since the kernel follows the link.
   const v = verifyRunnable(cli, trimmed);
   if (!v.ok) return { id: cli, found: false, reason: v.reason };
-  return { id: cli, found: true, path: trimmed, source: 'manual' };
+  // Persist the canonical (realpath-resolved) target. Daemon spawns
+  // will hit the resolved binary even if the symlink is later swapped
+  // by an attacker — closes the TOCTOU window from Audit D3.
+  return { id: cli, found: true, path: canonical, source: 'manual' };
 }

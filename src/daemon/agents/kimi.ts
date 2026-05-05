@@ -29,6 +29,7 @@ import { spawnHeadless } from '../headless.js';
 import { parseOpencode, parseOpencodeExit, parseKimi } from './parsers/index.js';
 import { atomicWriteJsonSync } from '../../lib/atomic-write.js';
 import { wrapWithPty } from './opencode.js';
+import { assertSandboxSupported, sandboxFailClosed } from './sandbox-guard.js';
 
 /**
  * Two ways to talk to Kimi K2.6:
@@ -109,6 +110,9 @@ export const kimiShim: AgentShim = {
 
   buildLaunchCommand(opts: AgentSpawnOptions): string {
     validateValue('model', opts.model);
+    // Same fail-closed gate as opencode — kimi-cli mirrors opencode's
+    // codebase and inherits the same gap. Audit D1 BLOCKER.
+    assertSandboxSupported(opts.sandbox, 'kimi');
 
     const cwd = quotePath(opts.cwd);
     let cmd = `cd ${cwd} && kimi`;
@@ -165,6 +169,9 @@ export const kimiShim: AgentShim = {
    * the Go subscription gateway.
    */
   runHeadless(opts: HeadlessSpawnOptions): AsyncIterable<AgentEvent> {
+    const sandboxError = sandboxFailClosed(opts.sandbox, 'kimi');
+    if (sandboxError) return sandboxError;
+
     const transport = detectKimiTransport();
 
     if (transport === 'kimi-cli') {

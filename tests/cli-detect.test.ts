@@ -55,9 +55,12 @@ describe('cli-detect', () => {
     });
 
     it('returns source:manual when found:true', () => {
-      // This test depends on system state. If a CLI is installed and
-      // we use its actual path, validate should return found:true with source:manual
-      // For now, we skip this if no CLIs are found in a known location
+      // Depends on system state. validateCliPath uses the basename of
+      // the user-pasted path for its name check (e.g. "claude" symlink
+      // pointing at a versioned binary like "2.1.126" still validates
+      // because the user-facing name is "claude"). We pass the
+      // detected path AS-IS — typically a symlink — and expect
+      // validation to accept it.
       const clis = detectAllClis();
       const found = clis.find((c) => c.found);
 
@@ -66,6 +69,41 @@ describe('cli-detect', () => {
         expect(result.id).toBe(found.id);
         expect(result.found).toBe(true);
         expect(result.source).toBe('manual');
+      }
+    });
+
+    it('symlinks: accepts the link, persists the canonical target (TOCTOU defense)', () => {
+      // Real-world installs (Homebrew, asdf, mise, npm-global, fnm,
+      // volta) ship the user-facing binary as a symlink. Rejecting
+      // them outright would break the majority of legit installs.
+      // Instead, validateCliPath realpath-resolves and stores the
+      // CANONICAL target, so a later swap of the symlink can't
+      // redirect daemon spawns to a malicious binary.
+      const clis = detectAllClis();
+      const found = clis.find((c) => c.found);
+      if (!found || !found.path) return;
+
+      const fs = require('node:fs');
+      const os = require('node:os');
+      const path = require('node:path');
+      // Use the CLI's expected basename so the basename check passes.
+      const expectedName = path.basename(found.path);
+      const linkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chorus-symlink-'));
+      const linkPath = path.join(linkDir, expectedName);
+      fs.symlinkSync(fs.realpathSync(found.path), linkPath);
+
+      try {
+        const result = validateCliPath(found.id, linkPath);
+        expect(result.found).toBe(true);
+        expect(result.path).toBe(fs.realpathSync(found.path)); // canonical, not the symlink
+        expect(result.source).toBe('manual');
+      } finally {
+        try {
+          fs.unlinkSync(linkPath);
+          fs.rmdirSync(linkDir);
+        } catch {
+          /* ignore */
+        }
       }
     });
   });

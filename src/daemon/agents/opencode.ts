@@ -15,6 +15,7 @@ import type {
 import { quotePath, validateValue } from './quote.js';
 import { spawnHeadless } from '../headless.js';
 import { parseOpencode, parseOpencodeExit } from './parsers/index.js';
+import { assertSandboxSupported, sandboxFailClosed } from './sandbox-guard.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -106,6 +107,15 @@ export const opencodeShim: AgentShim = {
   buildLaunchCommand(opts: AgentSpawnOptions): string {
     validateValue('model', opts.model);
 
+    // Fail-closed when the user requested strict sandbox: the opencode
+    // CLI doesn't expose a read-only flag we can map to. Pre-fix we
+    // silently spawned anyway and the "Strict" label became decorative
+    // for any opencode-routed reviewer (Audit D1 BLOCKER). Throwing
+    // here surfaces in the runner as a `cli_error` with an actionable
+    // message; the user can switch to a lineage that supports strict
+    // (claude / codex / gemini) or fall back to workspace.
+    assertSandboxSupported(opts.sandbox, 'opencode');
+
     const cwd = quotePath(opts.cwd);
     let cmd = `cd ${cwd} && opencode`;
 
@@ -145,6 +155,14 @@ export const opencodeShim: AgentShim = {
    * inside opencode's allowed workspace.
    */
   runHeadless(opts: HeadlessSpawnOptions): AsyncIterable<AgentEvent> {
+    // Same fail-closed gate as the tmux path. See buildLaunchCommand
+    // above for rationale. Returns a single-shot async iterable that
+    // yields one error event so the runner records cli_error and the
+    // cockpit shows the user a clear "switch lineage" message instead
+    // of pretending the run completed normally.
+    const sandboxError = sandboxFailClosed(opts.sandbox, 'opencode');
+    if (sandboxError) return sandboxError;
+
     // Sidestep both ARG_MAX and shell-escape pitfalls by stashing the prompt
     // on disk. The chat dir already exists (the runner creates it before
     // spawning), so this never fails on first call.

@@ -124,17 +124,41 @@ export function registerChatRoutes(
       }
 
       // Validate repoPath — must be an absolute path to an existing
-      // directory. Stricter checks (is-a-repo, gh-authed) happen when
-      // the ship phase runs. Resolve to canonical form first to
-      // neutralise `/foo/../etc/passwd` traversal; path.isAbsolute
-      // accepts Windows paths (`C:\`, UNC).
+      // directory.
+      //
+      // Symlink handling (Audit D2 BLOCKER): pre-fix `existsSync`
+      // followed symlinks silently, so a `repoPath` pointing at
+      // `~/innocent-link → /etc` would pass and the doer would spawn
+      // with `cwd=/etc`. We realpath-resolve and re-check the target
+      // is a directory. Storing the canonical path means a later swap
+      // of the symlink can't redirect the doer.
+      //
+      // Stricter checks (is-a-repo, gh-authed) happen when the ship
+      // phase runs.
       if (repoPath !== undefined) {
         if (typeof repoPath !== 'string' || !path.isAbsolute(repoPath)) {
           return errorResponse('validation', 'repoPath must be an absolute path');
         }
         const resolved = path.resolve(repoPath);
-        if (!fs.existsSync(resolved)) {
+        let canonical: string;
+        try {
+          // realpathSync resolves symlinks AND verifies the path
+          // exists. Throws ENOENT if either link or target is missing.
+          canonical = fs.realpathSync(resolved);
+        } catch {
           return errorResponse('validation', `repoPath does not exist: ${resolved}`);
+        }
+        let stat: fs.Stats;
+        try {
+          stat = fs.statSync(canonical);
+        } catch {
+          return errorResponse('validation', `repoPath does not exist: ${canonical}`);
+        }
+        if (!stat.isDirectory()) {
+          return errorResponse(
+            'validation',
+            `repoPath must be a directory: ${canonical}`,
+          );
         }
       }
 

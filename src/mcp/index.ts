@@ -31,7 +31,7 @@ import {
 
 const mcpServer = new McpServer({
   name: "chorus",
-  version: "0.7.0",
+  version: "0.7.2",
 });
 
 /**

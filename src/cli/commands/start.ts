@@ -13,6 +13,7 @@ import {
 import { detectRuntimeEnv, shouldAutoOpenBrowser } from '../runtime-env.js';
 import {
   COCKPIT_URL,
+  DAEMON_URL,
   printCockpitAccessHint,
 } from '../shared.js';
 import { c, header, sym, tip } from '../ui.js';
@@ -28,6 +29,7 @@ export function registerStartCommand(program: Command): void {
         const pidFile = path.join(chorusDir, 'daemon.pid');
 
         if (await alreadyRunning(pidFile, options.ui)) return;
+        if (await alreadyRunningOnDefaultPort(options.ui)) return;
 
         await reapOrphans();
         warnIfTmuxMissing();
@@ -66,6 +68,68 @@ async function captureAndPersistPath(): Promise<void> {
   } catch {
     /* non-fatal */
   }
+}
+
+/**
+ * Pidfile-less variant of `alreadyRunning`. Covers the case where
+ * the daemon is healthy on :7707 but the pidfile is missing or stale
+ * (manual deletion, /tmp wipe, prior crash before pidfile write,
+ * sudo-started daemon vs. user-invoked `chorus start`, etc.).
+ *
+ * Without this, a healthy chorus + missing pidfile would fall through
+ * to reapOrphans() and either kill the live daemon or hit the
+ * "couldn't identify the PID" dead-end (when the daemon runs as a
+ * different user and `ss -p` redacts the PID).
+ *
+ * The HTTP probe alone is a strong signal — chorus's /api/v1/health
+ * returns a versioned envelope no random other process happens to
+ * mimic. The PID-cmdline cross-check is belt-and-braces: only treat
+ * "already running" as authoritative when both agree it's chorus.
+ */
+async function alreadyRunningOnDefaultPort(
+  uiFlag: boolean | undefined,
+): Promise<boolean> {
+  // Short timeout — we're trying to fail fast and fall through to reap
+  // logic when the daemon is actually dead. 1.5s covers a slow loopback
+  // round-trip on resource-starved CI runners without making a healthy
+  // system feel sluggish.
+  let healthyVersion: string | null = null;
+  try {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 1500);
+    const res = await fetch(`${DAEMON_URL}/api/v1/health`, {
+      signal: ac.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) return false;
+    const envelope = (await res.json()) as {
+      ok?: boolean;
+      data?: { version?: string };
+    };
+    if (envelope.ok !== true || !envelope.data?.version) return false;
+    healthyVersion = envelope.data.version;
+  } catch {
+    // ECONNREFUSED / abort / parse error → not a healthy chorus on :7707.
+    return false;
+  }
+
+  // Cross-check: the PID listening on :7707 must look like chorus.
+  // Without this, a foreign service that happens to respond 200 on
+  // /api/v1/health with a matching envelope shape could fool us into
+  // sending the user to a wrong cockpit URL. Belt-and-braces.
+  const pids = findPidsOnPort(7707);
+  const looksLikeChorus = pids.some((pid) => pidLooksLikeChorus(pid).match);
+  if (pids.length > 0 && !looksLikeChorus) return false;
+
+  console.log('');
+  console.log(
+    header(sym.ok, 'Chorus is already running', `version ${healthyVersion}`),
+  );
+  printCockpitAccessHint();
+  if (uiFlag && shouldAutoOpenBrowser(detectRuntimeEnv())) {
+    open(COCKPIT_URL);
+  }
+  return true;
 }
 
 async function alreadyRunning(

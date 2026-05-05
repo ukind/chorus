@@ -130,6 +130,76 @@ describe('voices.upsert', () => {
     expect(v.enabled).toBe(false);
   });
 
+  // REGRESSION: pre-fix `upsert` always preserved existing.enabled, silently
+  // dropping any explicit input.enabled override. That made the seed loop's
+  // re-detect path a no-op — once a row was auto-disabled it could never be
+  // re-enabled by the seeder, requiring a manual cockpit toggle. The fix
+  // makes input.enabled win when explicitly provided.
+  it('upsert respects explicit input.enabled=true on an existing disabled row', async () => {
+    await voices.upsert({
+      id: 'gemini-cli',
+      label: 'Gemini',
+      source: 'cli',
+      provider: 'gemini-cli',
+      model_id: 'gemini-3.1-pro-preview',
+      lineage: 'google',
+    });
+    await voices.update('gemini-cli', {
+      enabled: false,
+      disabled_reason: 'auto_missing',
+    });
+
+    // Seed loop re-detects the CLI and explicitly re-enables.
+    const restored = await voices.upsert({
+      id: 'gemini-cli',
+      label: 'Gemini',
+      source: 'cli',
+      provider: 'gemini-cli',
+      model_id: 'gemini-3.1-pro-preview',
+      lineage: 'google',
+      enabled: true,
+      disabled_reason: null,
+    });
+    expect(restored.enabled).toBe(true);
+    expect(restored.disabled_reason).toBeNull();
+  });
+
+  // The other half of the contract: when input omits `enabled`, the seed
+  // must NOT reset a user-toggled disable. Tested in the existing
+  // "preserves user-set enabled=false" case above; this assertion just
+  // pins the disabled_reason side too.
+  it('voices.update flipping enabled→false stamps disabled_reason="user" when caller does not supply one', async () => {
+    await voices.upsert({
+      id: 'codex-cli',
+      label: 'Codex',
+      source: 'cli',
+      provider: 'codex-cli',
+      model_id: 'gpt-5.5',
+      lineage: 'openai',
+    });
+    const updated = await voices.update('codex-cli', { enabled: false });
+    expect(updated.enabled).toBe(false);
+    expect(updated.disabled_reason).toBe('user');
+  });
+
+  it('voices.update flipping enabled→true clears disabled_reason', async () => {
+    await voices.upsert({
+      id: 'codex-cli',
+      label: 'Codex',
+      source: 'cli',
+      provider: 'codex-cli',
+      model_id: 'gpt-5.5',
+      lineage: 'openai',
+    });
+    await voices.update('codex-cli', {
+      enabled: false,
+      disabled_reason: 'auto_missing',
+    });
+    const restored = await voices.update('codex-cli', { enabled: true });
+    expect(restored.enabled).toBe(true);
+    expect(restored.disabled_reason).toBeNull();
+  });
+
   it('stores vendor_family when provided', async () => {
     const v = await voices.upsert({
       id: 'opencode-cli:opencode-go/deepseek-v4-pro',

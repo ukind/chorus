@@ -133,6 +133,16 @@ async function initDb(): Promise<Client> {
   await db.execute('CREATE INDEX IF NOT EXISTS idx_voices_provider ON voices(provider)');
   await db.execute('CREATE INDEX IF NOT EXISTS idx_voices_source ON voices(source)');
 
+  // disabled_reason — added so the seed can distinguish user-intent toggles
+  // from transient auto-disables on missed CLI detection. Without this the
+  // re-detect path can't safely re-enable rows; one flaky boot would leave
+  // a voice silently disabled forever.
+  const voiceCols = (await db.execute('PRAGMA table_info(voices)')).rows as unknown as { name: string }[];
+  const hasVoiceCol = (n: string): boolean => voiceCols.some((c) => c.name === n);
+  if (!hasVoiceCol('disabled_reason')) {
+    await db.execute('ALTER TABLE voices ADD COLUMN disabled_reason TEXT');
+  }
+
   return db;
 }
 

@@ -115,6 +115,12 @@ CREATE TABLE IF NOT EXISTS voices (
   input_cost_per_mtok REAL,
   output_cost_per_mtok REAL,
   enabled INTEGER NOT NULL DEFAULT 1,
+  -- Why a row is disabled. NULL = never disabled; 'user' = explicit cockpit
+  -- toggle; 'auto_missing' = seed couldn't detect the CLI on a boot. Only
+  -- 'auto_missing' rows get auto-re-enabled when the CLI returns; 'user'
+  -- intent is sticky. Pre-fix DBs surface as NULL → treated as 'user' so
+  -- we never silently override prior toggles after upgrade.
+  disabled_reason TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );

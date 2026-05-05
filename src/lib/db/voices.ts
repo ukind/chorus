@@ -12,11 +12,13 @@ const VoiceRowSchema = z.object({
   input_cost_per_mtok: z.number().nullable(),
   output_cost_per_mtok: z.number().nullable(),
   enabled: z.coerce.boolean(),
+  disabled_reason: z.enum(['user', 'auto_missing']).nullable().optional().default(null),
   created_at: z.number().int(),
   updated_at: z.number().int(),
 });
 
 export type VoiceRow = z.infer<typeof VoiceRowSchema>;
+export type VoiceDisabledReason = 'user' | 'auto_missing';
 
 export interface VoiceUpsertInput {
   id: string;
@@ -29,6 +31,12 @@ export interface VoiceUpsertInput {
   input_cost_per_mtok?: number | null;
   output_cost_per_mtok?: number | null;
   enabled?: boolean;
+  /**
+   * Why this row is disabled. Pass `null` to clear, a value to set,
+   * omit to preserve existing. The seed uses 'auto_missing' so the
+   * re-detect path can safely re-enable transient drops.
+   */
+  disabled_reason?: VoiceDisabledReason | null;
 }
 
 export interface VoiceUpdateInput {
@@ -38,6 +46,7 @@ export interface VoiceUpdateInput {
   output_cost_per_mtok?: number | null;
   /** Used by seed loops to rewrite the latest model on a stable-ID voice. */
   model_id?: string;
+  disabled_reason?: VoiceDisabledReason | null;
 }
 
 export interface VoiceListFilter {
@@ -50,23 +59,45 @@ export interface VoiceListFilter {
 
 export const voices = {
   /**
-   * Upsert a voice row. If the row exists, updates label/model_id/cost/
-   * vendor_family while preserving created_at and the existing enabled
-   * value (so seed loops don't trample user toggles). If new, inserts
-   * with `enabled` defaulting to true.
+   * Upsert a voice row. Updates label/model_id/cost/vendor_family on
+   * existing rows. `enabled` and `disabled_reason` follow this precedence:
+   *
+   *   1. Caller passes the field explicitly → use it (caller intent wins).
+   *      For disabled_reason, an explicit `null` means "clear".
+   *   2. Caller omits the field on an existing row → preserve current value.
+   *   3. Caller omits on a fresh row → default (`enabled=true`,
+   *      `disabled_reason=null`).
+   *
+   * The previous "existing always wins on enabled" behaviour silently
+   * dropped seed overrides — meaning auto_missing rows could never be
+   * re-enabled when the CLI returned, and migration-data overrides were
+   * dead code on existing installs.
    */
   async upsert(input: VoiceUpsertInput): Promise<VoiceRow> {
     const db = await getDb();
     const now = Date.now();
     const existing = await voices.getById(input.id);
 
+    const enabledExplicit = input.enabled !== undefined;
+    const reasonExplicit = 'disabled_reason' in input;
+
+    let enabledValue: number;
+    if (enabledExplicit) enabledValue = input.enabled ? 1 : 0;
+    else if (existing) enabledValue = existing.enabled ? 1 : 0;
+    else enabledValue = 1;
+
+    let reasonValue: string | null;
+    if (reasonExplicit) reasonValue = input.disabled_reason ?? null;
+    else if (existing) reasonValue = existing.disabled_reason ?? null;
+    else reasonValue = null;
+
     await db.execute({
       sql: `
         INSERT OR REPLACE INTO voices
           (id, label, source, provider, model_id, lineage, vendor_family,
            input_cost_per_mtok, output_cost_per_mtok, enabled,
-           created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           disabled_reason, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       args: [
         input.id,
@@ -78,13 +109,8 @@ export const voices = {
         input.vendor_family ?? null,
         input.input_cost_per_mtok ?? null,
         input.output_cost_per_mtok ?? null,
-        existing?.enabled !== undefined
-          ? existing.enabled
-            ? 1
-            : 0
-          : input.enabled === false
-            ? 0
-            : 1,
+        enabledValue,
+        reasonValue,
         existing?.created_at ?? now,
         now,
       ],
@@ -138,6 +164,24 @@ export const voices = {
     const existing = await voices.getById(id);
     if (!existing) throw new Error(`Voice ${id} not found`);
 
+    const enabledChanged =
+      partial.enabled !== undefined && partial.enabled !== existing.enabled;
+    const reasonExplicit = 'disabled_reason' in partial;
+
+    // Default reason policy: when the caller flips enabled without
+    // touching disabled_reason, we record intent automatically.
+    //   - enabled true→false → 'user' (cockpit/API toggle counts as user
+    //     intent unless caller says otherwise)
+    //   - enabled false→true → null (re-enabling clears any stale auto/user)
+    let nextReason: string | null;
+    if (reasonExplicit) {
+      nextReason = partial.disabled_reason ?? null;
+    } else if (enabledChanged) {
+      nextReason = partial.enabled ? null : 'user';
+    } else {
+      nextReason = existing.disabled_reason ?? null;
+    }
+
     const next = {
       label: partial.label ?? existing.label,
       enabled: partial.enabled ?? existing.enabled,
@@ -150,12 +194,14 @@ export const voices = {
           ? partial.output_cost_per_mtok
           : existing.output_cost_per_mtok,
       model_id: partial.model_id ?? existing.model_id,
+      disabled_reason: nextReason,
     };
 
     await db.execute({
       sql: `
         UPDATE voices
-        SET label = ?, enabled = ?, input_cost_per_mtok = ?, output_cost_per_mtok = ?, model_id = ?, updated_at = ?
+        SET label = ?, enabled = ?, input_cost_per_mtok = ?, output_cost_per_mtok = ?, model_id = ?,
+            disabled_reason = ?, updated_at = ?
         WHERE id = ?
       `,
       args: [
@@ -164,6 +210,7 @@ export const voices = {
         next.input_cost_per_mtok,
         next.output_cost_per_mtok,
         next.model_id,
+        next.disabled_reason,
         Date.now(),
         id,
       ],

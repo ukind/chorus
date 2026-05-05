@@ -215,9 +215,19 @@ export async function seedCliVoices(): Promise<{
       //     v0.8 onboarding UX request.
       //   - Subsequent boots → voices.upsert preserves existing `enabled`
       //     so user toggles are sticky.
-      const enabledOverride = migrationData
-        ? migrationFor(migrationData, uiLineage, latestModel)
-        : (isFirstBoot ? true : undefined);
+      //   - Re-detect of a previously auto_missing row → re-enable +
+      //     clear disabled_reason. One flaky boot used to leave the row
+      //     silently off forever; this restores it the moment detection
+      //     succeeds again, while still respecting deliberate user toggles
+      //     (disabled_reason='user' rows are NOT auto-restored).
+      const wasAutoMissing =
+        existingRow?.enabled === false &&
+        existingRow?.disabled_reason === 'auto_missing';
+      const enabledOverride = wasAutoMissing
+        ? true
+        : migrationData
+          ? migrationFor(migrationData, uiLineage, latestModel)
+          : (isFirstBoot ? true : undefined);
 
       const before = await voices.getById(provider);
       await voices.upsert({
@@ -228,6 +238,9 @@ export async function seedCliVoices(): Promise<{
         model_id: latestModel,
         lineage,
         ...(enabledOverride !== undefined ? { enabled: enabledOverride } : {}),
+        // Clear the auto_missing tombstone when re-enabling. For all other
+        // paths leave disabled_reason untouched (omitted → preserved).
+        ...(wasAutoMissing ? { disabled_reason: null } : {}),
       });
       if (before) updated++;
       else added++;
@@ -297,7 +310,15 @@ export async function seedCliVoices(): Promise<{
     } else if (existingRow && existingRow.enabled) {
       // Regular boot, CLI was present last boot but is now absent —
       // auto-disable (not delete). Per round 1 deepseek MED.
-      await voices.update(provider, { enabled: false });
+      //
+      // Stamp disabled_reason='auto_missing' so the re-detect branch above
+      // can safely re-enable when the CLI returns. Without the reason flag
+      // a transient PATH/detection miss would silently disable forever
+      // (the bug that led gemini-3.1-pro-preview to stay off across boots).
+      await voices.update(provider, {
+        enabled: false,
+        disabled_reason: 'auto_missing',
+      });
       disabled++;
     } else if (isFirstBoot && migrationData && hasMigrationDataFor(migrationData, uiLineage)) {
       // First boot, CLI not currently detected, but the user has a prior
@@ -363,10 +384,15 @@ export async function seedOpencodeVoicesAsync(): Promise<{
 
   if (!opencode?.found) {
     // CLI not detected — auto-disable any existing opencode voices.
+    // Stamp disabled_reason so the next successful boot can auto-restore
+    // (mirrors the SINGLE_MODEL_CLIS branch above).
     let disabled = 0;
     for (const v of existingOpencode) {
       if (v.enabled) {
-        await voices.update(v.id, { enabled: false });
+        await voices.update(v.id, {
+          enabled: false,
+          disabled_reason: 'auto_missing',
+        });
         disabled++;
       }
     }
@@ -412,21 +438,27 @@ export async function seedOpencodeVoicesAsync(): Promise<{
     const label = qualified;
 
     const before = await voices.getById(id);
+    const wasAutoMissing =
+      before?.enabled === false && before?.disabled_reason === 'auto_missing';
 
-    // Initial enabled state for first-time-seen rows:
-    //   - Migrating from settings: per the user's prior selection.
-    //   - First install (no settings): fleet defaults are enabled, others off.
-    //   - Already-existing row: voices.upsert preserves enabled; the
-    //     `enabled` arg is ignored when the row already exists.
-    let initialEnabled: boolean;
-    if (migration) {
-      initialEnabled = migrationFor(migration, 'opencode', qualified) ?? false;
-    } else if (isFirstBoot) {
-      initialEnabled = isOpencodeGoModel(qualified);
-    } else {
-      // Defensive default for net-new models showing up later — disabled
-      // so the user opts in via the fleet card.
-      initialEnabled = false;
+    // enabled state policy:
+    //   - Existing row, auto_missing tombstone → re-enable + clear reason
+    //     (the opencode CLI was absent on a prior boot and is now back).
+    //   - Existing row, anything else → preserve (omit enabled).
+    //   - Net-new row + migration data → user's prior intent.
+    //   - Net-new row, first install → opencode-go/* enabled, others off.
+    //   - Net-new row, mid-life new model → off (user opts in via fleet).
+    let enabledOverride: boolean | undefined;
+    if (wasAutoMissing) {
+      enabledOverride = true;
+    } else if (!before) {
+      if (migration) {
+        enabledOverride = migrationFor(migration, 'opencode', qualified) ?? false;
+      } else if (isFirstBoot) {
+        enabledOverride = isOpencodeGoModel(qualified);
+      } else {
+        enabledOverride = false;
+      }
     }
 
     await voices.upsert({
@@ -437,7 +469,8 @@ export async function seedOpencodeVoicesAsync(): Promise<{
       model_id: qualified,
       lineage,
       vendor_family,
-      enabled: initialEnabled,
+      ...(enabledOverride !== undefined ? { enabled: enabledOverride } : {}),
+      ...(wasAutoMissing ? { disabled_reason: null } : {}),
     });
 
     if (before) updated++;

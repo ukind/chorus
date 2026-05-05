@@ -7,7 +7,7 @@ half the codebase.
 ## Quick start
 
 ```bash
-git clone https://github.com/99xAgency/chorus.git
+git clone https://github.com/chorus-codes/chorus.git
 cd chorus
 pnpm install
 pnpm dev:daemon       # daemon on :7707 (tsx watch — hot reload on edit)

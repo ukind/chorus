@@ -8,13 +8,13 @@
 
 2–3 *different* AI tools review the same change in parallel, only green-lighting when they agree. Runs on your existing Claude Pro / ChatGPT Plus / Gemini Advanced — typical review costs **$0** out of pocket.
 
-[![CI](https://github.com/99xAgency/chorus/actions/workflows/ci.yml/badge.svg)](https://github.com/99xAgency/chorus/actions/workflows/ci.yml)
+[![CI](https://github.com/chorus-codes/chorus/actions/workflows/ci.yml/badge.svg)](https://github.com/chorus-codes/chorus/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/chorus-codes?color=22c55e)](https://www.npmjs.com/package/chorus-codes)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](./LICENSE)
 [![Status](https://img.shields.io/badge/status-v0.7-brightgreen)]()
 [![Node](https://img.shields.io/badge/node-%E2%89%A520-339933)]()
 
-[Website](https://chorus.codes) · [Roadmap](./ROADMAP.md) · [Issues](https://github.com/99xAgency/chorus/issues)
+[Website](https://chorus.codes) · [Roadmap](./ROADMAP.md) · [Issues](https://github.com/chorus-codes/chorus/issues)
 
 </div>
 
@@ -393,7 +393,7 @@ Code layout:
 PRs welcome.
 
 ```bash
-git clone https://github.com/99xAgency/chorus.git
+git clone https://github.com/chorus-codes/chorus.git
 cd chorus && pnpm install
 pnpm dev:daemon   # daemon on :7707
 pnpm dev          # cockpit on :5050
@@ -412,8 +412,8 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full guide.
 
 - 🌐 Website: <https://chorus.codes>
 - 🗺️ Roadmap: [./ROADMAP.md](./ROADMAP.md)
-- 🐛 Issues: <https://github.com/99xAgency/chorus/issues>
-- 💬 Discussions: <https://github.com/99xAgency/chorus/discussions>
+- 🐛 Issues: <https://github.com/chorus-codes/chorus/issues>
+- 💬 Discussions: <https://github.com/chorus-codes/chorus/discussions>
 - 🐦 Twitter / X: [@chorus_codes](https://twitter.com/chorus_codes)
 
 ---

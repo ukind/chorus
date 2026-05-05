@@ -7,7 +7,7 @@
   "homepage": "https://chorus.codes",
   "repository": {
     "type": "git",
-    "url": "https://github.com/99xAgency/chorus.git"
+    "url": "https://github.com/chorus-codes/chorus.git"
   },
   "bin": {
     "chorus": "./bin/chorus.mjs"

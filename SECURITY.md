@@ -31,7 +31,7 @@ Chorus runs as a local daemon that spawns AI CLI subprocesses on the
 user's machine. The threat surface includes:
 
 - Daemon HTTP routes (loopback only; no auth in 0.7 — see
-  [#issues](https://github.com/99xAgency/chorus/issues) for the
+  [#issues](https://github.com/chorus-codes/chorus/issues) for the
   hardening roadmap)
 - Manual CLI path validation (`/onboard/save-cli-path`)
 - Reviewer subprocess sandboxing (per-CLI sandbox profile)

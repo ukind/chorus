@@ -8,9 +8,14 @@ import { z } from "zod";
 const DAEMON_BASE = "http://127.0.0.1:7707";
 const API_PREFIX = "/api/v1";
 
-/** Prepend /api/v1 to a daemon path unless the caller already supplied it. */
+/**
+ * Prepend /api/v1 to a daemon path unless the caller already supplied
+ * it. Exact-segment match required — a naive startsWith would treat
+ * `/api/v10/...` or `/api/v1foo/...` as already-prefixed and skip
+ * prepending.
+ */
 function v1(path: string): string {
-  if (path.startsWith(API_PREFIX)) return path;
+  if (path === API_PREFIX || path.startsWith(`${API_PREFIX}/`)) return path;
   return `${API_PREFIX}${path.startsWith("/") ? path : `/${path}`}`;
 }
 

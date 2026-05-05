@@ -108,7 +108,17 @@ export const CreateChatSchema = z
   })
   .transform((input) => ({
     ...input,
-    templateId: input.templateId ?? input.template ?? "code-review",
+    // `??` only falls through on null/undefined; an empty string would
+    // pass through and the daemon would reject it. Treat empty as
+    // missing so the legacy alias / default fires.
+    templateId:
+      (input.templateId && input.templateId.length > 0
+        ? input.templateId
+        : undefined) ??
+      (input.template && input.template.length > 0
+        ? input.template
+        : undefined) ??
+      "code-review",
   }));
 
 export const WaitForChatSchema = z.object({
@@ -146,7 +156,17 @@ export const InvokePersonaSchema = z
   })
   .transform((input) => ({
     ...input,
-    templateId: input.templateId ?? input.template ?? "code-review",
+    // `??` only falls through on null/undefined; an empty string would
+    // pass through and the daemon would reject it. Treat empty as
+    // missing so the legacy alias / default fires.
+    templateId:
+      (input.templateId && input.templateId.length > 0
+        ? input.templateId
+        : undefined) ??
+      (input.template && input.template.length > 0
+        ? input.template
+        : undefined) ??
+      "code-review",
   }));
 
 // ─── Output schemas ─────────────────────────────────────────────────────

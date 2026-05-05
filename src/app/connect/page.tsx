@@ -9,6 +9,7 @@ import { OrchestratorCard } from "@/components/orchestrator-card";
 import { OpenRouterCard } from "@/components/openrouter-card";
 import { fetchFromDaemon } from "@/lib/api/client";
 import type { Voice } from "@/lib/api/voices";
+import type { ListEnvelope } from "@/lib/types";
 
 const ORCHESTRATOR_TO_PROVIDER: Record<string, string> = {
   claude: "claude-code",
@@ -29,16 +30,23 @@ interface PageData {
 
 async function getPageData(): Promise<PageData> {
   try {
-    const [orchestrators, cliVoices, openrouterVoices] = await Promise.all([
+    const [orchestrators, cliEnv, orEnv] = await Promise.all([
       listOrchestrators().catch(() => []),
       // Default GET /voices returns ALL rows (enabled + disabled) — fleet
       // cards need both for the re-enable workflow.
-      fetchFromDaemon<Voice[]>("/voices?source=cli").catch(() => [] as Voice[]),
-      fetchFromDaemon<Voice[]>("/voices?source=api&provider=openrouter").catch(
-        () => [] as Voice[],
+      fetchFromDaemon<ListEnvelope<Voice>>("/voices?source=cli").catch(
+        () => ({ items: [], total: 0, hasMore: false }),
       ),
+      fetchFromDaemon<ListEnvelope<Voice>>(
+        "/voices?source=api&provider=openrouter",
+      ).catch(() => ({ items: [], total: 0, hasMore: false })),
     ]);
-    return { orchestrators, cliVoices, openrouterVoices, error: null };
+    return {
+      orchestrators,
+      cliVoices: cliEnv.items,
+      openrouterVoices: orEnv.items,
+      error: null,
+    };
   } catch (err) {
     return {
       orchestrators: [],

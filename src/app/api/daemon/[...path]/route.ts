@@ -29,8 +29,11 @@ async function proxy(req: NextRequest, ctx: ProxyContext): Promise<Response> {
   const { path } = await ctx.params;
   const segments = path.join("/");
   // Auto-prepend /api/v1 so cockpit code can call /api/daemon/<route>
-  // while the daemon itself only exposes the versioned shape.
-  const versionedSegments = segments.startsWith(API_PREFIX)
+  // while the daemon itself only exposes the versioned shape. Exact
+  // segment check — `startsWith("api/v1")` would naively match
+  // `api/v10/...` or `api/v1foo/...` and skip prepending.
+  const isPrefixed = segments === API_PREFIX || segments.startsWith(`${API_PREFIX}/`);
+  const versionedSegments = isPrefixed
     ? segments
     : `${API_PREFIX}/${segments}`;
   const search = req.nextUrl.search;

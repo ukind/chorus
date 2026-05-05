@@ -40,10 +40,12 @@ export async function fetchFromDaemon<T>(
   options: RequestInit = {},
 ): Promise<T> {
   const base = getBaseUrl();
-  // Prepend /api/v1 unless the caller already supplied it. Keeping a
-  // bypass for already-prefixed paths makes the migration safe even if
-  // some lingering consumer hand-builds the full URL.
-  const versionedPath = path.startsWith(API_PREFIX)
+  // Prepend /api/v1 unless the caller already supplied it. The exact
+  // segment check matters — a naive `startsWith(API_PREFIX)` would
+  // match `/api/v10/...` or `/api/v1foo/...` and skip prepending. We
+  // require either an exact-match path or a trailing-slash boundary.
+  const isPrefixed = path === API_PREFIX || path.startsWith(`${API_PREFIX}/`);
+  const versionedPath = isPrefixed
     ? path
     : `${API_PREFIX}${path.startsWith("/") ? path : `/${path}`}`;
   const url = base.endsWith("/") || versionedPath.startsWith("/")

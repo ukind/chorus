@@ -7,7 +7,7 @@
  */
 
 import fastifyCors from '@fastify/cors';
-import Fastify from 'fastify';
+import Fastify, { type FastifyInstance } from 'fastify';
 import fs from 'fs';
 import path from 'path';
 import { chats, templates } from '../lib/db/index.js';
@@ -156,45 +156,47 @@ async function main(): Promise<void> {
   // ─── Routes ─────────────────────────────────────────────────────────
   //
   // Every public REST + SSE route mounts under /api/v1. Pre-launch
-  // shape-freeze (v0.7) — adding a new major shape later means adding
-  // /api/v2 without breaking existing consumers.
+  // shape-freeze (v0.7) — adding /api/v2 later is non-breaking.
   //
-  // The cockpit, MCP client, `chorus doctor`, and `bin/chorus.mjs`
-  // call /api/v1/* in lockstep. There are NO bare-route aliases —
-  // the daemon binds to 127.0.0.1 and no third-party scripts exist.
+  // Bare paths (`/health`, `/chats`, ...) are kept as transitional
+  // aliases for one minor (v0.7) so that globally-installed MCP servers
+  // shipping older chorus-codes versions don't break the moment a user
+  // upgrades the daemon. Callers should migrate to /api/v1; the bare
+  // paths are dropped in v0.8.
   // Initialize tmux manager BEFORE registering chat routes — the chat
   // route handlers capture it for the duration of the daemon.
   tmuxMgr = new TmuxManagerImpl();
 
-  await fastify.register(
-    async (api) => {
-      api.get<{
-        Reply: ApiResponse<{ version: string; uptime: number }>;
-      }>('/health', async () => {
-        // The redundant inner `ok: true` from earlier shipped versions
-        // was dropped here — the envelope's outer `ok: true` is the
-        // canonical liveness signal. Consumers that want a flat
-        // monitor-friendly probe still read `data.version` /
-        // `data.uptime`.
-        return successResponse({
-          version: VERSION,
-          uptime: Date.now() - startTime,
-        });
+  const registerAll = (api: FastifyInstance): void => {
+    api.get<{
+      Reply: ApiResponse<{ version: string; uptime: number }>;
+    }>('/health', async () => {
+      // The redundant inner `ok: true` from earlier shipped versions
+      // was dropped here — the envelope's outer `ok: true` is the
+      // canonical liveness signal. Consumers that want a flat
+      // monitor-friendly probe still read `data.version` /
+      // `data.uptime`.
+      return successResponse({
+        version: VERSION,
+        uptime: Date.now() - startTime,
       });
+    });
 
-      registerChatRoutes(api, { tmuxMgr: tmuxMgr!, errorDetector });
-      registerChatEventsRoute(api);
-      registerTemplateRoutes(api);
-      registerPersonaRoutes(api);
-      registerSettingsRoutes(api);
-      registerSecretRoutes(api);
-      registerSystemRoutes(api, { chorusBinPath: CHORUS_BIN_PATH });
-      registerVoiceRoutes(api);
-      registerOpenRouterRoutes(api);
-      registerStatsRoutes(api);
-    },
-    { prefix: '/api/v1' },
-  );
+    registerChatRoutes(api, { tmuxMgr: tmuxMgr!, errorDetector });
+    registerChatEventsRoute(api);
+    registerTemplateRoutes(api);
+    registerPersonaRoutes(api);
+    registerSettingsRoutes(api);
+    registerSecretRoutes(api);
+    registerSystemRoutes(api, { chorusBinPath: CHORUS_BIN_PATH });
+    registerVoiceRoutes(api);
+    registerOpenRouterRoutes(api);
+    registerStatsRoutes(api);
+  };
+
+  await fastify.register(async (api) => registerAll(api), { prefix: '/api/v1' });
+  // v0.7 transitional aliases — drop in v0.8.
+  await fastify.register(async (api) => registerAll(api));
 
   await seedBuiltinTemplates();
 

@@ -19,6 +19,7 @@ import {
   Plug,
 } from "lucide-react";
 import { fetchFromDaemon } from "@/lib/api/client";
+import type { ListEnvelope } from "@/lib/types";
 import { lineageDot } from "@/lib/lineage-maps";
 import type { Voice } from "@/lib/api/voices";
 import Link from "next/link";
@@ -126,26 +127,32 @@ export async function CliStatusPanel() {
   let allVoices: Voice[] = [];
   let openrouterVoices: Voice[] = [];
   try {
-    orchestrators = await fetchFromDaemon<OrchestratorStatus[]>("/orchestrators");
+    const env = await fetchFromDaemon<ListEnvelope<OrchestratorStatus>>(
+      "/orchestrators",
+    );
+    orchestrators = env.items;
   } catch {
     return null;
   }
   try {
-    healths = await fetchFromDaemon<CliHealth[]>("/cli/health");
+    const env = await fetchFromDaemon<ListEnvelope<CliHealth>>("/cli/health");
+    healths = env.items;
   } catch {
     healths = [];
   }
   try {
     // Default GET /voices returns ALL rows (enabled + disabled) — fleet
     // cards need both so users can re-enable from the toggle UI.
-    allVoices = await fetchFromDaemon<Voice[]>("/voices?source=cli");
+    const env = await fetchFromDaemon<ListEnvelope<Voice>>("/voices?source=cli");
+    allVoices = env.items;
   } catch {
     /* voices load is best-effort */
   }
   try {
-    openrouterVoices = await fetchFromDaemon<Voice[]>(
+    const env = await fetchFromDaemon<ListEnvelope<Voice>>(
       "/voices?source=api&provider=openrouter",
     );
+    openrouterVoices = env.items;
   } catch {
     /* best-effort */
   }

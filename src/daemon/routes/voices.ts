@@ -14,6 +14,7 @@ import {
   successResponse,
   errorResponse,
   listEnvelope,
+  sendError,
   type ApiResponse,
   type ListEnvelope,
 } from '../api-response.js';
@@ -68,11 +69,11 @@ export function registerVoiceRoutes(fastify: FastifyInstance): void {
       enabled?: string;
     };
     Reply: ApiResponse<ListEnvelope<object>>;
-  }>('/voices', async (request) => {
+  }>('/voices', async (request, reply) => {
     try {
       const parsed = ListQuerySchema.safeParse(request.query);
       if (!parsed.success) {
-        return errorResponse('validation', parsed.error.message);
+        return sendError(reply, 'validation', parsed.error.message);
       }
       const items = await voices.list(parsed.data);
       return successResponse(listEnvelope(items));
@@ -86,11 +87,11 @@ export function registerVoiceRoutes(fastify: FastifyInstance): void {
   fastify.get<{
     Params: { id: string };
     Reply: ApiResponse<object>;
-  }>('/voices/:id', async (request) => {
+  }>('/voices/:id', async (request, reply) => {
     try {
       const v = await voices.getById(request.params.id);
       if (!v) {
-        return errorResponse('not_found', `Voice ${request.params.id} not found`);
+        return sendError(reply, 'not_found', `Voice ${request.params.id} not found`);
       }
       return successResponse(v);
     } catch (error) {
@@ -103,16 +104,16 @@ export function registerVoiceRoutes(fastify: FastifyInstance): void {
   fastify.post<{
     Body: unknown;
     Reply: ApiResponse<object>;
-  }>('/voices', async (request) => {
+  }>('/voices', async (request, reply) => {
     try {
       const parsed = PostBodySchema.safeParse(request.body);
       if (!parsed.success) {
-        return errorResponse('validation', parsed.error.message);
+        return sendError(reply, 'validation', parsed.error.message);
       }
       const id = `${parsed.data.provider}:${parsed.data.model_id}`;
       const existing = await voices.getById(id);
       if (existing) {
-        return errorResponse('conflict', `Voice ${id} already exists`);
+        return sendError(reply, 'conflict', `Voice ${id} already exists`);
       }
       const row = await voices.upsert({
         id,
@@ -141,15 +142,15 @@ export function registerVoiceRoutes(fastify: FastifyInstance): void {
     Params: { id: string };
     Body: unknown;
     Reply: ApiResponse<object>;
-  }>('/voices/:id', async (request) => {
+  }>('/voices/:id', async (request, reply) => {
     try {
       const parsed = PutBodySchema.safeParse(request.body);
       if (!parsed.success) {
-        return errorResponse('validation', parsed.error.message);
+        return sendError(reply, 'validation', parsed.error.message);
       }
       const existing = await voices.getById(request.params.id);
       if (!existing) {
-        return errorResponse('not_found', `Voice ${request.params.id} not found`);
+        return sendError(reply, 'not_found', `Voice ${request.params.id} not found`);
       }
       const row = await voices.update(request.params.id, parsed.data);
       return successResponse(row);

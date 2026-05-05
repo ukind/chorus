@@ -1,6 +1,6 @@
 {
   "name": "chorus-codes",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Driver-agnostic multi-LLM peer review for code decisions. Bring your own CLI; Chorus convenes 2-4 other LLMs to review the work before you ship.",
   "license": "Apache-2.0",
   "author": "99x Agency",
@@ -28,6 +28,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "prepublishOnly": "rm -rf dist .next *.tsbuildinfo && pnpm build && pnpm build:server && test -f dist/cli/index.js && test -f dist/daemon/index.js && test -f dist/mcp/index.js",
     "postinstall": "node scripts/postinstall.mjs"
   },
   "dependencies": {

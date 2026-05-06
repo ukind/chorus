@@ -114,29 +114,28 @@ export function adaptTemplate(
 
   for (const phase of parsed.phases) {
     if (!phase) continue;
-    // Track lineages already filled in this phase so we can prefer a
-    // different lineage when substituting (diversity preservation).
+    // Sequential slot assignment in template order. Each slot's
+    // assignment honors its preferred lineage when possible, then
+    // falls through to a diversity-preserving substitute (a lineage
+    // not yet used in this phase), then last-ditch any-available.
+    //
+    // Two-pass (exact-match-first) was tried in v0.8.8 but turned out
+    // to *hurt* cross-lineage diversity: when an exact-match slot
+    // grabs the lineage early, later substitution slots have fewer
+    // unused lineages to draw from and end up duplicating the doer.
+    // Sequential lets the substitution slots take first dibs on
+    // unused lineages — which maximizes "reviewers different from the
+    // doer", what `crossLineage: true` quorum actually requires.
     const usedLineages = new Set<string>();
 
     if (phase.doer) {
-      const result = pickForSlot(
-        phase.doer.lineage,
+      const assigned = assignSlot(
+        phase.doer,
         byLineage,
         byFamily,
         usedLineages,
       );
-      if (result) {
-        if (
-          phase.doer.lineage !== result.lineage ||
-          !sameModels(phase.doer.models, result.models)
-        ) {
-          changed = true;
-        }
-        phase.doer.lineage = result.lineage;
-        phase.doer.models = result.models;
-        usedLineages.add(result.lineage);
-      } else {
-        if ((phase.doer.models?.length ?? 0) > 0) changed = true;
+      if (!assigned) {
         phase.doer.models = [];
         isComplete = false;
       }
@@ -144,30 +143,23 @@ export function adaptTemplate(
 
     if (phase.reviewer?.candidates) {
       for (const slot of phase.reviewer.candidates) {
-        const result = pickForSlot(
-          slot.lineage,
+        const assigned = assignSlot(
+          slot,
           byLineage,
           byFamily,
           usedLineages,
         );
-        if (result) {
-          if (
-            slot.lineage !== result.lineage ||
-            !sameModels(slot.models, result.models)
-          ) {
-            changed = true;
-          }
-          slot.lineage = result.lineage;
-          slot.models = result.models;
-          usedLineages.add(result.lineage);
-        } else {
-          if ((slot.models?.length ?? 0) > 0) changed = true;
+        if (!assigned) {
           slot.models = [];
           isComplete = false;
         }
       }
     }
   }
+  // changed flag — compare round-tripped JSON. Cheap, deterministic,
+  // catches lineage swaps + model reductions in one shot.
+  changed =
+    JSON.stringify(parsed) !== JSON.stringify(yaml.parse(canonicalYaml));
 
   // Re-serialise. yaml lib preserves keys/order and quoting style well
   // enough for builtin templates that are themselves machine-authored.
@@ -177,67 +169,59 @@ export function adaptTemplate(
   return { yaml: output, isComplete, changed };
 }
 
-interface PickResult {
-  lineage: string;
-  models: string[];
-}
-
-function pickForSlot(
-  preferredLineage: string | undefined,
+/**
+ * Assign a single slot. Returns true iff the slot was actually
+ * written into. Sequential resolution:
+ *   1. Exact lineage match.
+ *   2. Vendor-family match (template wants moonshot, user has
+ *      opencode-go/kimi with vendor_family=moonshot).
+ *   3. Diversity-preserving substitute: a lineage not yet used in
+ *      this phase. Maximizes cross-lineage reviewer diversity.
+ *   4. Last-ditch: any available lineage (accepts duplication).
+ *   5. No voices anywhere → returns false; caller marks incomplete.
+ */
+function assignSlot(
+  slot: SlotSpec,
   byLineage: Map<string, Voice[]>,
   byFamily: Map<string, Voice[]>,
   usedInPhase: Set<string>,
-): PickResult | null {
-  if (!preferredLineage) {
-    // Slot doesn't specify a lineage. Don't touch — caller's intent.
-    return null;
-  }
+): boolean {
+  const preferredLineage = slot.lineage;
+  if (!preferredLineage) return false;
 
-  // 1. Exact lineage match: best case. Use the user's actual voices
-  //    for that lineage; primary first, rest as fallbacks.
   const direct = byLineage.get(preferredLineage);
   if (direct && direct.length > 0) {
-    return {
-      lineage: preferredLineage,
-      models: voicesToModelKeys(direct),
-    };
+    slot.lineage = preferredLineage;
+    slot.models = voicesToModelKeys(direct);
+    usedInPhase.add(preferredLineage);
+    return true;
   }
 
-  // 2. Vendor-family match: e.g., template wants lineage=moonshot,
-  //    user has `opencode-go/kimi-k2.5` (lineage=opencode,
-  //    vendor_family=moonshot). The model family is preserved; only
-  //    the transport changes.
   const familyMatch = byFamily.get(preferredLineage);
   if (familyMatch && familyMatch.length > 0) {
-    return {
-      lineage: familyMatch[0].lineage,
-      models: voicesToModelKeys(familyMatch),
-    };
+    slot.lineage = familyMatch[0].lineage;
+    slot.models = voicesToModelKeys(familyMatch);
+    usedInPhase.add(familyMatch[0].lineage);
+    return true;
   }
 
-  // 3. Diversity-preserving substitute: prefer a lineage not yet used
-  //    in this phase. Iteration order of Map preserves insertion order
-  //    (deterministic for a stable voices list).
   for (const [lineage, voices] of byLineage) {
     if (!usedInPhase.has(lineage)) {
-      return {
-        lineage,
-        models: voicesToModelKeys(voices),
-      };
+      slot.lineage = lineage;
+      slot.models = voicesToModelKeys(voices);
+      usedInPhase.add(lineage);
+      return true;
     }
   }
 
-  // 4. Last-ditch: any lineage at all, even if already used. Better a
-  //    repeated reviewer than an empty slot.
   for (const [lineage, voices] of byLineage) {
-    return {
-      lineage,
-      models: voicesToModelKeys(voices),
-    };
+    slot.lineage = lineage;
+    slot.models = voicesToModelKeys(voices);
+    usedInPhase.add(lineage);
+    return true;
   }
 
-  // 5. User has no enabled voices anywhere. Slot stays empty.
-  return null;
+  return false;
 }
 
 /**
@@ -247,21 +231,81 @@ function pickForSlot(
  *     dispatch via the HTTP shim (see chorus-086).
  *   - All other voices (CLI-backed) use the bare `model_id` because
  *     the CLI shim is keyed by lineage + model_id.
+ *
+ * Returns AT MOST 1 model — the highest-ranked voice for the lineage.
+ * Pre-fix the adapter dumped every available voice into the slot's
+ * fallback chain (per chorus-083), which produced 5+ form rows per
+ * slot and confused users into thinking they had "many doers". Power
+ * users who want a fallback chain can add models manually via the
+ * YAML editor.
  */
-function voicesToModelKeys(voices: Voice[]): string[] {
-  const out: string[] = [];
-  for (const v of voices) {
-    out.push(v.provider === 'openrouter' ? v.id : v.model_id);
-  }
-  // Dedup defensive — two voices for the same model from different
-  // sources would otherwise both appear in the fallback chain.
-  return Array.from(new Set(out));
+export function voicesToModelKeys(voices: Voice[]): string[] {
+  if (voices.length === 0) return [];
+  const ranked = [...voices].sort(
+    (a, b) => capabilityScore(b) - capabilityScore(a),
+  );
+  const best = ranked[0];
+  return [best.provider === 'openrouter' ? best.id : best.model_id];
 }
 
-function sameModels(a: string[] | undefined, b: string[]): boolean {
-  if (!a || a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i += 1) {
-    if (a[i] !== b[i]) return false;
+/**
+ * Capability heuristic for ordering voices within a lineage.
+ *
+ * Picks the top model when the user has multiple voices for the slot's
+ * lineage. Higher score = more capable. The function is per-family —
+ * Anthropic Opus beats Sonnet beats Haiku, OpenAI gpt-5.5 beats 5.4,
+ * Gemini 3.x beats 2.x, Pro beats Flash, and so on.
+ *
+ * Heuristic by design: model naming changes over time, so this scoring
+ * will need touch-ups when new models land. Keep the logic in one
+ * function to make those updates easy. Falls back to 0 (alphabetical
+ * tiebreaker via the sort's stability) for unknown models — better
+ * than picking arbitrarily.
+ */
+export function capabilityScore(v: Voice): number {
+  const id = v.model_id.toLowerCase();
+  let score = 0;
+
+  // Anthropic family tier.
+  if (id.includes('opus')) score += 1000;
+  else if (id.includes('sonnet')) score += 700;
+  else if (id.includes('haiku')) score += 400;
+
+  // OpenAI / Codex (gpt-X.Y).
+  const gptMatch = id.match(/gpt-(\d+)\.(\d+)/);
+  if (gptMatch) {
+    score += Number.parseInt(gptMatch[1], 10) * 100;
+    score += Number.parseInt(gptMatch[2], 10) * 10;
+    // -codex variant counts as production (vs preview).
+    if (id.includes('-codex')) score += 5;
   }
-  return true;
+
+  // Gemini family — major.minor with pro/flash modifier.
+  const geminiMatch = id.match(/gemini-(\d+)\.(\d+)/);
+  if (geminiMatch) {
+    score += Number.parseInt(geminiMatch[1], 10) * 100;
+    score += Number.parseInt(geminiMatch[2], 10) * 10;
+    if (id.includes('pro')) score += 50;
+    else if (id.includes('flash')) score += 20;
+    if (id.includes('preview')) score += 5;
+  }
+
+  // Kimi (k2.x). Thinking variant scores higher than base.
+  const kimiMatch = id.match(/k(\d+)\.(\d+)/);
+  if (kimiMatch) {
+    score += Number.parseInt(kimiMatch[1], 10) * 100;
+    score += Number.parseInt(kimiMatch[2], 10) * 10;
+    if (id.includes('thinking')) score += 50;
+    if (id.includes('turbo')) score += 30;
+  }
+
+  // Anthropic version suffix (-4-7 > -4-6 > -4-5).
+  const versionMatch = id.match(/-(\d+)-(\d+)$/);
+  if (versionMatch) {
+    score += Number.parseInt(versionMatch[1], 10) * 5;
+    score += Number.parseInt(versionMatch[2], 10);
+  }
+
+  return score;
 }
+

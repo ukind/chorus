@@ -83,20 +83,64 @@ describe('adaptTemplate — exact-lineage match', () => {
     expect(cands[2].models).toEqual(['kimi-k2-thinking']);
   });
 
-  it('builds a fallback chain when user has multiple voices for one lineage', () => {
+  it('picks the top-ranked single model when user has multiple voices for one lineage', () => {
+    // Per user feedback: "Top models only if many choices" — adapter
+    // emits 1 model per slot, the highest-ranked. Power users add
+    // fallback chains via YAML.
     const voices = [
-      v('anthropic', 'claude-opus-4-7'),
+      v('anthropic', 'claude-haiku-4-5'),    // alphabetically first
       v('anthropic', 'claude-sonnet-4-6'),
-      v('anthropic', 'claude-haiku-4-5'),
+      v('anthropic', 'claude-opus-4-7'),     // most capable
       v('openai', 'gpt-5.4'),
     ];
     const result = adaptTemplate(TRI_REVIEW, voices);
     const parsed = yaml.parse(result.yaml);
-    // Doer is anthropic — should get all 3 anthropic voices as a chain.
-    expect(parsed.phases[0].doer.models).toEqual([
-      'claude-opus-4-7',
-      'claude-sonnet-4-6',
-      'claude-haiku-4-5',
+    // Opus tier (1000) > Sonnet (700) > Haiku (400). Within Opus,
+    // the -4-7 version suffix gives the highest score. Top wins.
+    expect(parsed.phases[0].doer.models).toEqual(['claude-opus-4-7']);
+  });
+
+  it('ranks gpt versions by major.minor (gpt-5.5 > gpt-5.4)', () => {
+    const voices = [
+      v('openai', 'gpt-5.2'),
+      v('openai', 'gpt-5.5'),
+      v('openai', 'gpt-5.4'),
+    ];
+    const tpl = `id: t
+phases:
+  - id: p
+    kind: review
+    doer:
+      lineage: openai
+      models: [gpt-anything]
+    reviewer:
+      require: 1
+      candidates: []
+`;
+    const result = adaptTemplate(tpl, voices);
+    expect(yaml.parse(result.yaml).phases[0].doer.models).toEqual(['gpt-5.5']);
+  });
+
+  it('ranks gemini by major.minor + pro/flash modifier', () => {
+    const voices = [
+      v('google', 'gemini-2.5-flash'),
+      v('google', 'gemini-3.1-pro-preview'),
+      v('google', 'gemini-2.5-pro'),
+    ];
+    const tpl = `id: t
+phases:
+  - id: p
+    kind: review
+    doer:
+      lineage: google
+      models: [gemini-anything]
+    reviewer:
+      require: 1
+      candidates: []
+`;
+    const result = adaptTemplate(tpl, voices);
+    expect(yaml.parse(result.yaml).phases[0].doer.models).toEqual([
+      'gemini-3.1-pro-preview',
     ]);
   });
 });

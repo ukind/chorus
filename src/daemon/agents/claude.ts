@@ -32,7 +32,14 @@ export const claudeShim: AgentShim = {
     // (settings.local.json `permissions.allow[]`) already implements the
     // "workspace" profile. Full = bypass everything; strict isn't expressible
     // at spawn time, only via tighter allow-list.
-    if (opts.unsandboxed || opts.sandbox === 'full') {
+    //
+    // Root-aware: --dangerously-skip-permissions is refused under root (same
+    // policy as the headless permission-mode bypass). Under root we drop the
+    // flag — claude will use its default per-tool prompts which the tmux
+    // session lets the user approve interactively.
+    const runningAsRoot =
+      typeof process.getuid === 'function' && process.getuid() === 0;
+    if ((opts.unsandboxed || opts.sandbox === 'full') && !runningAsRoot) {
       cmd += ` --dangerously-skip-permissions`;
     }
 
@@ -70,13 +77,36 @@ export const claudeShim: AgentShim = {
 
     const args = ['--print', '--output-format', 'stream-json', '--verbose'];
 
+    // Root-aware permission mode. Claude CLI refuses both
+    // `--dangerously-skip-permissions` AND `--permission-mode
+    // bypassPermissions` when running as root (Anthropic's security
+    // policy — common WSL trap since WSL defaults to root). `plan`
+    // mode is the read-only escape hatch that doesn't trigger the
+    // refusal: reviewer / pure-text-generation use cases work
+    // normally, but the doer can't edit files or run bash. For
+    // chorus's typical reviewer fan-out (Tri-Review, Review-Only,
+    // Code-Review) plan mode is functionally equivalent. Power users
+    // running implement-style templates (Red-Green's implement phase)
+    // need a non-root user.
+    const runningAsRoot =
+      typeof process.getuid === 'function' && process.getuid() === 0;
+
     // Sandbox profile → permission-mode mapping. Headless mode auto-skips the
     // workspace-trust dialog (per `claude -p` docs) so we don't need preflight
     // beyond the trust marker write above.
-    if (opts.sandbox === 'strict') {
+    if (opts.sandbox === 'strict' || runningAsRoot) {
       // 'plan' = read-only-ish: no Edit, no Bash. The closest Claude has to
-      // a strict sandbox in headless.
+      // a strict sandbox in headless. Also the only mode Claude allows under
+      // root, so we use it as the fallback when uid 0.
       args.push('--permission-mode', 'plan');
+      if (runningAsRoot && opts.sandbox !== 'strict') {
+        // One-line stderr nudge so power users notice the downgrade
+        // and know to switch off root for write-capable doers.
+        process.stderr.write(
+          '[chorus] Claude running as root: permission mode downgraded to "plan" ' +
+            '(read-only). Run chorus as a non-root user for file-editing doer slots.\n',
+        );
+      }
     } else if (opts.autoApprove !== false || opts.sandbox === 'full') {
       // Default for headless reviewer spawns — bypass per-tool prompts so the
       // agent doesn't hang waiting on stdin for an approval that'll never come.

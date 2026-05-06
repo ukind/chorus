@@ -59,7 +59,19 @@ function resolveDaemonPort(): number {
 
 const PORT = resolveDaemonPort();
 const HOST = '127.0.0.1';
-const VERSION = '0.7.5';
+// Read version from the shipped package.json so it can never drift from
+// `package.json#version`. __dirname is dist/daemon (built) or src/daemon
+// (tsx dev); ../../package.json lands at the package root in both layouts.
+const VERSION: string = (() => {
+  try {
+    const pkgPath = path.resolve(__dirname, '..', '..', 'package.json');
+    const raw = fs.readFileSync(pkgPath, 'utf-8');
+    const parsed = JSON.parse(raw) as { version?: string };
+    return parsed.version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+})();
 const startTime = Date.now();
 
 // Absolute path to bin/chorus.mjs — used by /orchestrators/:name/connect
@@ -91,8 +103,17 @@ async function main(): Promise<void> {
 
   const fastify = Fastify({ logger: false });
 
+  // CORS allowlist follows the cockpit port that `chorus start` chose
+  // (via CHORUS_COCKPIT_PORT). The legacy 5050 default is preserved as
+  // a fallback for installs that haven't migrated to v0.8 daemon.json.
+  const cockpitPort = (() => {
+    const raw = process.env.CHORUS_COCKPIT_PORT;
+    if (!raw) return 5050;
+    const n = Number.parseInt(raw, 10);
+    return Number.isFinite(n) && n > 0 && n < 65536 ? n : 5050;
+  })();
   await fastify.register(fastifyCors, {
-    origin: ['http://127.0.0.1:5050'],
+    origin: [`http://127.0.0.1:${cockpitPort}`],
     credentials: true,
   });
 

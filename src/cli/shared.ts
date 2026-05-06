@@ -1,10 +1,5 @@
 import fs from 'fs';
 import path from 'path';
-import { detectRuntimeEnv } from './runtime-env.js';
-import { c, tip } from './ui.js';
-
-export const COCKPIT_URL = 'http://127.0.0.1:5050';
-export const DAEMON_URL = 'http://127.0.0.1:7707';
 
 /**
  * Absolute path to bin/chorus.mjs. Resolved from __dirname so the path
@@ -42,15 +37,4 @@ export const pkg: { version: string; name: string } = (() => {
     return { version: '0.0.0', name: 'chorus' };
   }
 })();
-
-export function printCockpitAccessHint(): void {
-  const env = detectRuntimeEnv();
-  console.log('');
-  console.log(`   ${c.gray('Open')}  ${c.cyan(COCKPIT_URL)}`);
-  if (env.hint) {
-    console.log('');
-    console.log(tip(env.hint));
-  }
-  console.log('');
-}
 

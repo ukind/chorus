@@ -5,7 +5,24 @@
 
 import { z } from "zod";
 import yaml from "yaml";
+import {
+  DEFAULT_COCKPIT_URL,
+  readDaemonInfo,
+} from "../lib/daemon-discovery.js";
 import { daemonFetch, streamChat } from "./client";
+
+/**
+ * Resolve the cockpit URL the run links should point at. Sync read from
+ * daemon.json (no health probe — the link is informational; if the
+ * cockpit is dead the user finds out when they click it). CHORUS_WEB_URL
+ * env override remains the explicit escape hatch.
+ */
+function cockpitBase(): string {
+  if (process.env.CHORUS_WEB_URL) return process.env.CHORUS_WEB_URL;
+  const info = readDaemonInfo();
+  if (info) return `http://127.0.0.1:${info.cockpitPort}`;
+  return DEFAULT_COCKPIT_URL;
+}
 
 // Daemon stores chats with snake_case `id` + `current_phase_idx`; MCP contract
 // is camelCase `chatId` + `phase`. Single source of truth for the mapping so
@@ -19,7 +36,7 @@ interface DaemonChatRow {
   slug?: string | null;
 }
 function chatRowToRef(row: DaemonChatRow) {
-  const webBase = process.env.CHORUS_WEB_URL || "http://127.0.0.1:5050";
+  const webBase = cockpitBase();
   // Prefer slug for the user-visible URL (it's what the cockpit uses
   // too). Falls back to ULID for legacy rows the daemon couldn't
   // backfill — both forms resolve identically server-side.

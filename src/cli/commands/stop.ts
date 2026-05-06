@@ -3,6 +3,12 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import {
+  clearDaemonInfo,
+  DEFAULT_COCKPIT_PORT,
+  DEFAULT_DAEMON_PORT,
+  readDaemonInfo,
+} from '../../lib/daemon-discovery.js';
+import {
   findPidsOnPort,
   isPortInUse,
   killAndVerify,
@@ -16,10 +22,10 @@ import { c, header, sym } from '../ui.js';
  * SIGTERM keeps running while we forget about it (the bug behind the
  * "stale next-server serving 500s" incident on 2026-05-03).
  *
- * Belt-and-braces: after pidfile-based shutdown, also sweep ports
- * :7707 (daemon) and :5050 (cockpit). Catches the case where the
- * pidfile was lost or pointed at a recycled PID but a real chorus
- * process still owns the port.
+ * v0.8: PID lookup goes through `~/.chorus/daemon.json` first, falling
+ * back to the legacy daemon.pid / web.pid files for compat with
+ * v0.7-and-earlier installs. Belt-and-braces port sweep targets the
+ * recorded ports (or defaults if no daemon.json).
  */
 export function registerStopCommand(program: Command): void {
   program
@@ -31,12 +37,17 @@ export function registerStopCommand(program: Command): void {
         const daemonPidFile = path.join(chorusDir, 'daemon.pid');
         const webPidFile = path.join(chorusDir, 'web.pid');
 
+        const info = readDaemonInfo();
+        const daemonPort = info?.daemonPort ?? DEFAULT_DAEMON_PORT;
+        const cockpitPort = info?.cockpitPort ?? DEFAULT_COCKPIT_PORT;
+
         const daemonPidfileExists = fs.existsSync(daemonPidFile);
         const webPidfileExists = fs.existsSync(webPidFile);
-        const daemonPortInUse = await isPortInUse(7707);
-        const cockpitPortInUse = await isPortInUse(5050);
+        const daemonPortInUse = await isPortInUse(daemonPort);
+        const cockpitPortInUse = await isPortInUse(cockpitPort);
 
         if (
+          !info &&
           !daemonPidfileExists &&
           !webPidfileExists &&
           !daemonPortInUse &&
@@ -52,15 +63,22 @@ export function registerStopCommand(program: Command): void {
         console.log(header(sym.pointer, 'Stopping Chorus...'));
         console.log('');
 
-        await stopProcess('Daemon', daemonPidFile);
-        await stopProcess('Cockpit', webPidFile);
+        // Prefer daemon.json (v0.8), fall back to pidfiles (v0.7).
+        if (info) {
+          await stopByPid('Daemon', info.daemonPid);
+          if (info.cockpitPid) {
+            await stopByPid('Cockpit', info.cockpitPid);
+          }
+        }
+        await stopByPidFile('Daemon', daemonPidFile);
+        await stopByPidFile('Cockpit', webPidFile);
 
         // Port-based sweep — kills any chorus-owned listener that
-        // escaped the pidfile path. Errs on the side of cleanup;
-        // running a non-chorus service on these ports while invoking
-        // `chorus stop` is unsupported.
-        await sweepPort(7707, 'Daemon');
-        await sweepPort(5050, 'Cockpit');
+        // escaped the pidfile path.
+        await sweepPort(daemonPort, 'Daemon');
+        await sweepPort(cockpitPort, 'Cockpit');
+
+        clearDaemonInfo();
 
         console.log('');
       } catch (error) {
@@ -70,7 +88,15 @@ export function registerStopCommand(program: Command): void {
     });
 }
 
-async function stopProcess(label: string, pidFile: string): Promise<void> {
+async function stopByPid(label: string, pid: number): Promise<void> {
+  if (!Number.isFinite(pid) || pid <= 0) return;
+  const dead = await killAndVerify(pid, label);
+  if (dead) {
+    console.log(`  ${sym.ok} ${label.padEnd(7)} ${c.dim(`(PID ${pid})`)}`);
+  }
+}
+
+async function stopByPidFile(label: string, pidFile: string): Promise<void> {
   if (!fs.existsSync(pidFile)) return;
   const pid = parseInt(fs.readFileSync(pidFile, 'utf-8'), 10);
   if (!Number.isFinite(pid) || pid <= 0) {
@@ -80,10 +106,6 @@ async function stopProcess(label: string, pidFile: string): Promise<void> {
   const dead = await killAndVerify(pid, label);
   if (dead) {
     console.log(`  ${sym.ok} ${label.padEnd(7)} ${c.dim(`(PID ${pid})`)}`);
-    // Only unlink once we've confirmed the process is gone. Earlier
-    // code unconditionally unlinked, which orphaned any process that
-    // ignored SIGTERM — its successor `chorus start` couldn't see
-    // the ghost owner of the port.
     try {
       fs.unlinkSync(pidFile);
     } catch {

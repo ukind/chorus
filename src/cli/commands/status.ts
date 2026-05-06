@@ -1,5 +1,8 @@
 import type { Command } from 'commander';
-import { COCKPIT_URL, DAEMON_URL } from '../shared.js';
+import {
+  resolveCockpitUrl,
+  resolveDaemonUrl,
+} from '../../lib/daemon-discovery.js';
 import { c, header, kv, sym } from '../ui.js';
 
 export function registerStatusCommand(program: Command): void {
@@ -8,7 +11,9 @@ export function registerStatusCommand(program: Command): void {
     .description('Check daemon health')
     .action(async () => {
       try {
-        const response = await fetch(`${DAEMON_URL}/api/v1/health`);
+        const daemonUrl = await resolveDaemonUrl();
+        const cockpitUrl = await resolveCockpitUrl();
+        const response = await fetch(`${daemonUrl}/api/v1/health`);
         if (!response.ok) {
           console.log('');
           console.log(
@@ -39,8 +44,8 @@ export function registerStatusCommand(program: Command): void {
             kv([
               ['Version', c.cyan(data.version)],
               ['Uptime', c.dim(human)],
-              ['Cockpit', c.cyan(COCKPIT_URL)],
-              ['Daemon', c.dim(DAEMON_URL)],
+              ['Cockpit', c.cyan(cockpitUrl)],
+              ['Daemon', c.dim(daemonUrl)],
             ]),
           );
           console.log('');

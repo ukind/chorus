@@ -8,6 +8,8 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import fs from "node:fs";
+import path from "node:path";
 import {
   createChat,
   waitForChat,
@@ -29,9 +31,24 @@ import {
   InvokePersonaSchema,
 } from "./tools.js";
 
+// Read version from the shipped package.json — single source of truth,
+// per feedback_version_from_package_json. __dirname is dist/mcp (built)
+// or src/mcp (tsx dev); ../../package.json resolves to the package root
+// in both layouts.
+const mcpVersion: string = (() => {
+  try {
+    const pkgPath = path.resolve(__dirname, "..", "..", "package.json");
+    const raw = fs.readFileSync(pkgPath, "utf-8");
+    const parsed = JSON.parse(raw) as { version?: string };
+    return parsed.version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+})();
+
 const mcpServer = new McpServer({
   name: "chorus",
-  version: "0.7.5",
+  version: mcpVersion,
 });
 
 /**

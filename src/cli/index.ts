@@ -3,18 +3,15 @@ import fs from 'fs';
 import open from 'open';
 import os from 'os';
 import path from 'path';
+import { resolveCockpitUrl } from '../lib/daemon-discovery.js';
 import { registerDoctorCommand } from './commands/doctor.js';
 import { registerInitCommand } from './commands/init.js';
 import { registerStartCommand } from './commands/start.js';
 import { registerStatusCommand } from './commands/status.js';
 import { registerStopCommand } from './commands/stop.js';
 import { detectRuntimeEnv, shouldAutoOpenBrowser } from './runtime-env.js';
-import {
-  COCKPIT_URL,
-  pkg,
-  printCockpitAccessHint,
-} from './shared.js';
-import { c, sym } from './ui.js';
+import { pkg } from './shared.js';
+import { c, sym, tip } from './ui.js';
 
 const program = new Command();
 
@@ -41,7 +38,7 @@ program.addHelpText('beforeAll', () => {
       `  ${sym.rocket} ${c.bold('Welcome to Chorus')} ${c.dim('— two commands to get going:')}`,
       '',
       `    ${c.cyan('1.')} ${c.bold('chorus init')}     ${c.dim('register MCP with your editors + seed templates + detect CLIs')}`,
-      `    ${c.cyan('2.')} ${c.bold('chorus start')}    ${c.dim('bring up the daemon + cockpit at')} ${c.cyan('http://127.0.0.1:5050')}`,
+      `    ${c.cyan('2.')} ${c.bold('chorus start')}    ${c.dim('bring up the daemon + cockpit')}`,
       '',
     ].join('\n');
   }
@@ -69,10 +66,17 @@ program
   .action(async () => {
     try {
       const env = detectRuntimeEnv();
-      printCockpitAccessHint();
+      const cockpitUrl = await resolveCockpitUrl();
+      console.log('');
+      console.log(`   ${c.gray('Open')}  ${c.cyan(cockpitUrl)}`);
+      if (env.hint) {
+        console.log('');
+        console.log(tip(env.hint));
+      }
+      console.log('');
       if (shouldAutoOpenBrowser(env)) {
-        await open(COCKPIT_URL);
-        console.log(`\nOpening ${COCKPIT_URL}...`);
+        await open(cockpitUrl);
+        console.log(`\nOpening ${cockpitUrl}...`);
       }
     } catch (error) {
       console.error('Failed to open browser:', error);

@@ -15,51 +15,37 @@ const API_PREFIX = "/api/v1";
 
 /**
  * Server-side base URL — routes through the same `/api/daemon` proxy
- * the browser uses, via the request's own host. Why:
+ * the browser uses, by constructing the cockpit's own origin from
+ * the PORT env var that Next.js itself reads to bind.
  *
- * Earlier attempts read daemon.json directly from inside the Next.js
- * server bundle. The eval('require') escape hatch worked locally but
- * failed in some Node 22 + Next.js production-server combinations
- * (likely ESM context where eval('require') ReferenceError-throws),
- * causing the SSR fetch to fall through to a 7707 default that hit
- * the VSCode tunnel squatter and hung for 5-10s before timing out
- * with "Daemon unreachable".
+ * Why this shape (after multiple iterations):
  *
- * Routing SSR through the proxy reuses the proxy's known-good
- * resolveDaemonUrl logic (which runs in the catch-all route's
- * nodejs runtime where fs/path/os are unambiguously available). The
- * cost is one extra HTTP hop through loopback — sub-millisecond on
- * any working setup, vastly better than the multi-second hang the
- * direct path was producing.
+ *   v0.8.0 used a module-load snapshot of process.env.CHORUS_DAEMON_URL.
+ *   v0.8.1 added eval('require')('node:fs') to read daemon.json from
+ *           inside the Next.js bundle. Worked locally but failed in
+ *           Node 22 + production server (ESM context).
+ *   v0.8.5 routed through /api/daemon via next/headers(). Worked
+ *           locally but the dynamic chunk import (c.e(248).then(...))
+ *           failed in some user environments — fell through to a 7707
+ *           default that hit a VSCode tunnel squatter and hung 15s.
+ *   v0.8.7 (this): use process.env.PORT directly. PORT is set by
+ *           `chorus start` when spawning the cockpit child AND is the
+ *           same env Next.js reads to bind, so it's unambiguously
+ *           available in every Next.js context. Synchronous, no
+ *           chunk loading, no request-scope dependency.
  *
- * No module-level cache: headers() is cheap, and the host can in
- * theory differ across requests in unusual deployments.
+ * The proxy at /api/daemon runs in the catch-all route's nodejs
+ * runtime where ~/.chorus/daemon.json reads work reliably — so this
+ * function only needs to know the cockpit's own port, not the
+ * daemon's.
  */
 async function getServerBase(): Promise<string> {
-  try {
-    // next/headers is async-import only inside a request scope. If
-    // we're outside a request (e.g., a build-time prerender, although
-    // pages set force-dynamic so this is rare), the import resolves
-    // but the call throws — caught below.
-    const { headers } = await import("next/headers");
-    const h = await headers();
-    const host = h.get("host");
-    if (host) {
-      // Construct the cockpit's own origin and append /api/daemon.
-      // The proxy auto-prefixes /api/v1 when needed, so callers like
-      // listTemplates() that pass `/templates` end up at
-      // <host>/api/daemon/templates → proxied to <daemon>/api/v1/templates.
-      return `http://${host}/api/daemon`;
-    }
-  } catch {
-    /* outside request context — fall through to env/default */
-  }
-
-  // Fallbacks for non-request server-side contexts. CHORUS_DAEMON_URL
-  // is set by `chorus start` when spawning the cockpit child; if that
-  // env propagated, use it. Otherwise the v0.7-era default.
-  if (process.env.CHORUS_DAEMON_URL) return process.env.CHORUS_DAEMON_URL;
-  return "http://127.0.0.1:7707";
+  const port = process.env.PORT;
+  if (port) return `http://127.0.0.1:${port}/api/daemon`;
+  // Fallback for the rare case where PORT isn't set (some custom
+  // Next.js host configurations). The legacy 5050 default matches
+  // the cockpit's pre-port-shift defaults.
+  return "http://127.0.0.1:5050/api/daemon";
 }
 
 async function getBaseUrl(): Promise<string> {

@@ -1,84 +1,65 @@
 // Fetch wrapper with error handling and base URL management
 import { ApiResponse } from "@/lib/types";
 
-// Server-side: hit the daemon directly on this host.
-// Browser-side: go through the Next.js proxy at /api/daemon (the browser
-// cannot reach 127.0.0.1 on the server).
+// Both server-side and browser-side route through the Next.js proxy
+// at /api/daemon. The proxy handler runs in nodejs runtime and has
+// reliable access to ~/.chorus/daemon.json — no need to duplicate
+// the discovery logic across runtimes (which broke historically).
 //
-// Server-side base URL discovery uses the same daemon.json-first
-// resolution as the proxy route (see lib/daemon-discovery.ts). Pre-fix,
-// SERVER_BASE was a module-load-time snapshot of process.env that
-// fell through to 127.0.0.1:7707 on miss — which broke whenever the
-// daemon shifted ports (VSCode squat in WSL, etc). Now we re-resolve
-// on first call per process, cache the result, and invalidate on a
-// connection failure so a daemon that comes up on a new port is
-// picked up by the next request.
-//
-// daemon-discovery is dynamically imported only on the server because
-// it pulls in node:path/fs/os which webpack cannot bundle for the
-// browser. The browser path never hits that branch.
+// Browser side: relative URL works because the cockpit is the origin.
+// Server side: needs absolute URL constructed from the request's host
+// (via next/headers) — Next.js requires absolute URLs in fetch() when
+// running outside the browser.
 const CLIENT_BASE = "/api/daemon";
 const API_PREFIX = "/api/v1";
 
-let cachedServerBase: string | null = null;
-
 /**
- * Read daemon.json directly using a synchronous runtime require so
- * webpack does not pull node:fs / node:path / node:os into the browser
- * bundle. lib/api/client is imported from both server components and
- * "use client" components; at runtime this function only runs when
- * typeof window === undefined, but webpack walks static import graphs
- * regardless of runtime checks.
+ * Server-side base URL — routes through the same `/api/daemon` proxy
+ * the browser uses, via the request's own host. Why:
  *
- * eval('require') is the standard escape hatch for "I need Node modules
- * but only on the server, and webpack must not analyze this." In an
- * ESM context (Next.js server bundles) require() isn't defined, so we
- * fall back to createRequire.
+ * Earlier attempts read daemon.json directly from inside the Next.js
+ * server bundle. The eval('require') escape hatch worked locally but
+ * failed in some Node 22 + Next.js production-server combinations
+ * (likely ESM context where eval('require') ReferenceError-throws),
+ * causing the SSR fetch to fall through to a 7707 default that hit
+ * the VSCode tunnel squatter and hung for 5-10s before timing out
+ * with "Daemon unreachable".
+ *
+ * Routing SSR through the proxy reuses the proxy's known-good
+ * resolveDaemonUrl logic (which runs in the catch-all route's
+ * nodejs runtime where fs/path/os are unambiguously available). The
+ * cost is one extra HTTP hop through loopback — sub-millisecond on
+ * any working setup, vastly better than the multi-second hang the
+ * direct path was producing.
+ *
+ * No module-level cache: headers() is cheap, and the host can in
+ * theory differ across requests in unusual deployments.
  */
-function readDaemonJsonSync(): { daemonPort: number } | null {
-  try {
-    // Resolve a CommonJS-style require even in ESM contexts.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const dynRequire =
-      typeof (globalThis as any).require === "function"
-        ? (globalThis as any).require
-        // eslint-disable-next-line @typescript-eslint/no-implied-eval
-        : (eval("require") as NodeJS.Require | undefined);
-    if (!dynRequire) return null;
-    const fs = dynRequire("node:fs") as typeof import("node:fs");
-    const path = dynRequire("node:path") as typeof import("node:path");
-    const os = dynRequire("node:os") as typeof import("node:os");
-    const target = path.join(os.homedir(), ".chorus", "daemon.json");
-    const raw = fs.readFileSync(target, "utf-8");
-    const parsed = JSON.parse(raw) as { schemaVersion?: number; daemonPort?: number };
-    if (parsed.schemaVersion !== 1 || typeof parsed.daemonPort !== "number") {
-      return null;
-    }
-    return { daemonPort: parsed.daemonPort };
-  } catch {
-    return null;
-  }
-}
-
 async function getServerBase(): Promise<string> {
-  if (cachedServerBase) return cachedServerBase;
-  // 1. daemon.json wins — the source of truth written by `chorus start`
-  //    after it picks free ports.
-  const info = readDaemonJsonSync();
-  if (info) {
-    cachedServerBase = `http://127.0.0.1:${info.daemonPort}`;
-    return cachedServerBase;
+  try {
+    // next/headers is async-import only inside a request scope. If
+    // we're outside a request (e.g., a build-time prerender, although
+    // pages set force-dynamic so this is rare), the import resolves
+    // but the call throws — caught below.
+    const { headers } = await import("next/headers");
+    const h = await headers();
+    const host = h.get("host");
+    if (host) {
+      // Construct the cockpit's own origin and append /api/daemon.
+      // The proxy auto-prefixes /api/v1 when needed, so callers like
+      // listTemplates() that pass `/templates` end up at
+      // <host>/api/daemon/templates → proxied to <daemon>/api/v1/templates.
+      return `http://${host}/api/daemon`;
+    }
+  } catch {
+    /* outside request context — fall through to env/default */
   }
-  // 2. CHORUS_DAEMON_URL env override (remote daemon use case + the
-  //    legacy v0.7 path where chorus start passed this env in).
-  if (process.env.CHORUS_DAEMON_URL) {
-    cachedServerBase = process.env.CHORUS_DAEMON_URL;
-    return cachedServerBase;
-  }
-  // 3. Hardcoded default for first-ever installs before daemon.json
-  //    has been written.
-  cachedServerBase = "http://127.0.0.1:7707";
-  return cachedServerBase;
+
+  // Fallbacks for non-request server-side contexts. CHORUS_DAEMON_URL
+  // is set by `chorus start` when spawning the cockpit child; if that
+  // env propagated, use it. Otherwise the v0.7-era default.
+  if (process.env.CHORUS_DAEMON_URL) return process.env.CHORUS_DAEMON_URL;
+  return "http://127.0.0.1:7707";
 }
 
 async function getBaseUrl(): Promise<string> {
@@ -172,10 +153,6 @@ export async function fetchFromDaemon<T>(
     }
 
     if (error instanceof TypeError && error.message.includes("fetch")) {
-      // Daemon may have shifted ports (or come up on a different port
-      // than what we cached at module load). Invalidate so the next
-      // call re-resolves from daemon.json.
-      cachedServerBase = null;
       throw new DaemonError(
         "connection_failed",
         0,

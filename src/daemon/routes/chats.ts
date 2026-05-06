@@ -192,6 +192,18 @@ export function registerChatRoutes(
           { validIds: valid },
         );
       }
+      // Refuse to create a chat off an incomplete template — the seed
+      // adapter couldn't fill at least one slot from the user's voices.
+      // Without this gate, the runner stalls when it hits the empty
+      // models[] array and the user sees a confusing "no model
+      // available" error mid-run.
+      if (!tmpl.is_complete) {
+        return sendError(
+          reply,
+          'validation',
+          `Template "${templateId}" needs setup — at least one slot has no models. Edit the YAML to assign models for your fleet.`,
+        );
+      }
 
       // Parse the template up-front so we can branch on review-only vs
       // standard. Two reads of the same template are tolerable (this

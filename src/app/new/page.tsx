@@ -200,36 +200,59 @@ function NewChatPageInner() {
             wide
           >
             <ul className="space-y-1">
-              {templates.map((t) => (
-                <li key={t.id}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const newParams = new URLSearchParams(params);
-                      newParams.set("template", t.id);
-                      router.push(`/new?${newParams.toString()}`);
-                    }}
-                    className={`block w-full rounded-md p-2 text-left transition ${
-                      t.id === templateId ? "bg-accent" : "hover:bg-accent/50"
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium">{t.name}</span>
-                      {isReviewOnlyTemplate(t) && (
-                        <Badge
-                          variant="outline"
-                          className="border-blue-500/30 bg-blue-500/10 font-mono text-[9px] uppercase text-blue-300"
-                        >
-                          review only
-                        </Badge>
-                      )}
-                    </div>
-                    <div className="text-xs text-muted-foreground line-clamp-1">
-                      {t.description}
-                    </div>
-                  </button>
-                </li>
-              ))}
+              {templates.map((t) => {
+                // Templates whose seed-time adapter couldn't fill every
+                // slot are non-runnable until the user edits the YAML.
+                // Don't let them be selected here — silent failure
+                // would surface as a confusing "no model" error mid-run.
+                const incomplete = t.isComplete === false;
+                return (
+                  <li key={t.id}>
+                    <button
+                      type="button"
+                      disabled={incomplete}
+                      onClick={() => {
+                        if (incomplete) return;
+                        const newParams = new URLSearchParams(params);
+                        newParams.set("template", t.id);
+                        router.push(`/new?${newParams.toString()}`);
+                      }}
+                      className={`block w-full rounded-md p-2 text-left transition ${
+                        incomplete
+                          ? "cursor-not-allowed opacity-50"
+                          : t.id === templateId
+                            ? "bg-accent"
+                            : "hover:bg-accent/50"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium">{t.name}</span>
+                        {isReviewOnlyTemplate(t) && (
+                          <Badge
+                            variant="outline"
+                            className="border-blue-500/30 bg-blue-500/10 font-mono text-[9px] uppercase text-blue-300"
+                          >
+                            review only
+                          </Badge>
+                        )}
+                        {incomplete && (
+                          <Badge
+                            variant="outline"
+                            className="border-amber-500/40 bg-amber-500/10 font-mono text-[9px] uppercase text-amber-300"
+                          >
+                            needs setup
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="text-xs text-muted-foreground line-clamp-1">
+                        {incomplete
+                          ? "Edit this template's YAML to fill in models for your fleet."
+                          : t.description}
+                      </div>
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           </Picker>
         </div>

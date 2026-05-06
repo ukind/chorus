@@ -5,6 +5,18 @@ const TemplateSchema = z.object({
   id: z.string(),
   source: z.enum(['builtin', 'user']),
   yaml: z.string(),
+  // SQLite stores 0/1 ints; coerce to boolean for callers. Default 1
+  // (true) on legacy rows and on user-authored templates that haven't
+  // gone through the adapter.
+  is_complete: z.preprocess((v) => {
+    if (typeof v === 'boolean') return v;
+    if (typeof v === 'number') return v !== 0;
+    // libsql may surface INTEGER columns as bigint on some platforms.
+    // Coerce via Number() so we don't need BigInt literals (which the
+    // ES2017 target doesn't allow).
+    if (typeof v === 'bigint') return Number(v) !== 0;
+    return true;
+  }, z.boolean()),
   created_at: z.number().int(),
   updated_at: z.number().int(),
 });
@@ -38,16 +50,17 @@ export const templates = {
     id: string,
     yaml: string,
     source: 'builtin' | 'user' = 'user',
+    isComplete: boolean = true,
   ): Promise<Template> {
     const db = await getDb();
     const now = Date.now();
 
     await db.execute({
       sql: `
-        INSERT OR REPLACE INTO templates (id, source, yaml, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO templates (id, source, yaml, is_complete, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
       `,
-      args: [id, source, yaml, now, now],
+      args: [id, source, yaml, isComplete ? 1 : 0, now, now],
     });
 
     const row = await templates.getById(id);

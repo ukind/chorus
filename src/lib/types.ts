@@ -238,6 +238,12 @@ export interface Template {
    *  delete affordance for these rows. "user" rows are user-created or
    *  user-edited (a builtin gets demoted to user on first edit). */
   source?: "builtin" | "user";
+  /** v0.8.3: false when the daemon's seed adapter couldn't fill at least
+   *  one slot from the user's enabled voices — leaves blank `models`
+   *  arrays in the YAML. Cockpit gates "Use template" until the user
+   *  edits the YAML to a complete state and saves. Default true for
+   *  legacy rows + user-authored templates that haven't been adapted. */
+  isComplete?: boolean;
 }
 
 export interface BlockedChat {

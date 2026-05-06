@@ -183,6 +183,15 @@ async function initDb(): Promise<Client> {
     await db.execute('ALTER TABLE voices ADD COLUMN disabled_reason TEXT');
   }
 
+  // is_complete on templates — added in v0.8.3 to gate "Use template"
+  // when the seed adapter couldn't fill every slot from the user's
+  // installed voices. Default 1 keeps existing rows usable.
+  const templateCols = (await db.execute('PRAGMA table_info(templates)')).rows as unknown as { name: string }[];
+  const hasTemplateCol = (n: string): boolean => templateCols.some((c) => c.name === n);
+  if (!hasTemplateCol('is_complete')) {
+    await db.execute('ALTER TABLE templates ADD COLUMN is_complete INTEGER NOT NULL DEFAULT 1');
+  }
+
   return db;
 }
 

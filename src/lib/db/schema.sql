@@ -52,6 +52,12 @@ CREATE TABLE IF NOT EXISTS templates (
   id TEXT PRIMARY KEY,
   source TEXT NOT NULL,
   yaml TEXT NOT NULL,
+  -- 0 = some slot couldn't be filled with the user's voices and was
+  -- left blank; cockpit gates "Use template" until the user edits.
+  -- 1 = every slot has at least one model assigned (canonical state).
+  -- v0.8.3+: builtin templates may flip 0→1 as the user enables more
+  -- CLIs; the seed loop re-adapts on every daemon boot.
+  is_complete INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );

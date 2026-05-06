@@ -193,9 +193,19 @@ export default function TemplatesPage() {
                         >
                           {t.category}
                         </Badge>
+                        {t.isComplete === false && (
+                          <Badge
+                            variant="outline"
+                            className="border-amber-500/40 bg-amber-500/10 font-mono text-[9px] uppercase text-amber-300"
+                          >
+                            needs setup
+                          </Badge>
+                        )}
                       </div>
                       <p className="mt-1 text-xs text-muted-foreground line-clamp-2">
-                        {t.description}
+                        {t.isComplete === false
+                          ? "Some slots couldn't be filled from your installed CLIs. Edit the YAML to pick models for each slot."
+                          : t.description}
                       </p>
                     </div>
                   </div>

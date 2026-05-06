@@ -313,6 +313,22 @@ async function main(): Promise<void> {
         console.log(
           `[daemon] voices Phase 2 (opencode): +${result.added} added, ${result.updated} updated, ${result.disabled} auto-disabled`,
         );
+        // Re-adapt builtin templates so newly-detected opencode voices
+        // can fill template slots that were left blank by Phase 1.
+        // Idempotent: if Phase 1 already filled everything, this is a
+        // no-op. The cost is one disk read per template + zero DB
+        // writes when nothing changed.
+        if (result.added > 0 || result.updated > 0) {
+          try {
+            await seedBuiltinTemplates();
+            console.log('[daemon] templates re-adapted after Phase 2 voice seed');
+          } catch (err) {
+            console.warn(
+              '[daemon] template re-adapt after Phase 2 failed:',
+              err instanceof Error ? err.message : err,
+            );
+          }
+        }
       } else {
         console.log(
           '[daemon] voices Phase 2 (opencode): skipped (CLI not detected or shell-out failed)',
@@ -338,27 +354,47 @@ async function seedBuiltinTemplates(): Promise<void> {
   const files = fs.readdirSync(templatesDir).filter((f) => f.endsWith('.yaml'));
   const onDiskIds = new Set<string>();
 
+  // Load the user's enabled voices once. The adapter rewrites slot
+  // model lists to the voices the user actually has — substitutes
+  // missing lineages with diversity-preserving alternatives, leaves
+  // truly-empty slots blank and flags the template incomplete.
+  const { voices: voicesDb } = await import('../lib/db/index.js');
+  const userVoices = await voicesDb.list();
+  const { adaptTemplate } = await import('./template-adapter.js');
+
   for (const file of files) {
     const id = file.replace('.yaml', '');
     onDiskIds.add(id);
     const yamlPath = path.join(templatesDir, file);
     const yamlContent = fs.readFileSync(yamlPath, 'utf-8');
 
+    // Adapt to user's voice fleet. Pure function — same input/voices
+    // → same output, so re-running on every boot is idempotent unless
+    // the voice set actually changed.
+    const adapted = adaptTemplate(yamlContent, userVoices);
+
     const existing = await templates.getById(id);
 
     if (!existing) {
-      await templates.create(id, yamlContent, 'builtin');
-      console.log(`[daemon] seeded template: ${id}`);
+      await templates.create(id, adapted.yaml, 'builtin', adapted.isComplete);
+      console.log(
+        `[daemon] seeded template: ${id}${adapted.isComplete ? '' : ' (incomplete — needs setup)'}`,
+      );
       continue;
     }
 
-    // Re-sync builtin rows from disk on every boot. User-cloned rows
-    // (source='user') are NEVER overwritten — those belong to the user
-    // and will be edited via /templates POST. Keeps YAML source-of-
-    // truth aligned with the DB after a chorus upgrade.
-    if (existing.source === 'builtin' && existing.yaml !== yamlContent) {
-      await templates.create(id, yamlContent, 'builtin');
-      console.log(`[daemon] refreshed builtin template from disk: ${id}`);
+    // Re-sync builtin rows. Two reasons to refresh:
+    //   1. Disk content changed (chorus upgrade brought a new template).
+    //   2. Adapter output changed (user enabled/disabled CLIs since
+    //      last boot).
+    // User-cloned rows (source='user') are NEVER overwritten.
+    const yamlChanged = existing.yaml !== adapted.yaml;
+    const completenessChanged = existing.is_complete !== adapted.isComplete;
+    if (existing.source === 'builtin' && (yamlChanged || completenessChanged)) {
+      await templates.create(id, adapted.yaml, 'builtin', adapted.isComplete);
+      console.log(
+        `[daemon] refreshed builtin template: ${id}${adapted.isComplete ? '' : ' (incomplete)'}`,
+      );
     }
   }
 

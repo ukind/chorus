@@ -7,6 +7,9 @@ interface RawTemplateRow {
   id: string;
   source: "builtin" | "user";
   yaml: string;
+  // Daemon emits 1/0 (legacy SQLite int) or true/false depending on
+  // libsql transport — accept either via parseRow.
+  is_complete?: boolean | number;
   created_at: number;
   updated_at: number;
 }
@@ -193,6 +196,10 @@ function parseRow(row: RawTemplateRow): Template {
     forks: 0,
     popularity: 0,
     source: row.source,
+    isComplete:
+      typeof row.is_complete === "number"
+        ? row.is_complete !== 0
+        : row.is_complete !== false,
   };
 }
 

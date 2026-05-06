@@ -440,7 +440,10 @@ function parseFailureSummary(
   const body = headerEnd >= 0 ? trimmed.slice(headerEnd + 2).trim() : "";
   const message = body.length > 0 ? body : "(no error message reported)";
   // Map common kinds to a short call-to-action so the user knows what to do.
-  const cta = ctaForKind(kind);
+  // Pass the message text too so kind-CTAs can match on specific stderr
+  // signatures (e.g. Claude's --dangerously-skip-permissions root refusal
+  // surfaces as cli_failed but needs a very different remedy than re-auth).
+  const cta = ctaForKind(kind, message);
   return {
     kind,
     message,
@@ -468,7 +471,21 @@ function formatResetAt(ms: number): string {
   return `in ${days}d`;
 }
 
-function ctaForKind(kind: string): string | undefined {
+function ctaForKind(kind: string, message?: string): string | undefined {
+  // Specific stderr signatures override the generic per-kind CTAs.
+  // Claude CLI refuses --dangerously-skip-permissions when running as
+  // root (Anthropic's security policy) — common on WSL where users
+  // default to root. The generic "re-auth the CLI" CTA misleads them
+  // into wasted login attempts.
+  if (
+    message &&
+    /dangerously-skip-permissions cannot be used with root\/sudo/i.test(message)
+  ) {
+    return (
+      "Claude CLI refuses --dangerously-skip-permissions as root. " +
+      "Run chorus as a non-root user, or disable Claude voices in /connect."
+    );
+  }
   switch (kind) {
     case "quota_exhausted":
       return "Check your subscription dashboard or swap the account in CHORUS_CODEX_HOME / chorus settings.";

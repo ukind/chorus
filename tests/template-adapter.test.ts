@@ -121,6 +121,82 @@ phases:
     expect(yaml.parse(result.yaml).phases[0].doer.models).toEqual(['gpt-5.5']);
   });
 
+  it('rotates models when multiple slots match the same lineage', () => {
+    // Review-only's 3 opencode reviewer slots used to all get the
+    // same top-ranked opencode voice (e.g. kimi-k2.6 three times).
+    // With usedTuples tracking, each slot pulls a different model.
+    const voices = [
+      v('opencode', 'opencode-go/kimi-k2.6'),
+      v('opencode', 'opencode-go/deepseek-v4-pro'),
+      v('opencode', 'opencode-go/glm-5.1'),
+    ];
+    const tpl = `id: t
+phases:
+  - id: p
+    kind: review
+    doer:
+      lineage: opencode
+      models: [whatever]
+    reviewer:
+      require: 2
+      candidates:
+        - lineage: opencode
+          models: [whatever]
+        - lineage: opencode
+          models: [whatever]
+        - lineage: opencode
+          models: [whatever]
+`;
+    const result = adaptTemplate(tpl, voices);
+    const parsed = yaml.parse(result.yaml);
+    const cands = parsed.phases[0].reviewer.candidates;
+    const modelsUsed = [
+      parsed.phases[0].doer.models[0],
+      cands[0].models[0],
+      cands[1].models[0],
+      cands[2].models[0],
+    ];
+    // 4 slots, 3 distinct opencode voices — first 3 should be all
+    // distinct, 4th can repeat (fallback to top when all used).
+    expect(new Set(modelsUsed).size).toBeGreaterThanOrEqual(3);
+  });
+
+  it('rotates anthropic models so 3 slots get different versions', () => {
+    const voices = [
+      v('anthropic', 'claude-haiku-4-5'),
+      v('anthropic', 'claude-sonnet-4-6'),
+      v('anthropic', 'claude-opus-4-7'),
+    ];
+    const tpl = `id: t
+phases:
+  - id: p
+    kind: review
+    doer:
+      lineage: anthropic
+      models: [whatever]
+    reviewer:
+      require: 2
+      candidates:
+        - lineage: anthropic
+          models: [whatever]
+        - lineage: anthropic
+          models: [whatever]
+`;
+    const result = adaptTemplate(tpl, voices);
+    const parsed = yaml.parse(result.yaml);
+    const cands = parsed.phases[0].reviewer.candidates;
+    const tuples = [
+      parsed.phases[0].doer.models[0],
+      cands[0].models[0],
+      cands[1].models[0],
+    ];
+    // Doer + 2 reviewers all anthropic — should rotate through the
+    // 3 enabled voices. Capability ranking puts opus first (doer),
+    // sonnet next, haiku last.
+    expect(tuples[0]).toBe('claude-opus-4-7');
+    expect(new Set(tuples).size).toBe(3);
+  });
+
   it('ranks gemini by major.minor + pro/flash modifier', () => {
     const voices = [
       v('google', 'gemini-2.5-flash'),

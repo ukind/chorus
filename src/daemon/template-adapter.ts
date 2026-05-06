@@ -119,14 +119,14 @@ export function adaptTemplate(
     // falls through to a diversity-preserving substitute (a lineage
     // not yet used in this phase), then last-ditch any-available.
     //
-    // Two-pass (exact-match-first) was tried in v0.8.8 but turned out
-    // to *hurt* cross-lineage diversity: when an exact-match slot
-    // grabs the lineage early, later substitution slots have fewer
-    // unused lineages to draw from and end up duplicating the doer.
-    // Sequential lets the substitution slots take first dibs on
-    // unused lineages — which maximizes "reviewers different from the
-    // doer", what `crossLineage: true` quorum actually requires.
+    // Two diversity dimensions tracked per phase:
+    //   usedLineages — which lineages are filled (prefer unused next)
+    //   usedTuples   — which (lineage, model) pairs are filled
+    //                  (rotate across multiple voices within a lineage
+    //                   so 3 anthropic slots get opus + sonnet + haiku,
+    //                   not opus three times)
     const usedLineages = new Set<string>();
+    const usedTuples = new Set<string>();
 
     if (phase.doer) {
       const assigned = assignSlot(
@@ -134,6 +134,7 @@ export function adaptTemplate(
         byLineage,
         byFamily,
         usedLineages,
+        usedTuples,
       );
       if (!assigned) {
         phase.doer.models = [];
@@ -148,6 +149,7 @@ export function adaptTemplate(
           byLineage,
           byFamily,
           usedLineages,
+          usedTuples,
         );
         if (!assigned) {
           slot.models = [];
@@ -185,6 +187,7 @@ function assignSlot(
   byLineage: Map<string, Voice[]>,
   byFamily: Map<string, Voice[]>,
   usedInPhase: Set<string>,
+  usedTuples: Set<string>,
 ): boolean {
   const preferredLineage = slot.lineage;
   if (!preferredLineage) return false;
@@ -192,7 +195,7 @@ function assignSlot(
   const direct = byLineage.get(preferredLineage);
   if (direct && direct.length > 0) {
     slot.lineage = preferredLineage;
-    slot.models = voicesToModelKeys(direct);
+    slot.models = voicesToModelKeys(direct, usedTuples);
     usedInPhase.add(preferredLineage);
     return true;
   }
@@ -200,7 +203,7 @@ function assignSlot(
   const familyMatch = byFamily.get(preferredLineage);
   if (familyMatch && familyMatch.length > 0) {
     slot.lineage = familyMatch[0].lineage;
-    slot.models = voicesToModelKeys(familyMatch);
+    slot.models = voicesToModelKeys(familyMatch, usedTuples);
     usedInPhase.add(familyMatch[0].lineage);
     return true;
   }
@@ -208,7 +211,7 @@ function assignSlot(
   for (const [lineage, voices] of byLineage) {
     if (!usedInPhase.has(lineage)) {
       slot.lineage = lineage;
-      slot.models = voicesToModelKeys(voices);
+      slot.models = voicesToModelKeys(voices, usedTuples);
       usedInPhase.add(lineage);
       return true;
     }
@@ -216,7 +219,7 @@ function assignSlot(
 
   for (const [lineage, voices] of byLineage) {
     slot.lineage = lineage;
-    slot.models = voicesToModelKeys(voices);
+    slot.models = voicesToModelKeys(voices, usedTuples);
     usedInPhase.add(lineage);
     return true;
   }
@@ -235,17 +238,37 @@ function assignSlot(
  * Returns AT MOST 1 model — the highest-ranked voice for the lineage.
  * Pre-fix the adapter dumped every available voice into the slot's
  * fallback chain (per chorus-083), which produced 5+ form rows per
- * slot and confused users into thinking they had "many doers". Power
- * users who want a fallback chain can add models manually via the
- * YAML editor.
+ * slot and confused users.
+ *
+ * `usedTuples` (lineage:model_id) tracks what's already been assigned
+ * in this phase so multiple slots wanting the same lineage rotate
+ * through available models instead of all picking the same top one.
+ * Without rotation, review-only's 3 opencode reviewer slots all got
+ * the same kimi model — wasted API calls and no internal diversity.
  */
-export function voicesToModelKeys(voices: Voice[]): string[] {
+export function voicesToModelKeys(
+  voices: Voice[],
+  usedTuples?: Set<string>,
+): string[] {
   if (voices.length === 0) return [];
   const ranked = [...voices].sort(
     (a, b) => capabilityScore(b) - capabilityScore(a),
   );
-  const best = ranked[0];
-  return [best.provider === 'openrouter' ? best.id : best.model_id];
+  const tupleKey = (v: Voice): string => `${v.lineage}:${v.model_id}`;
+  // Prefer the highest-ranked voice whose (lineage, model_id) tuple
+  // hasn't been used elsewhere in this phase. If all are used, fall
+  // through to the top — duplication is acceptable as last resort.
+  let pick = ranked[0];
+  if (usedTuples) {
+    for (const v of ranked) {
+      if (!usedTuples.has(tupleKey(v))) {
+        pick = v;
+        break;
+      }
+    }
+    usedTuples.add(tupleKey(pick));
+  }
+  return [pick.provider === 'openrouter' ? pick.id : pick.model_id];
 }
 
 /**

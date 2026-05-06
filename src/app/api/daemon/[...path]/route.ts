@@ -46,7 +46,16 @@ interface ProxyContext {
 
 async function proxy(req: NextRequest, ctx: ProxyContext): Promise<Response> {
   const { path } = await ctx.params;
-  const segments = path.join("/");
+  // Re-encode each segment so a slashed value (e.g. an opencode voice
+  // id `opencode-cli:opencode-go/kimi-k2.5`) survives the round trip.
+  // Next.js decodes URL path components when populating the [...path]
+  // catch-all; without re-encoding, `path.join("/")` would emit the
+  // literal `/` and Fastify's `:id` parameter route on the daemon
+  // would only match one segment of the id, return a default 404, and
+  // the caller would surface the unhelpful "Unknown error" because
+  // Fastify's 404 envelope doesn't match chorus's `{ ok, error }`
+  // shape.
+  const segments = path.map(encodeURIComponent).join("/");
   // Auto-prepend /api/v1 so cockpit code can call /api/daemon/<route>
   // while the daemon itself only exposes the versioned shape. Exact
   // segment check — `startsWith("api/v1")` would naively match

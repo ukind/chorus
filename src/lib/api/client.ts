@@ -128,19 +128,39 @@ export async function fetchFromDaemon<T>(
       },
     });
 
-    const data: ApiResponse<T> = await response.json().catch(() => ({
+    const raw: unknown = await response.json().catch(() => ({
       ok: false,
       error: {
         code: "parse_error",
         message: "Failed to parse response",
       },
     }));
+    const data = raw as ApiResponse<T>;
 
     if (!data.ok) {
+      // Fastify's default 404/500 returns `{ statusCode, error: "<string>",
+      // message }` — `error` is a STRING, not the chorus envelope's object.
+      // Without this branch, `data.error?.message` is undefined and we'd
+      // surface "Unknown error" instead of the actual reason.
+      const fastifyShape = raw as {
+        statusCode?: number;
+        error?: unknown;
+        message?: string;
+      };
+      const isFastifyError =
+        typeof fastifyShape.error === "string" &&
+        typeof fastifyShape.message === "string";
+      if (isFastifyError) {
+        throw new DaemonError(
+          fastifyShape.error as string,
+          response.status,
+          fastifyShape.message as string,
+        );
+      }
       throw new DaemonError(
         data.error?.code || "unknown",
         response.status,
-        data.error?.message || "Unknown error",
+        data.error?.message || `Daemon returned ${response.status}`,
         data.error?.details,
       );
     }

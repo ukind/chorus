@@ -35,25 +35,104 @@ export function registerStartCommand(program: Command): void {
   program
     .command('start')
     .option('--ui', 'Open browser UI after starting daemon')
+    .option('--daemon-only', 'Skip cockpit (Next.js UI). Used by MCP auto-start.')
     .description('Start the Chorus daemon (PM2-style fork)')
-    .action(async (options: { ui?: boolean }) => {
-      try {
-        const chorusDir = path.join(os.homedir(), '.chorus');
+    .action(
+      async (options: { ui?: boolean; daemonOnly?: boolean }) => {
+        try {
+          const chorusDir = path.join(os.homedir(), '.chorus');
 
-        if (await alreadyRunningHealthy(options.ui)) return;
+          if (await alreadyRunningHealthy(options.ui)) return;
 
-        await reapOrphans();
-        warnIfTmuxMissing();
-        await captureAndPersistPath();
+          // Concurrent-start guard. Two MCP shims hitting auto-start
+          // simultaneously would otherwise both pickPortPair → spawn
+          // a daemon → write daemon.json. Whichever writes second
+          // overwrites the first, leaving an orphan listening on a
+          // forgotten port. Using O_EXCL on the lockfile means the
+          // loser fails fast and falls through to alreadyRunningHealthy
+          // on retry (after the winner finishes spawning).
+          const lockReleased = await acquireStartLock(chorusDir);
+          if (!lockReleased) {
+            // Another start is in flight. Poll briefly for daemon.json
+            // to appear, then fall back to the already-running path.
+            await waitForAnotherStartToWin();
+            if (await alreadyRunningHealthy(options.ui)) return;
+            // Otherwise: stale lock + no winner. Force-clear and retry.
+            clearStartLock(chorusDir);
+            if (!(await acquireStartLock(chorusDir))) {
+              throw new Error(
+                'Could not acquire start lock after fallback. Try `chorus stop` then retry.',
+              );
+            }
+          }
 
-        const ports = await pickPortPair();
-        await spawnDaemonAndCockpit(chorusDir, ports);
-        scheduleAutoOpenBrowser(options.ui, ports.cockpitPort);
-      } catch (error) {
-        console.error('Failed to start daemon:', error);
-        process.exit(1);
-      }
-    });
+          try {
+            await reapOrphans();
+            warnIfTmuxMissing();
+            await captureAndPersistPath();
+
+            const ports = await pickPortPair();
+            await spawnDaemonAndCockpit(chorusDir, ports, {
+              daemonOnly: options.daemonOnly === true,
+            });
+            scheduleAutoOpenBrowser(options.ui, ports.cockpitPort);
+          } finally {
+            releaseStartLock(chorusDir);
+          }
+        } catch (error) {
+          console.error('Failed to start daemon:', error);
+          process.exit(1);
+        }
+      },
+    );
+}
+
+/**
+ * Acquire ~/.chorus/start.lock with O_EXCL. Returns true on success;
+ * false if another start has the lock. Stale-lock recovery is the
+ * caller's responsibility.
+ */
+async function acquireStartLock(chorusDir: string): Promise<boolean> {
+  fs.mkdirSync(chorusDir, { recursive: true });
+  const lockPath = path.join(chorusDir, 'start.lock');
+  try {
+    // O_EXCL fails if file exists; combined with O_CREAT this is the
+    // atomic check-and-create primitive Linux gives us. Write our PID
+    // into it so a stale lock can be diagnosed.
+    const fd = fs.openSync(lockPath, 'wx');
+    fs.writeSync(fd, String(process.pid));
+    fs.closeSync(fd);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function releaseStartLock(chorusDir: string): void {
+  const lockPath = path.join(chorusDir, 'start.lock');
+  try {
+    fs.unlinkSync(lockPath);
+  } catch {
+    /* already gone */
+  }
+}
+
+function clearStartLock(chorusDir: string): void {
+  releaseStartLock(chorusDir);
+}
+
+/**
+ * The lock-loser polls for daemon.json to appear, then defers to
+ * alreadyRunningHealthy. Bounded wait — the winner's spawn-and-record
+ * flow takes ~5s on healthy machines.
+ */
+async function waitForAnotherStartToWin(): Promise<void> {
+  const deadline = Date.now() + 8000;
+  while (Date.now() < deadline) {
+    const live = await readLiveDaemonInfo({ healthTimeoutMs: 500 });
+    if (live) return;
+    await new Promise((r) => setTimeout(r, 200));
+  }
 }
 
 /**
@@ -95,21 +174,31 @@ async function alreadyRunningHealthy(
   const live = await readLiveDaemonInfo({ healthTimeoutMs: 5000 });
   if (!live) return false;
 
-  const cockpitUrl = `http://127.0.0.1:${live.cockpitPort}`;
   console.log('');
   console.log(
     header(sym.ok, 'Chorus is already running', `version ${live.version || pkg.version}`),
   );
-  console.log('');
-  console.log(`   ${c.gray('Open')}  ${c.cyan(cockpitUrl)}`);
-  const env = detectRuntimeEnv();
-  if (env.hint) {
+  // Only point at the cockpit URL when a cockpit was actually started.
+  // A `--daemon-only` start records cockpitPid=null; the cockpit port
+  // itself is reserved but no Next.js process is bound to it.
+  const cockpitRunning = live.cockpitPid !== null;
+  if (cockpitRunning) {
+    const cockpitUrl = `http://127.0.0.1:${live.cockpitPort}`;
     console.log('');
-    console.log(tip(env.hint));
-  }
-  console.log('');
-  if (uiFlag && shouldAutoOpenBrowser(env)) {
-    open(cockpitUrl);
+    console.log(`   ${c.gray('Open')}  ${c.cyan(cockpitUrl)}`);
+    const env = detectRuntimeEnv();
+    if (env.hint) {
+      console.log('');
+      console.log(tip(env.hint));
+    }
+    console.log('');
+    if (uiFlag && shouldAutoOpenBrowser(env)) {
+      open(cockpitUrl);
+    }
+  } else {
+    console.log('');
+    console.log(c.dim('   Daemon-only mode. Run `chorus start --ui` to bring up the cockpit.'));
+    console.log('');
   }
   return true;
 }
@@ -275,6 +364,7 @@ function warnIfTmuxMissing(): void {
 async function spawnDaemonAndCockpit(
   chorusDir: string,
   ports: PortPair,
+  options: { daemonOnly: boolean } = { daemonOnly: false },
 ): Promise<void> {
   const daemonJs = path.resolve(__dirname, '..', '..', 'daemon', 'index.js');
   const daemonTs = path.resolve(__dirname, '..', '..', '..', 'src', 'daemon', 'index.ts');
@@ -316,7 +406,11 @@ async function spawnDaemonAndCockpit(
   );
   const webPidFile = path.join(chorusDir, 'web.pid');
   let cockpitPid: number | null = null;
-  if (
+  if (options.daemonOnly) {
+    // Skip cockpit spawn — used by MCP auto-start where the user
+    // hasn't asked for the UI. Daemon API alone is enough for the
+    // editor to make tool calls.
+  } else if (
     fs.existsSync(nextEntry) &&
     fs.existsSync(path.join(packageRoot, '.next'))
   ) {
@@ -381,13 +475,15 @@ async function spawnDaemonAndCockpit(
 
   console.log('');
   console.log(header(sym.ok, 'Chorus started', `daemon PID ${child.pid}`));
-  const cockpitUrl = `http://127.0.0.1:${ports.cockpitPort}`;
-  console.log('');
-  console.log(`   ${c.gray('Open')}  ${c.cyan(cockpitUrl)}`);
-  const env = detectRuntimeEnv();
-  if (env.hint) {
+  if (!options.daemonOnly) {
+    const cockpitUrl = `http://127.0.0.1:${ports.cockpitPort}`;
     console.log('');
-    console.log(tip(env.hint));
+    console.log(`   ${c.gray('Open')}  ${c.cyan(cockpitUrl)}`);
+    const env = detectRuntimeEnv();
+    if (env.hint) {
+      console.log('');
+      console.log(tip(env.hint));
+    }
   }
   console.log('');
 }

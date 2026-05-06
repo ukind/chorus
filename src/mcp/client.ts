@@ -98,7 +98,11 @@ async function tryAutoStart(): Promise<boolean> {
   process.stderr.write("chorus: daemon not running, auto-starting...\n");
 
   try {
-    const child = spawn(process.execPath, [binPath, "start"], {
+    // --daemon-only: MCP-triggered auto-start should NOT boot the
+    // cockpit (Next.js). The user invoked us via tool call from their
+    // editor; the cockpit UI isn't requested. Spec requirement, also
+    // saves ~150 MB and several seconds of cold-start time.
+    const child = spawn(process.execPath, [binPath, "start", "--daemon-only"], {
       detached: true,
       stdio: "ignore",
     });

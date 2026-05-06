@@ -20,6 +20,26 @@ export const runtime = "nodejs";
 
 const API_PREFIX = "api/v1";
 
+/**
+ * Module-level cache for the resolved daemon URL.
+ *
+ * Without this, every proxied request runs a synchronous disk read
+ * (daemon.json), a /proc PID-alive check, AND an HTTP health probe
+ * before forwarding — that's 1+ ms of overhead per UI call (see
+ * gemini review feedback on PR #v0.8). Caching once per Next.js
+ * process keeps the proxy on the fast path. The daemon.json port
+ * only changes between `chorus stop` and `chorus start`, by which
+ * point the cockpit process has already restarted, so the cache
+ * lifetime aligns with the value's actual stability.
+ */
+let cachedDaemonUrl: string | null = null;
+
+async function getDaemonUrl(): Promise<string> {
+  if (cachedDaemonUrl) return cachedDaemonUrl;
+  cachedDaemonUrl = await resolveDaemonUrl();
+  return cachedDaemonUrl;
+}
+
 interface ProxyContext {
   params: Promise<{ path: string[] }>;
 }
@@ -36,7 +56,7 @@ async function proxy(req: NextRequest, ctx: ProxyContext): Promise<Response> {
     ? segments
     : `${API_PREFIX}/${segments}`;
   const search = req.nextUrl.search;
-  const daemonUrl = await resolveDaemonUrl();
+  const daemonUrl = await getDaemonUrl();
   const target = `${daemonUrl}/${versionedSegments}${search}`;
 
   const headers = new Headers();
@@ -103,6 +123,10 @@ async function proxy(req: NextRequest, ctx: ProxyContext): Promise<Response> {
       },
     });
   } catch {
+    // Daemon may have shifted ports since we cached; invalidate so the
+    // next request re-resolves. If it's genuinely down, the next call
+    // will land here again and the user will see the same 502.
+    cachedDaemonUrl = null;
     return NextResponse.json(
       {
         ok: false,

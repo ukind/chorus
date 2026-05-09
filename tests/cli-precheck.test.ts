@@ -21,9 +21,16 @@ import { randomUUID } from 'node:crypto';
 import { _resetDbForTests, getDb } from '@/lib/db';
 import { recordHealth } from '@/lib/cli-health';
 
-vi.mock('node:child_process', () => ({
-  execFileSync: vi.fn(() => { throw new Error('no keychain entry'); }),
-}));
+// Spread `importOriginal` so other child_process exports (spawn, exec, etc.)
+// keep their real implementations. A bare replacement here would silently
+// break any sibling test that imports anything else from this module.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return {
+    ...actual,
+    execFileSync: vi.fn(() => { throw new Error('no keychain entry'); }),
+  };
+});
 
 import { execFileSync } from 'node:child_process';
 import { precheckLineage, hasKeychainEntry } from '@/lib/cli-precheck';

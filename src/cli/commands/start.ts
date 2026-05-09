@@ -738,9 +738,14 @@ function scheduleAutoOpenBrowser(
   uiFlag: boolean | undefined,
   cockpitPort: number,
 ): void {
-  setTimeout(async () => {
-    if (uiFlag && shouldAutoOpenBrowser(detectRuntimeEnv())) {
-      await openBrowser(`http://127.0.0.1:${cockpitPort}`);
-    }
+  setTimeout(() => {
+    if (!uiFlag || !shouldAutoOpenBrowser(detectRuntimeEnv())) return;
+    // Catch the rejection here — a fire-and-forget setTimeout would
+    // surface an unhandled rejection on hosts where `open` can't find
+    // a browser (headless boxes, exotic envs).
+    openBrowser(`http://127.0.0.1:${cockpitPort}`).catch(() => {
+      // Best-effort browser open; ignore failures silently — the cockpit
+      // URL was already printed to the user above.
+    });
   }, 1000);
 }

@@ -74,6 +74,39 @@ const ReviewerSchema = z.object({
      */
     persona: z.string().optional(),
   })),
+}).superRefine((reviewer, ctx) => {
+  // Reject `require: N` when N > candidates.length at template-save
+  // time. Without this guard the run would queue, fail to grant
+  // enough slots, and surface as an immediate, opaque chat-failure
+  // (issue #15: "Job moves immediately to failure upon Start press").
+  // Validating here turns it into a clean schema error users can fix
+  // before the run ever starts.
+  if (reviewer.require > reviewer.candidates.length) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['require'],
+      message:
+        `reviewer.require (${reviewer.require}) cannot exceed reviewer.candidates.length (${reviewer.candidates.length}). ` +
+        `Either lower require or add more candidates.`,
+    });
+  }
+
+  // Cross-lineage diversity is a stricter constraint: when crossLineage
+  // is true, you also can't satisfy `require: N` with fewer than N
+  // distinct lineages. Caught at template-save so the runner doesn't
+  // have to surface "no diverse fallback available" mid-run.
+  if (reviewer.crossLineage && reviewer.require > 0) {
+    const distinctLineages = new Set(reviewer.candidates.map((c) => c.lineage)).size;
+    if (reviewer.require > distinctLineages) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['require'],
+        message:
+          `reviewer.require (${reviewer.require}) exceeds distinct lineages (${distinctLineages}) in candidates with crossLineage=true. ` +
+          `Either lower require, disable crossLineage, or add candidates from more lineages.`,
+      });
+    }
+  }
 });
 
 const InputsSchema = z.object({

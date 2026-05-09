@@ -69,6 +69,52 @@ function ensureCodexHome(accountId: string | undefined): string {
   return codexDir;
 }
 
+/**
+ * Build `codex exec` argv for headless reviewer/doer runs.
+ *
+ * Pure function — no I/O, no env reads — so we can unit-test the exact
+ * argv shape (especially `--ignore-user-config`, which is load-bearing
+ * for issues #10 and #16).
+ *
+ * Why `--ignore-user-config` is here: the user's `~/.codex/config.toml`
+ * may declare MCP servers, plugins, or notification hooks. In headless
+ * `codex exec` mode those integrations have caused codex to hang or
+ * cancel mid-call — see #10 (codex as our reviewer) and #16 (codex as
+ * MCP client of chorus) for two independent reproductions of the same
+ * class of failure. Skipping the user config gives us a clean,
+ * deterministic codex run for review work; we still pass through the
+ * sandbox/network flags chorus owns explicitly below.
+ */
+export function buildHeadlessArgs(opts: HeadlessSpawnOptions): string[] {
+  const args: string[] = ['exec'];
+
+  // Chorus chat dirs aren't git repos. Without this flag codex exec
+  // exits 1 with "Not inside a trusted directory".
+  args.push('--skip-git-repo-check');
+
+  // Strip user config — see function docstring for why.
+  args.push('--ignore-user-config');
+
+  if (opts.sandbox === 'full') {
+    args.push('--dangerously-bypass-approvals-and-sandbox');
+  } else if (opts.sandbox === 'strict') {
+    args.push('-c', 'sandbox_mode="read-only"');
+  }
+
+  if (opts.networkAccess) {
+    args.push('-c', 'sandbox_workspace_write.network_access=true');
+  }
+
+  if (opts.model) {
+    args.push('--model', opts.model);
+  }
+
+  // `-` tells codex exec to read the prompt from stdin (avoids ARG_MAX).
+  args.push('-');
+
+  return args;
+}
+
 export const codexShim: AgentShim = {
   lineage: 'openai',
   name: 'codex-cli',
@@ -140,31 +186,7 @@ export const codexShim: AgentShim = {
     const codexHome = ensureCodexHome(opts.accountId);
     preTrustCodexWorkspace(codexHome, opts.cwd);
 
-    const args: string[] = ['exec'];
-
-    // Chorus chat dirs aren't git repos. Without this flag codex exec
-    // exits 1 with "Not inside a trusted directory" — the trust_level
-    // entry in config.toml only suppresses the interactive prompt, not
-    // the git-repo guard. Discovered 2026-05-01 dogfooding tri-review:
-    // codex reviewers wrote 0 bytes because exec aborted pre-LLM.
-    args.push('--skip-git-repo-check');
-
-    if (opts.sandbox === 'full') {
-      args.push('--dangerously-bypass-approvals-and-sandbox');
-    } else if (opts.sandbox === 'strict') {
-      args.push('-c', 'sandbox_mode="read-only"');
-    }
-
-    if (opts.networkAccess) {
-      args.push('-c', 'sandbox_workspace_write.network_access=true');
-    }
-
-    if (opts.model) {
-      args.push('--model', opts.model);
-    }
-
-    // `-` tells codex exec to read the prompt from stdin.
-    args.push('-');
+    const args = buildHeadlessArgs(opts);
 
     const run = spawnHeadless({
       command: 'codex',

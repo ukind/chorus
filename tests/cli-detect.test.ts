@@ -202,5 +202,31 @@ describe('cli-detect', () => {
       const spec = buildVersionSpawn(evil, true);
       expect(spec.shell).toBeUndefined();
     });
+
+    it('refuses to shell-wrap paths with cmd.exe escape character (^)', () => {
+      // `^` is cmd.exe's escape — `^"` is a literal quote inside a
+      // quoted string, letting an attacker break out of the wrap.
+      const evil = 'C:\\tools\\foo^" & calc.exe.cmd';
+      const spec = buildVersionSpawn(evil, true);
+      expect(spec.shell).toBeUndefined();
+    });
+
+    it('refuses to shell-wrap paths with delayed-expansion character (!)', () => {
+      // `!` triggers cmd.exe delayed expansion when
+      // `setlocal enabledelayedexpansion` is active. A path like
+      // C:\foo\!USERNAME!.cmd would expand env vars at execution time.
+      const evil = 'C:\\foo\\!COMSPEC!.cmd';
+      const spec = buildVersionSpawn(evil, true);
+      expect(spec.shell).toBeUndefined();
+    });
+
+    it('accepts a Windows path with @-scoped npm package', () => {
+      // npm global scoped packages produce paths like
+      // C:\Users\u\AppData\Roaming\npm\node_modules\@anthropic\cli\bin.cmd
+      // — the blacklist regex must allow `@`.
+      const ok = 'C:\\Users\\u\\AppData\\Roaming\\npm\\@scope-foo.cmd';
+      const spec = buildVersionSpawn(ok, true);
+      expect(spec.shell).toBe(true);
+    });
   });
 });

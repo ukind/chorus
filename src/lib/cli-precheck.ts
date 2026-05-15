@@ -76,6 +76,9 @@ const CRED_PATHS: Record<CliLineage, () => string[]> = {
   // the secrets table. The shim itself returns auth_missing when the
   // key is unset, which surfaces the same UX without a file probe.
   openrouter: () => [],
+  // Local LLM has no credential file — the base_url lives in the secrets
+  // table. The shim errors with auth_missing when base_url is unset.
+  local: () => [],
 };
 
 const LOGIN_HINT: Record<CliLineage, string> = {
@@ -85,30 +88,40 @@ const LOGIN_HINT: Record<CliLineage, string> = {
   opencode: 'Run `opencode auth login` in a terminal.',
   moonshot: 'Run `kimi` once interactively, or set up opencode if you use the kimi-via-opencode transport.',
   openrouter: 'Save an OpenRouter API key on the Connect page.',
+  local: 'Set a Local LLM base URL on the Connect page.',
 };
 
 /**
  * Claude Code v2+ stores OAuth credentials in the macOS Keychain instead of a
  * file on disk. Probe the Keychain for existence only (no `-w` flag — avoids
  * ACL prompts in headless contexts). Returns false on non-macOS platforms.
+ *
+ * Claude Code uses TWO different Keychain services depending on the auth flow
+ * (issue #38):
+ *   - `Claude Code-credentials` — Pro/Max OAuth via `claude login`
+ *   - `Claude Code` (no suffix) — API-key auth and some Console-account flows
+ * Either entry means the user is authenticated; probe both.
  */
-const KEYCHAIN_SERVICES: Partial<Record<CliLineage, string>> = {
-  anthropic: 'Claude Code-credentials',
+const KEYCHAIN_SERVICES: Partial<Record<CliLineage, string[]>> = {
+  anthropic: ['Claude Code-credentials', 'Claude Code'],
 };
 
 export function hasKeychainEntry(lineage: CliLineage): boolean {
   if (process.platform !== 'darwin') return false;
-  const service = KEYCHAIN_SERVICES[lineage];
-  if (!service) return false;
-  try {
-    execFileSync('security', ['find-generic-password', '-s', service], {
-      stdio: 'ignore',
-      timeout: 5000,
-    });
-    return true;
-  } catch {
-    return false;
+  const services = KEYCHAIN_SERVICES[lineage];
+  if (!services || services.length === 0) return false;
+  for (const service of services) {
+    try {
+      execFileSync('security', ['find-generic-password', '-s', service], {
+        stdio: 'ignore',
+        timeout: 5000,
+      });
+      return true;
+    } catch {
+      /* try next candidate */
+    }
   }
+  return false;
 }
 
 /**
@@ -153,9 +166,9 @@ export async function precheckLineage(lineage: CliLineage): Promise<PrecheckResu
     // Stale health markers self-clear when a successful run records 'healthy'.
   }
 
-  // OpenRouter has no on-disk creds — the shim itself errors with
-  // auth_missing when the secrets-table key is absent. Skip the file probe.
-  if (lineage === 'openrouter') {
+  // OpenRouter and local LLM have no on-disk creds — the shim itself errors
+  // with auth_missing when the secrets-table key/url is absent. Skip file probe.
+  if (lineage === 'openrouter' || lineage === 'local') {
     return { ok: true };
   }
 

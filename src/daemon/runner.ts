@@ -139,6 +139,13 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
   // If so, the chat must NOT end approved — there was no real
   // implementation to review.
   let anyPhaseDoerFailed = false;
+  // Distinguishes `iterate.onDisagreement: 'escalate'` from the default
+  // `'continue'` path when surfacing the terminal chat_done. Both end
+  // status='failed', but escalate carries a different verdict + error
+  // string so cockpits/CLIs can render "reviewers disagreed, needs
+  // human" distinctly from "doer never produced a working answer."
+  let doerFailureReason: 'max_rounds_exhausted' | 'escalated_on_disagreement' =
+    'max_rounds_exhausted';
   // Captures the consensus from the most recent review-only phase. Used
   // to override the default 'approved' verdict in chat_done — review-only
   // chats surface what the reviewers actually said rather than auto-
@@ -204,7 +211,18 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
       const stdPhase: StandardPhase = phase;
 
       let doerSucceeded = false;
+      // Reflects the OUTCOME OF THE MOST-RECENTLY-COMPLETED round only:
+      // - doer produced a full answer AND reviewers ran AND no consensus
+      //   (and not allFailed) → true
+      // - doer crashed / aborted / reviewers all crashed → false
+      // Reset at the top of every round so a stale `true` from round N-1
+      // can never bleed into a round-N abort or all-reviewers-failed,
+      // which would otherwise let 'accept-doer' silently accept a non-
+      // disagreement outcome. Convergent finding from PR #50's round-2
+      // self-review (4/8 reviewers flagged the flag-reset gap).
+      let disagreementInLastRound = false;
       for (let round = 1; round <= stdPhase.iterate.maxRounds; round++) {
+        disagreementInLastRound = false;
         if (abortSignal.aborted) break;
 
         onEvent({
@@ -250,6 +268,12 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
         // runner review). The runner already retries via the round loop,
         // so failing this round is the right move; reviewing garbage is not.
         if (!doerAnswer || !doerAnswer.full) {
+          // Doer crashed mid-stream. The round loop exits here without
+          // recording a real disagreement — onDisagreement policy must
+          // NOT fire on this path, otherwise 'accept-doer' would silently
+          // accept a partial/empty answer as final. (Top-of-round reset
+          // already covers this; explicit reset here documents intent.)
+          disagreementInLastRound = false;
           onEvent({
             chatId,
             type: 'phase_failed',
@@ -314,6 +338,15 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
             break;
           }
 
+          // Doer produced a full answer; reviewers ran but didn't agree.
+          // This is a real "policy applies" disagreement, not a technical
+          // failure. `consensus.allFailed` means every reviewer's CLI
+          // crashed/quota-blew, which is a different no-review path
+          // handled by anyPhaseAllReviewersFailed below.
+          if (!consensus.allFailed) {
+            disagreementInLastRound = true;
+          }
+
           if (round < stdPhase.iterate.maxRounds) {
             onEvent({
               chatId,
@@ -335,24 +368,56 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
       }
 
       if (!doerSucceeded) {
-        anyPhaseDoerFailed = true;
-        onEvent({
-          chatId,
-          type: 'phase_failed',
-          payload: {
-            phaseId: stdPhase.id,
-            phaseIdx,
-            kind: stdPhase.kind,
-            role: 'doer',
-            reason: 'max_rounds_exhausted',
-          },
-          ts: Date.now(),
+        // Round loop exited without consensus. Two paths land here:
+        //   (a) doer crashed / partial-stream → the inner break already
+        //       fired phase_failed with the specific reason; we honor
+        //       the existing "doer failed" semantics regardless of
+        //       onDisagreement (a crashed doer's output must not be
+        //       silently accepted as final).
+        //   (b) reviewers disagreed → the template's onDisagreement
+        //       policy decides what happens. Historically the runner
+        //       only honored 'continue'; 'accept-doer' and 'escalate'
+        //       were silent no-ops (issue #49).
+        const phaseOutcome = decidePhaseOutcome({
+          disagreementInLastRound,
+          policy: stdPhase.iterate.onDisagreement,
         });
-        // Don't continue to subsequent phases when a doer failed every
-        // round — there is no real implementation to feed forward, and
-        // the chat must not end 'approved'. The chat_done branch below
-        // handles the terminal status as 'failed' / 'no_review'.
-        break;
+        if (phaseOutcome.kind === 'accept-doer') {
+          doerSucceeded = true;
+          onEvent({
+            chatId,
+            type: 'phase_progress',
+            payload: {
+              phaseId: stdPhase.id,
+              phaseIdx,
+              kind: stdPhase.kind,
+              role: 'doer',
+              accepted: 'doer_after_disagreement',
+              round: stdPhase.iterate.maxRounds,
+            },
+            ts: Date.now(),
+          });
+        } else {
+          anyPhaseDoerFailed = true;
+          doerFailureReason = phaseOutcome.reason;
+          onEvent({
+            chatId,
+            type: 'phase_failed',
+            payload: {
+              phaseId: stdPhase.id,
+              phaseIdx,
+              kind: stdPhase.kind,
+              role: 'doer',
+              reason: phaseOutcome.reason,
+            },
+            ts: Date.now(),
+          });
+          // Don't continue to subsequent phases when a doer failed every
+          // round — there is no real implementation to feed forward, and
+          // the chat must not end 'approved'. The chat_done branch below
+          // handles the terminal status as 'failed' / 'no_review'.
+          break;
+        }
       }
 
       onEvent({
@@ -445,10 +510,20 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
     // Routed through emitChatDone so an earlier abort (SSE close, user
     // cancel) can't be overwritten by a later "completed" emission.
     if (anyPhaseDoerFailed) {
-      // The doer never produced a real implementation. Don't pretend
-      // the chat was reviewed — surface as failed so the cockpit shows
-      // it red.
-      emitChatDone({ status: 'failed', verdict: 'failed', error: 'doer_failed_all_rounds' });
+      // The doer never produced a real implementation, OR the template's
+      // `iterate.onDisagreement: 'escalate'` policy halted the loop on
+      // reviewer disagreement. Both end status='failed' so the cockpit
+      // renders the chat red; the verdict + error string differ so
+      // downstream can tell "needs human" from "doer broke."
+      if (doerFailureReason === 'escalated_on_disagreement') {
+        emitChatDone({
+          status: 'failed',
+          verdict: 'request_changes',
+          error: 'escalated_on_disagreement',
+        });
+      } else {
+        emitChatDone({ status: 'failed', verdict: 'failed', error: 'doer_failed_all_rounds' });
+      }
     } else if (anyPhaseAllReviewersFailed) {
       emitChatDone({ status: 'no_review', verdict: 'no_review' });
     } else if (shipOutcome.kind === 'merged') {
@@ -517,6 +592,59 @@ function readLastDoerAnswer(chatDir: string): string | undefined {
     }
   }
   return undefined;
+}
+
+/**
+ * Pure decision table for "what happens after the round loop exits
+ * without reviewer consensus?"
+ *
+ * Inputs:
+ *   - `disagreementInLastRound` — true iff at least one round completed
+ *     with the doer producing a full answer AND reviewers running but
+ *     failing to agree. False when the doer crashed mid-stream (the
+ *     inner round-loop break) or when reviewers all crashed.
+ *   - `policy` — the template's `iterate.onDisagreement`. Three values
+ *     historically exposed by the schema, the cockpit form, and the
+ *     SPEC docs, but only 'continue' was honored by the runner before
+ *     issue #49.
+ *
+ * Outcomes:
+ *   - `accept-doer`: drop the reviewer veto, treat the doer's last
+ *     answer as final, let the chat carry on as if reviewers had agreed.
+ *     Only fires when `disagreementInLastRound` AND policy is 'accept-doer'.
+ *   - `fail` with `max_rounds_exhausted`: historical default. Either
+ *     policy is 'continue', OR the round loop exited because the doer
+ *     crashed (regardless of policy — a partial answer must never be
+ *     silently accepted, even when the user wrote `accept-doer`).
+ *   - `fail` with `escalated_on_disagreement`: policy is 'escalate' AND
+ *     reviewers actually returned verdicts but didn't agree. Surfaces
+ *     a distinct verdict + error so cockpits can render "needs human
+ *     review" rather than "doer broke."
+ *
+ * Extracted so the table is unit-testable without standing up the full
+ * runChat scaffold (tmuxMgr, errorDetector, fake doer + fake reviewers).
+ */
+export type OnDisagreementPolicy = 'continue' | 'escalate' | 'accept-doer';
+export type PhaseOutcome =
+  | { kind: 'accept-doer' }
+  | { kind: 'fail'; reason: 'max_rounds_exhausted' | 'escalated_on_disagreement' };
+
+export function decidePhaseOutcome(opts: {
+  disagreementInLastRound: boolean;
+  policy: OnDisagreementPolicy;
+}): PhaseOutcome {
+  // Doer crashed or never produced a full answer → policy doesn't apply.
+  // Surface as the historical max_rounds_exhausted; the inner round-loop
+  // break has already fired phase_failed with the specific
+  // doer_partial_stream / doer_timeout reason for the cockpit to render.
+  if (!opts.disagreementInLastRound) {
+    return { kind: 'fail', reason: 'max_rounds_exhausted' };
+  }
+  if (opts.policy === 'accept-doer') return { kind: 'accept-doer' };
+  if (opts.policy === 'escalate') {
+    return { kind: 'fail', reason: 'escalated_on_disagreement' };
+  }
+  return { kind: 'fail', reason: 'max_rounds_exhausted' };
 }
 
 // Re-exports keep external import sites stable. Tests import some of

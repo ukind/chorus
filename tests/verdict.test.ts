@@ -107,4 +107,79 @@ describe('verdictFromReviewerText', () => {
   it('detects "don\'t merge"', () => {
     expect(verdictFromReviewerText(long("Don't merge yet"))).toBe(false);
   });
+
+  // Issue #52 — three concrete leak cases from brianmarr's report.
+  // Each one used to return TRUE (false-positive APPROVED) before the
+  // negatives vocabulary was expanded and the tail-first short-circuit
+  // was changed to "negatives win globally".
+  describe('issue #52 — rejection-but-tail-says-approve patterns', () => {
+    it('case 1: "requests changes" (3rd-person plural form)', () => {
+      const text =
+        "This change requests changes before merge. I'd approve a revised version.\n## DONE";
+      expect(verdictFromReviewerText(text)).toBe(false);
+    });
+
+    it('case 2: conditional approve in tail wins over "changes are needed" body', () => {
+      // Brian's exact case 2 text. The "approve after" tail clause is
+      // what flips this to false; we deliberately don't match the
+      // ambiguous body phrase "changes are needed" because that pattern
+      // also fires on "no changes needed, LGTM" (see false-positive
+      // tests below).
+      const text =
+        "Several changes are needed before this can ship. I'll approve after the fixes are in.\n## DONE";
+      expect(verdictFromReviewerText(text)).toBe(false);
+    });
+
+    it('"not ready" counts as negative', () => {
+      expect(verdictFromReviewerText(long('this is not ready for merge'))).toBe(false);
+    });
+
+    it('case 3: body has "Request changes", tail has only "approve once"', () => {
+      // The rejection lives in the body, the tail (last 400 chars) only
+      // contains the polite kicker. Pre-fix tail-first short-circuited
+      // to TRUE. Post-fix: negatives win globally → FALSE.
+      const body =
+        'Request changes. ' +
+        PAD.repeat(5) + // pushes "Request changes" out of the last-400 window
+        'Happy to approve once these are addressed.\n## DONE';
+      expect(verdictFromReviewerText(body)).toBe(false);
+    });
+
+    it('conditional approve in the tail still counts as negative', () => {
+      // The new "approve (after|once|when|conditional|...)" pattern
+      // catches polite-kicker conditionals even when the body has no
+      // other rejection language.
+      expect(verdictFromReviewerText(long('Looks fine — would approve once tests pass'))).toBe(false);
+      expect(verdictFromReviewerText(long('Approve when the type errors are gone'))).toBe(false);
+      expect(verdictFromReviewerText(long('Conditional approve: only if you add a test'))).toBe(false);
+    });
+
+    it('still approves an unambiguous positive', () => {
+      // Sanity: the expanded negatives must not eat clean approvals.
+      expect(verdictFromReviewerText(long('approve, nothing to add'))).toBe(true);
+      expect(verdictFromReviewerText(long('LGTM, all good'))).toBe(true);
+    });
+
+    // Pinned false-positive scenarios that round-1 self-review (cli-2,
+    // cli-3, cli-7) flagged from candidate patterns that have since
+    // been dropped. If anyone is tempted to re-add `changes needed` or
+    // `needs work` to the negatives list, these tests fail loudly.
+    it('"no changes needed, LGTM" stays positive', () => {
+      // Real-world clean-approval phrasing. The dropped pattern
+      // `changes (?:are )?(?:needed|required)` would have flipped this
+      // to false; with that pattern gone, `lgtm` wins from positives.
+      expect(verdictFromReviewerText(long('no changes needed, LGTM'))).toBe(true);
+    });
+
+    it('"the changes requested are fine, approve" stays positive', () => {
+      // Reviewer is describing past requests being resolved, not
+      // issuing a new rejection. `request(?:s|ed|ing)? changes` could
+      // match "changes requested" — but the regex requires the noun
+      // FOLLOWING the verb (`requested changes`), not preceding it,
+      // so this passive form is naturally excluded.
+      expect(
+        verdictFromReviewerText(long('the changes requested have been addressed, approve')),
+      ).toBe(true);
+    });
+  });
 });

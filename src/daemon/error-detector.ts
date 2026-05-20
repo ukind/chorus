@@ -225,16 +225,39 @@ export class ErrorDetector {
       }
     }
 
+    // Pattern 3b: Antigravity CLI specific signatures (ordering rule
+    // from the integration doc — CLI-specific patterns BEFORE the
+    // generic auth-prompt regex so they route to the right `kind`).
+    if (lineage === 'antigravity') {
+      // Match the same alternations as parseAntigravityExit so the pane-
+      // scraper and exit-handler agree on what counts as a quota error
+      // (self-review caught the drift between the two).
+      if (
+        /quota[\s-]?(?:exhausted|exceeded)|rate[\s-]?limit|resource[\s-]?exhausted|\b429\b/i.test(
+          paneText,
+        )
+      ) {
+        return {
+          kind: 'quota_exhausted',
+          lineage,
+          message: 'Antigravity (Gemini 3.5 Flash) quota exhausted on your Google AI Pro subscription.',
+          cta: 'Wait for the period reset or upgrade your Google AI plan.',
+          detail: 'quota_exhausted',
+        };
+      }
+    }
+
     if (
       lineage === 'anthropic' ||
       lineage === 'openai' ||
       lineage === 'google' ||
       lineage === 'opencode' ||
       lineage === 'moonshot' ||
-      lineage === 'grok'
+      lineage === 'grok' ||
+      lineage === 'antigravity'
     ) {
       const authPrompt =
-        /(?:please (?:run|log\s*in|sign\s*in)|run\s+`?(?:claude|codex|gemini|opencode|kimi|grok)\s+login|to\s+sign\s+in|not logged in|not authenticated|no active session|authentication required|api key (?:invalid|missing|expired|revoked|not (?:found|set))|(?:[A-Z_]+_)?API_KEY\s+(?:environment variable\s+)?not\s+(?:found|set)|Signing in with Grok|Open this URL to sign in)/i.exec(
+        /(?:please (?:run|log\s*in|sign\s*in)|run\s+`?(?:claude|codex|gemini|opencode|kimi|grok|agy)\s+login|to\s+sign\s+in|not logged in|not authenticated|no active session|authentication required|api key (?:invalid|missing|expired|revoked|not (?:found|set))|(?:[A-Z_]+_)?API_KEY\s+(?:environment variable\s+)?not\s+(?:found|set)|Signing in with Grok|Open this URL to sign in|antigravity-oauth-token)/i.exec(
           paneText,
         );
       if (authPrompt) {

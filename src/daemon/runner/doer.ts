@@ -24,6 +24,8 @@ import { getPermissions } from '../../lib/settings/permissions.js';
 import {
   classifyOpenRouterError,
   getHealth,
+  isKnownHealthLineage,
+  kindToStatus,
   recordHealth,
   type CliLineage,
 } from '../../lib/cli-health.js';
@@ -255,6 +257,26 @@ export async function runDoerHeadless(args: {
           }).catch((healthErr: unknown) => {
             console.error('[chorus] recordHealth failed for openrouter:', healthErr);
           });
+        } else {
+          // Non-openrouter headless errors: persist health under the doer's
+          // lineage when the error kind is one the tmux path already
+          // records (token_refresh_lost, quota_exhausted, ...). Without
+          // this the precheck cooldown can't fire on subsequent chats —
+          // see reviewer.ts for the matching block.
+          const mapped = kindToStatus(event.kind);
+          const doerLineage = phase.doer.lineage;
+          if (mapped !== 'unknown' && isKnownHealthLineage(doerLineage)) {
+            recordHealth({
+              lineage: doerLineage as CliLineage,
+              status: mapped,
+              message: event.message,
+            }).catch((healthErr: unknown) => {
+              console.error(
+                `[chorus] recordHealth failed for ${doerLineage}:`,
+                healthErr,
+              );
+            });
+          }
         }
         if (!errorSummary) {
           errorSummary = {

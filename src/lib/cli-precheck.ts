@@ -48,6 +48,12 @@ export type PrecheckResult =
   | { ok: true }
   | { ok: false; reason: PrecheckFailReason; message: string; cta: string; resetAt?: number };
 
+/** Shared between `opencode` and `moonshot` (kimi-via-opencode) entries. */
+const CRED_PATHS_OPENCODE = (): string[] => [
+  path.join(os.homedir(), '.opencode', 'auth.json'),
+  path.join(os.homedir(), '.local', 'share', 'opencode', 'auth.json'),
+];
+
 /**
  * Per-lineage credential file we treat as "user is logged in." Each CLI
  * stores its OAuth bearer somewhere different; if the file doesn't exist
@@ -61,26 +67,33 @@ const CRED_PATHS: Record<CliLineage, () => string[]> = {
     path.join(os.homedir(), '.claude', '.credentials.json'),
     path.join(os.homedir(), '.config', 'anthropic', 'claude.json'),
   ],
-  openai: () => [
-    path.join(os.homedir(), '.codex', 'auth.json'),
-  ],
+  // Codex's auth lives in $CODEX_HOME/auth.json. Match ensureCodexHome()
+  // EXACTLY: when CHORUS_CODEX_HOME is set, the spawn uses ONLY that dir
+  // and never falls back to ~/.codex. The precheck must do the same, or
+  // we falsely pass an empty override (because ~/.codex still has creds
+  // from a different account) and the spawn dies on the actual auth
+  // probe — defeating the precheck. Convergent finding from PR #70
+  // audit (codex-cli-0 + antigravity-cli-8).
+  openai: () => {
+    const override = process.env.CHORUS_CODEX_HOME?.trim();
+    const home = override && override.length > 0
+      ? override
+      : path.join(os.homedir(), '.codex');
+    return [path.join(home, 'auth.json')];
+  },
   google: () => [
     path.join(os.homedir(), '.gemini', 'oauth_creds.json'),
     path.join(os.homedir(), '.config', 'gemini', 'oauth_creds.json'),
   ],
-  opencode: () => [
-    path.join(os.homedir(), '.opencode', 'auth.json'),
-    path.join(os.homedir(), '.local', 'share', 'opencode', 'auth.json'),
-  ],
+  opencode: () => CRED_PATHS_OPENCODE(),
   moonshot: () => [
     path.join(os.homedir(), '.kimi', 'auth.json'),
-    // OpenCode stores its auth in two places depending on install path. The
-    // kimi shim delegates to `opencode --model opencode-go/kimi-k2.6` when
-    // the requested model carries the opencode-go/ prefix, so a moonshot
-    // voice routed via opencode is actually authed by opencode's creds —
-    // not the kimi-cli ones. Both opencode candidates accepted here.
-    path.join(os.homedir(), '.opencode', 'auth.json'),
-    path.join(os.homedir(), '.local', 'share', 'opencode', 'auth.json'),
+    // The kimi shim delegates to `opencode --model opencode-go/kimi-k2.6`
+    // when the requested model carries the opencode-go/ prefix, so a
+    // moonshot voice routed via opencode is actually authed by opencode's
+    // creds. Reuse the opencode paths here so a future move (e.g. adding
+    // a third candidate location) lands in one place, not two.
+    ...CRED_PATHS_OPENCODE(),
   ],
   // OpenRouter has no on-disk credential file — its API key lives in
   // the secrets table. The shim itself returns auth_missing when the
@@ -201,7 +214,7 @@ export async function precheckLineage(lineage: CliLineage): Promise<PrecheckResu
   // spawn turns one bad reviewer into a 30-minute chat. The cooldown buys
   // the user time to re-authenticate (or for cli-health to clear itself
   // when a different chat happens to succeed).
-  if (health.status === 'auth_invalid') {
+  if (health.status === 'auth_invalid' && typeof health.updatedAt === 'number') {
     const elapsed = Date.now() - health.updatedAt;
     if (elapsed >= 0 && elapsed < AUTH_INVALID_COOLDOWN_MS) {
       const minsLeft = Math.ceil((AUTH_INVALID_COOLDOWN_MS - elapsed) / 60_000);

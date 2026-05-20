@@ -509,6 +509,13 @@ export function spawnHeadless(opts: SpawnHeadlessOptions): HeadlessRun {
 
   // ─── timeout + abort kill plumbing ─────────────────────────────────────
   let killReason: string | undefined;
+  // Hold a reference to the SIGKILL grace timer so finalize() can clear
+  // it. PR #74 audit (gemini-cli-1 MEDIUM): when the child dies on
+  // SIGTERM before the 5s grace expires, the timer's no-op closure stays
+  // pinned in memory until KILL_GRACE_MS — adds 5s of dangling closures
+  // per CLI invocation. unref() means it doesn't block process exit but
+  // it DOES still hold the closure (and the file-scope `child` ref).
+  let killGraceTimer: NodeJS.Timeout | null = null;
 
   const sigtermThenKill = (reason: string): void => {
     if (killReason) return; // already killing
@@ -518,14 +525,15 @@ export function spawnHeadless(opts: SpawnHeadlessOptions): HeadlessRun {
     } catch {
       /* ignore */
     }
-    const t = setTimeout(() => {
+    killGraceTimer = setTimeout(() => {
       try {
         child.kill('SIGKILL');
       } catch {
         /* ignore */
       }
+      killGraceTimer = null;
     }, KILL_GRACE_MS);
-    t.unref();
+    killGraceTimer.unref();
   };
 
   const timeoutHandle = setTimeout(() => {
@@ -564,6 +572,12 @@ export function spawnHeadless(opts: SpawnHeadlessOptions): HeadlessRun {
         finalized = true;
         clearTimeout(timeoutHandle);
         if (heartbeatHandle) clearInterval(heartbeatHandle);
+        if (killGraceTimer) {
+          // Child exited within the SIGTERM grace window — cancel the
+          // pending SIGKILL or its closure leaks for KILL_GRACE_MS.
+          clearTimeout(killGraceTimer);
+          killGraceTimer = null;
+        }
         if (opts.abortSignal) {
           opts.abortSignal.removeEventListener('abort', abortHandler);
         }
@@ -708,6 +722,26 @@ export function spawnHeadless(opts: SpawnHeadlessOptions): HeadlessRun {
   );
 
   // ─── async iterator ────────────────────────────────────────────────────
+  //
+  // The custom iterator implements `return()` and `throw()` in addition to
+  // `next()` so `for await` consumers that break early — or whose body
+  // throws — tear the subprocess down via SIGTERM instead of letting it
+  // run as a background orphan.
+  //
+  // Without these methods, the runtime's automatic cleanup walks away
+  // and the child CLI keeps consuming subscription quota / API tokens
+  // until either the spawnHeadless `timeoutMs` fires or the daemon
+  // restarts. PR #70 audit (antigravity-cli-8 finding #1, marked
+  // CRITICAL) caught this.
+  //
+  // `sigtermThenKill` is idempotent (its own `killReason` guard), so
+  // calling it on dispose even after a natural close is safe — the
+  // `closed` check below is a fast-path optimisation, not correctness.
+  const disposeIterator = (reason: string): void => {
+    if (closed) return;
+    sigtermThenKill(reason);
+  };
+
   const events: AsyncIterable<AgentEvent> = {
     [Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
       return {
@@ -722,6 +756,21 @@ export function spawnHeadless(opts: SpawnHeadlessOptions): HeadlessRun {
             return { value, done: false };
           }
           return { value: undefined, done: true };
+        },
+        async return(): Promise<IteratorResult<AgentEvent>> {
+          // `for await ... break`, manual `iter.return()`, or generator
+          // early-completion. Tear the subprocess down so the underlying
+          // CLI doesn't keep running to completion against a consumer
+          // that has stopped listening.
+          disposeIterator('iterator_disposed');
+          return { value: undefined, done: true };
+        },
+        async throw(err?: unknown): Promise<IteratorResult<AgentEvent>> {
+          // Consumer's `for await` body threw — same cleanup as
+          // early-break. Re-throw so the caller's catch / rethrow chain
+          // still sees the original error.
+          disposeIterator('iterator_threw');
+          throw err;
         },
       };
     },

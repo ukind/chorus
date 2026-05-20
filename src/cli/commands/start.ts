@@ -5,6 +5,7 @@ import { openBrowser } from '../open-browser.js';
 import os from 'os';
 import path from 'path';
 import {
+  clearDaemonInfo,
   COCKPIT_PORT_RANGE,
   DAEMON_PORT_RANGE,
   DEFAULT_COCKPIT_PORT,
@@ -51,6 +52,10 @@ export function registerStartCommand(program: Command): void {
           // (we don't need the cockpit OR the cockpit is also up),
           // bail out. Otherwise fall through to the upgrade path
           // below.
+          //
+          // `version_drifted` means alreadyRunningHealthy already
+          // killed the stale daemon — we just fall through to the
+          // normal spawn sequence below to bring up the new build.
           const alreadyHandled = await alreadyRunningHealthy(options.ui);
           if (alreadyHandled === 'satisfied') return;
 
@@ -209,7 +214,57 @@ async function captureAndPersistPath(): Promise<void> {
 type AlreadyRunningResult =
   | 'satisfied' // healthy chorus + (no UI requested OR cockpit also up)
   | 'cockpit_missing_ui_requested' // daemon up, cockpit NOT up, --ui flag set → upgrade path
+  | 'version_drifted' // daemon alive but older than installed CLI → auto-restart needed
   | 'not_running'; // no live daemon
+
+/**
+ * Pure version comparator used for drift detection. Returns true when
+ * `cliVersion` is strictly newer than `daemonVersion`.
+ *
+ * Adds two policies on top of plain numeric semver compare (which is
+ * what `versionGreater` already does):
+ *   1. Missing / null / empty daemon version → treated as older. A
+ *      pre-0.7 daemon (no `version` field in daemon.json) gets
+ *      restarted on the next `chorus start`, picking up whatever the
+ *      currently-installed CLI is.
+ *   2. Equal versions → not older. No restart when versions match.
+ *
+ * Pre-release suffixes (1.2.3-rc.1) are NOT handled — the underlying
+ * `versionGreater` does naive split-on-dot + parseInt, so any non-numeric
+ * tail compares as zero. The CLI only publishes plain semver to npm
+ * latest, so this hasn't bitten us yet; flagged for follow-up if we
+ * ever ship RC tags.
+ */
+export function isDaemonOlderThanCli(
+  daemonVersion: string | null | undefined,
+  cliVersion: string,
+): boolean {
+  if (!daemonVersion) return true;
+  if (daemonVersion === cliVersion) return false;
+  return versionGreater(cliVersion, daemonVersion);
+}
+
+/**
+ * Tear down a drifted daemon in-process so start can immediately respawn
+ * on the current CLI's code. Mirrors the kill path in `chorus stop` but
+ * lives inline because chained `chorus stop && chorus start` invocations
+ * are exactly the pain we're removing — if the user has to know to run
+ * stop first, the auto-restart UX win is gone.
+ *
+ * Best-effort: failures during kill don't abort the start. The downstream
+ * spawn picks fresh ports if the old ones are still bound, and the port
+ * sweep in `reapOrphans` mops up.
+ */
+async function killDriftedDaemon(
+  daemonPid: number,
+  cockpitPid: number | null,
+): Promise<void> {
+  await killAndVerify(daemonPid, 'Daemon');
+  if (cockpitPid !== null && cockpitPid > 0) {
+    await killAndVerify(cockpitPid, 'Cockpit');
+  }
+  clearDaemonInfo();
+}
 
 /**
  * Detect a healthy chorus already running on this host before we try
@@ -235,6 +290,35 @@ async function alreadyRunningHealthy(
   const live = await readLiveDaemonInfo({ healthTimeoutMs: 5000 });
   if (!live) return 'not_running';
 
+  // Drift detection: the running daemon may have been spawned by an
+  // older CLI build that the user has since upgraded via `chorus update`
+  // or `npm install -g`. Without restart, the new code on disk is dead
+  // weight. Detecting drift here closes the "I updated but `chorus start`
+  // still says v0.8.38" pain.
+  //
+  // Asymmetric handling:
+  //   - daemon older than CLI → restart automatically (the user
+  //     just upgraded; they want the new code live)
+  //   - daemon equal to CLI → no action ("already running")
+  //   - daemon NEWER than CLI → warn but do not restart. Restarting
+  //     would downgrade the daemon to whatever the older PATH `chorus`
+  //     points at, which is almost certainly not what the user wants
+  //     (it typically means they have two installs — sudo and nvm —
+  //     and the wrong one is in PATH).
+  if (isDaemonOlderThanCli(live.version, pkg.version)) {
+    console.log('');
+    console.log(
+      header(
+        sym.pointer,
+        'Daemon is on an older version — restarting',
+        `daemon ${live.version || '(unknown)'} → CLI ${pkg.version}`,
+      ),
+    );
+    await killDriftedDaemon(live.daemonPid, live.cockpitPid);
+    console.log('');
+    return 'version_drifted';
+  }
+
   const cockpitRunning =
     live.cockpitPid !== null && isPidAlive(live.cockpitPid);
 
@@ -246,9 +330,30 @@ async function alreadyRunningHealthy(
   }
 
   console.log('');
-  console.log(
-    header(sym.ok, 'Chorus is already running', `version ${live.version || pkg.version}`),
-  );
+  // Show both the daemon-recorded version AND the CLI version when
+  // they differ (daemon newer case). Equal case shows once. Helps
+  // users diagnose two-install confusion at a glance.
+  const daemonVersionLabel = live.version
+    ? live.version === pkg.version
+      ? `version ${pkg.version}`
+      : `daemon ${live.version} · CLI ${pkg.version}`
+    : `version ${pkg.version}`;
+  console.log(header(sym.ok, 'Chorus is already running', daemonVersionLabel));
+
+  if (live.version && live.version !== pkg.version) {
+    // Daemon newer than CLI (drift detection above already caught the
+    // opposite case). Surface the install-path mismatch so the user
+    // can fix it deliberately rather than guessing.
+    console.log('');
+    console.log(
+      c.dim(
+        `   Daemon is newer than this CLI — multiple chorus installs on PATH?`,
+      ),
+    );
+    console.log(
+      c.dim(`   This CLI: ${resolveChorusBinaryPath() ?? '(unknown)'}`),
+    );
+  }
   if (cockpitRunning) {
     const cockpitUrl = `http://127.0.0.1:${live.cockpitPort}`;
     console.log('');

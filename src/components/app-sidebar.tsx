@@ -16,7 +16,7 @@ import {
   ArrowUpCircle,
 } from "lucide-react";
 import { TriadLogo } from "@/components/triad-logo";
-import { listChats, DaemonError } from "@/lib/api";
+import { listChats } from "@/lib/api";
 import { chatDisplayTitle } from "@/lib/chat-title";
 import {
   readCollapsed,
@@ -123,9 +123,14 @@ export function SidebarBody({ onNavigate, collapsed = false, onToggleCollapsed }
         if (cancelled) return;
         setChats(list);
         setChatsState("ready");
-      } catch (err) {
+      } catch {
         if (cancelled) return;
-        setChatsState(err instanceof DaemonError ? "error" : "error");
+        // Same display for known daemon-down vs unexpected errors —
+        // the dead `instanceof DaemonError` ternary that used to live
+        // here had both branches equal to "error". If we ever want to
+        // differentiate (e.g. "Daemon offline" vs "Something broke")
+        // add a new `chatsState` variant first.
+        setChatsState("error");
       }
     };
 
@@ -215,7 +220,16 @@ export function SidebarBody({ onNavigate, collapsed = false, onToggleCollapsed }
         document.removeEventListener("visibilitychange", onVisibility);
       }
     };
-  }, [pathname]);
+    // Mount-once effect — DOES NOT depend on pathname. Active-route
+    // highlighting reads `pathname` during render via `isActive(href)`,
+    // not from this effect, so a navigation should re-render the nav
+    // items WITHOUT tearing down the SSE subscription or refetching
+    // the chat list. The old `[pathname]` dep paired with AppShell
+    // remounting per-page meant every route click closed SSE, cleared
+    // the poll, set chatsState back to "loading", and re-issued the
+    // GET — visible as the "Loading…" flash that prompted this fix.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const isActive = (href: string) =>
     href === "/" ? pathname === "/" : pathname.startsWith(href);

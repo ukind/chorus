@@ -16,6 +16,7 @@ import { atomicWriteJsonSync } from '../lib/atomic-write.js';
 import { chats } from '../lib/db/index.js';
 import { logger } from '../lib/logger.js';
 import { isReviewOnlyPhase, type StandardPhase, type Template } from '../lib/template-schema.js';
+import { admitChat } from './chat-gate.js';
 import type { ErrorDetector } from './error-detector.js';
 import { runDoer } from './runner/doer-driver.js';
 import { readPriorRoundFeedback } from './runner/prior-round.js';
@@ -130,6 +131,51 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
     emitChatDone({ status: 'cancelled' });
   };
   abortSignal.addEventListener('abort', abortListener);
+
+  // Daemon-wide admission gate. Caps the number of chats actively
+  // fanning out reviewers (separate from cli-semaphore which caps
+  // subprocesses per binary family). Configurable in /settings; default
+  // 3 concurrent chats + refuse on low swap or high load. The chat row
+  // stays at status='drafting' while queued; we emit `chat_queued`
+  // events so the cockpit can render "Waiting for slot — N chats ahead".
+  // On admission failure (signal abort), exit cleanly — emitChatDone
+  // with cancelled was already wired via the abortListener above.
+  let releaseAdmission: (() => void) | null = null;
+  try {
+    releaseAdmission = await admitChat({
+      signal: abortSignal,
+      onWait: (decision, position) => {
+        // decision.reason is always populated when admit=false (the
+        // gate guarantees this — see evaluateAdmission). The `??`
+        // fallback is a defensive no-op; we keep it to satisfy the
+        // type checker without inventing a sentinel string that
+        // isn't in AdmitDenyReason.
+        const reason: 'chats_at_cap' | 'swap_low' | 'load_high' =
+          decision.reason ?? 'chats_at_cap';
+        onEvent({
+          chatId,
+          type: 'chat_queued',
+          payload: {
+            reason,
+            position,
+            message: decision.message ?? '',
+          },
+          ts: Date.now(),
+        });
+      },
+    });
+  } catch (err) {
+    // Aborted while queued — abortListener already fired chat_done.
+    // Cleanly exit without proceeding into the doer/reviewer fan-out.
+    abortSignal.removeEventListener('abort', abortListener);
+    if (!chatDoneEmitted) {
+      emitChatDone({
+        status: 'cancelled',
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return;
+  }
 
   // Track whether any phase failed because every reviewer in it failed
   // (timeout/quota/crash). If so, the chat ends in 'no_review' rather
@@ -560,6 +606,9 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
     emitChatDone({ status: 'failed', error: message });
   } finally {
     abortSignal.removeEventListener('abort', abortListener);
+    // Release the daemon-wide admission slot so the next queued chat
+    // can proceed. Idempotent — releaseAdmission swallows double-release.
+    releaseAdmission?.();
   }
 }
 

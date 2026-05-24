@@ -19,6 +19,7 @@ import { isReviewOnlyPhase, type StandardPhase, type Template } from '../lib/tem
 import { admitChat } from './chat-gate.js';
 import type { ErrorDetector } from './error-detector.js';
 import { runDoer } from './runner/doer-driver.js';
+import { resetRound as resetFallbackRound } from './runner/fallback-registry.js';
 import { readPriorRoundFeedback } from './runner/prior-round.js';
 import { runReviewers } from './runner/reviewer-driver.js';
 import { runReviewOnlyPhase } from './runner/review-only-phase.js';
@@ -407,7 +408,12 @@ export async function runChat(opts: PhaseRunnerOptions): Promise<void> {
             });
           }
         } else {
-          // No reviewers: doer succeeds immediately
+          // No reviewers: doer succeeds immediately. Drop any fallback
+          // claim the doer took on this round so the registry doesn't
+          // leak across long-running daemons. (For phases WITH
+          // reviewers, the reset already fires from runReviewers'
+          // finally block.)
+          resetFallbackRound(chatId, round);
           doerSucceeded = true;
           break;
         }
